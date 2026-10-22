@@ -9,7 +9,11 @@ export function requestContext(req, res, next) {
   const start = Date.now();
   res.on("finish", () => {
     // Loga só o caminho (a query pode conter tokens de reprodução).
-    console.log(`[${req.id}] ${req.method} ${req.path} ${res.statusCode} ${Date.now() - start}ms`);
+    // Credenciais/tokens que viajam no caminho (JWT, blob cifrado do HLS) são mascarados.
+    const safePath = req.originalUrl.split("?")[0]
+      .replace(/[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, ":token")
+      .replace(/\/_?hls\/.*$/, "/hls/:blob");
+    console.log(`[${req.id}] ${req.method} ${safePath} ${res.statusCode} ${Date.now() - start}ms`);
   });
   next();
 }
@@ -26,6 +30,13 @@ const limiter = (windowMs, limit, keyGenerator) =>
   });
 
 export const apiLimiter = limiter(60_000, 600);
+// Rota espelho (players Xtream) e gateway de reprodução: playlists HLS geram requisições contínuas, por isso o limite
+// é bem maior e é por credencial (token), não por IP (várias TVs atrás do mesmo NAT).
+const JWT_SEG = /[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/;
+export const mirrorLimiter = limiter(60_000, 3000, (req) => {
+  const k = req.query?.username ?? req.query?.t ?? req.path.match(JWT_SEG)?.[0];
+  return `mirror:${typeof k === "string" && k ? k.slice(-64) : req.ip}`;
+});
 export const loginLimiter = limiter(15 * 60_000, 10);
 // Ativação: limita por IP e também por MAC (impede varredura de códigos por dispositivo).
 export const activationIpLimiter = limiter(15 * 60_000, 30);

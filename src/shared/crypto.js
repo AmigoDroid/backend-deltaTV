@@ -52,8 +52,8 @@ export async function verifyPassword(password, stored) {
 const b64u = (input) => Buffer.from(input).toString("base64url");
 const sign = (data) => crypto.createHmac("sha256", env.jwtSecret).update(data).digest();
 
-export function signJwt(payload, ttlSeconds) {
-  const now = Math.floor(Date.now() / 1000);
+export function signJwt(payload, ttlSeconds, { iat } = {}) {
+  const now = iat ?? Math.floor(Date.now() / 1000); // `iat` fixo = token determinístico (ver mirrorTokenFor)
   const head = b64u(JSON.stringify({ alg: "HS256", typ: "JWT" }));
   const body = b64u(JSON.stringify({ ...payload, iat: now, exp: now + ttlSeconds }));
   return `${head}.${body}.${sign(`${head}.${body}`).toString("base64url")}`;

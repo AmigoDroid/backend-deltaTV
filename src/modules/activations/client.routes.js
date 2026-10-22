@@ -289,7 +289,7 @@ router.get("/resources", requireDevice(), async (req, res) => {
 // revalidadas no banco a cada chamada (requireDevice); a TV chama de novo a cada abertura do app.
 router.get("/xtream", requireDevice(), async (req, res) => {
   res.set("Cache-Control", "no-store").json({
-    ...(await xtreamConfigFor(req.device.activation)),
+    ...(await xtreamConfigFor(req.device.activation, { sessionId: req.device.session.id })),
     expiresAt: req.device.decision.expiresAt,
   });
 });

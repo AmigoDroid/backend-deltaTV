@@ -5,6 +5,7 @@ import { AppError } from "../../shared/errors.js";
 import { signJwt, randomToken, sha256 } from "../../shared/crypto.js";
 import { evaluateAccess } from "./access.policy.js";
 import { sessionsToRevoke } from "./session-cap.js";
+import { dropMirrorAuth } from "../mirror/mirror.cache.js";
 
 // Fatura vencida mais antiga ainda não quitada (data em UTC) — base da política de inadimplência.
 export async function overdueSinceFor(partnerId, transaction) {
@@ -37,6 +38,17 @@ export const accessTokenFor = (activationId, sessionId) =>
 
 export const playTokenFor = (activationId, sessionId) =>
   signJwt({ typ: "play", sid: sessionId, aid: activationId }, env.playTokenTtl);
+
+/**
+ * Credencial da rota espelho Xtream: vai no lugar do "usuário" do painel. Revalidada a cada requisição (ver mirror.service).
+ * DETERMINÍSTICA: o app compara usuário/URL entre consultas para decidir se descarta o catálogo em cache; por isso o mesmo
+ * token é devolvido enquanto durar a janela (iat arredondado para meio TTL; exp = iat + TTL, sempre ≥ meio TTL de validade).
+ */
+export const mirrorTokenFor = (activationId, sessionId, nowSec = Math.floor(Date.now() / 1000)) => {
+  const ttl = env.mirrorTokenTtlDays * 86400;
+  const bucket = Math.max(1, Math.floor(ttl / 2));
+  return signJwt({ typ: "mirror", sid: sessionId, aid: activationId }, ttl, { iat: Math.floor(nowSec / bucket) * bucket });
+};
 
 export async function issueSession(activation, meta = {}, transaction) {
   const refreshToken = randomToken(48);
@@ -90,4 +102,5 @@ export async function enforceSessionCap(activationId, transaction) {
 
 export async function revokeSessionsOf(activationId, transaction) {
   await DeviceSession.update({ revokedAt: new Date() }, { where: { activationId, revokedAt: null }, transaction });
+  dropMirrorAuth(activationId);
 }

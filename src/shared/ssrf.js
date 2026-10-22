@@ -115,6 +115,7 @@ export function safeGet(rawUrl, { headers = {}, signal, maxRedirects = 3, timeou
         const next = new URL(res.headers.location, url).href;
         return safeGet(next, { headers, signal, maxRedirects: maxRedirects - 1, timeoutMs }).then(resolve, reject);
       }
+      res.finalUrl = url.href; // URL após os redirects (resolve URIs relativas de playlists HLS)
       return resolve(res);
     });
     req.on("timeout", () => req.destroy(new AppError(504, "ORIGIN_TIMEOUT", "Tempo esgotado ao acessar a origem.")));

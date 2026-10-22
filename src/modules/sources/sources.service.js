@@ -11,8 +11,11 @@ import {
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { encryptSecret, decryptSecret } from "../../shared/crypto.js";
-import { assertPublicUrl } from "../../shared/ssrf.js";
+import { Transform } from "node:stream";
+import { assertPublicUrl, safeGet } from "../../shared/ssrf.js";
+import { buildPlaylistUrl } from "../providers/playlist-url.js";
 import { pageOf, paged } from "../../shared/pagination.js";
+import { signOriginUrl } from "./signing.js";
 
 
 const publicSource = (s) => {
@@ -420,4 +423,83 @@ export async function getAllowedSource(activation, sourceId) {
   if (!s) throw notFound("Fonte");
 
   return s;
+}
+
+/* ---------- Gateway de reprodução (/api/v1/play) ---------- */
+
+/** ID virtual da lista do próprio dispositivo: /play/me/<item>. */
+export const PERSONAL = "me";
+
+export const hasPersonalPlaylist = (activation) =>
+  !!(activation.providerId || activation.playlistUrlEnc);
+
+/** Aplica a URL assinada de curta duração quando a fonte está configurada com assinatura. */
+export const signedOrigin = (source, originUrl) =>
+  source.signing?.type && source.signing.type !== "none"
+    ? signOriginUrl(originUrl, source.signing, decryptSecret(source.signing.secretEnc))
+    : originUrl;
+
+/**
+ * Origem de um item de fonte cadastrada à mão (kind "catalog", ref "c<uuid>").
+ * Itens de playlist M3U usam o catálogo persistente (ids UUID) e são resolvidos no gateway.
+ */
+export async function resolveOrigin(source, ref) {
+  const m = ref.match(/^c([0-9a-f-]{36})$/i);
+  if (m && source.kind === "catalog") {
+    const c = await Channel.findOne({ where: { id: m[1], sourceId: source.id, status: "active" } });
+    if (!c) throw notFound("Canal");
+    return decryptSecret(c.streamUrlEnc);
+  }
+  throw notFound("Item");
+}
+
+/** Os ids "p<n>" da lista pessoal foram substituídos por ids estáveis (UUID / Xtream): não existem mais. */
+export async function resolvePersonalOrigin() {
+  throw notFound("Item");
+}
+
+/* ---------- Cola com o catálogo persistente (catalog.runtime.js) ---------- */
+
+let catalogInvalidator = null;
+/** O catálogo registra aqui como descartar o catálogo de uma ativação (a lista da TV mudou). */
+export const setCatalogInvalidator = (fn) => {
+  catalogInvalidator = fn;
+};
+export const invalidateActivationCatalog = (activationId) => catalogInvalidator?.(activationId);
+
+/** URL (com credenciais — só no servidor) da playlist cadastrada para a fonte. */
+export const playlistUrlForSource = (source) => {
+  if (!source?.urlEnc) throw new AppError(422, "SOURCE_WITHOUT_URL", "A fonte não tem URL de playlist.");
+  return decryptSecret(source.urlEnc);
+};
+
+/** URL da playlist da TV: lista própria (URL cifrada) ou provedor da parceria + usuário/senha guardados. */
+export async function playlistUrlForActivation(activation) {
+  if (activation.playlistUrlEnc) return decryptSecret(activation.playlistUrlEnc);
+  const provider = activation.providerId ? await PartnerProvider.findByPk(activation.providerId) : null;
+  if (!provider || provider.status !== "active" || !activation.credentialsEnc) {
+    throw new AppError(503, "PROVIDER_UNAVAILABLE", "Serviço indisponível. Contate seu fornecedor.");
+  }
+  return buildPlaylistUrl(provider.baseUrl, provider.playlistTemplate, JSON.parse(decryptSecret(activation.credentialsEnc)));
+}
+
+/** Abre o corpo da playlist M3U na origem (SSRF/redirects tratados por safeGet), cortando acima de `maxBytes` (0 = sem limite). */
+export async function openPlaylistStream(url, { maxBytes = 0, signal } = {}) {
+  const res = await safeGet(url, { signal, headers: { "user-agent": "Mozilla/5.0", accept: "*/*" }, timeoutMs: 30000 });
+  if (res.statusCode !== 200) {
+    res.resume();
+    throw new AppError(502, "ORIGIN_ERROR", "A origem não respondeu corretamente.", { upstreamStatus: res.statusCode });
+  }
+  if (!(maxBytes > 0)) return res;
+  let size = 0;
+  const guard = new Transform({
+    transform(chunk, _e, cb) {
+      size += chunk.length;
+      if (size > maxBytes) return cb(new AppError(502, "ORIGIN_TOO_LARGE", "Playlist da origem excede o tamanho máximo."));
+      cb(null, chunk);
+    },
+  });
+  res.on("error", (e) => guard.destroy(e));
+  guard.on("close", () => res.destroy());
+  return res.pipe(guard);
 }

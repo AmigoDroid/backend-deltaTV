@@ -3,6 +3,9 @@ import { PartnerProvider } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
 import { decryptSecret } from "../../shared/crypto.js";
 import { parseHttpUrl, safeGet } from "../../shared/ssrf.js";
+import { env } from "../../config/env.js";
+import { mirrorTokenFor } from "../access/access.service.js";
+import { deliveryModeOf, MIRROR_PASS } from "../mirror/mode.js";
 
 /**
  * Conexão Xtream Codes (player_api.php) do dispositivo.
@@ -148,8 +151,13 @@ export async function probeAccount({ baseUrl, username, password }) {
 
 export const forgetProbe = () => probeCache.clear();
 
-/** Corpo de GET /api/v1/client/xtream. */
-export async function xtreamConfigFor(activation) {
+/**
+ * Corpo de GET /api/v1/client/xtream.
+ *  - modo proxy:    baseUrl/usuário/senha são os da ROTA ESPELHO deste servidor (a credencial real nunca chega ao app);
+ *  - modo redirect: credenciais reais do painel (o app conversa direto), mais `mirror` caso queira passar pelo servidor.
+ * `sessionId` (sessão do app) é necessário para gerar a credencial do espelho.
+ */
+export async function xtreamConfigFor(activation, { sessionId } = {}) {
   const cred = await xtreamCredentialsOf(activation);
   const probe = await probeAccount(cred);
   if (!probe.ok && probe.reason === "invalid") {
@@ -157,6 +165,12 @@ export async function xtreamConfigFor(activation) {
       ? `A conta no provedor está ${probe.status}. Contate seu fornecedor.`
       : "Usuário ou senha recusados pelo provedor. Contate seu fornecedor.");
   }
-  // "unreachable": devolve mesmo assim; a TV pode alcançar o painel mesmo que o servidor não consiga.
-  return { ...cred, userAgent: XTREAM_UA, account: probe.ok ? probe.account : null };
+  const mode = deliveryModeOf(activation);
+  const account = probe.ok ? probe.account : null; // "unreachable": a TV pode alcançar o painel mesmo que o servidor não consiga
+  const mirror = sessionId
+    ? { baseUrl: env.publicBaseUrl, username: mirrorTokenFor(activation.id, sessionId), password: MIRROR_PASS }
+    : null;
+
+  if (mode === "proxy" && mirror) return { ...mirror, userAgent: XTREAM_UA, account, mode, mirror: true };
+  return { ...cred, userAgent: XTREAM_UA, account, mode, mirror };
 }

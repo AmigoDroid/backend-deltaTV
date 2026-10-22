@@ -80,6 +80,25 @@ export const env = Object.freeze({
   playTokenTtl: int("PLAY_TOKEN_TTL_SECONDS", 600),
   // Tolerância do relógio do token de reprodução nos segmentos/playlists HLS (/play/:lista/_hls/*): canal ao vivo
   // precisa continuar tocando depois do vencimento do token (6 h por padrão; a revogação da sessão continua imediata).
+  hlsTokenGraceSeconds: int("HLS_TOKEN_GRACE_SECONDS", 21600),
+  // Retransmissão (modo proxy): máximo de streams longos simultâneos neste processo (0 = sem limite).
+  proxyMaxConcurrent: int("PROXY_MAX_CONCURRENT", 20),
+  // Rota espelho Xtream (/player_api.php, /live, /movie, /series): validade da credencial entregue ao app.
+  // Autorização da rota espelho em memória (modo proxy/redirect, credenciais, sessão e licença): 0 = consulta o banco a cada request.
+  // Revogação/bloqueio valem em até este tempo (e na hora, neste processo, quando a sessão é revogada pelo próprio servidor).
+  mirrorAuthCacheSeconds: int("MIRROR_AUTH_CACHE_SECONDS", 30),
+  mirrorTokenTtlDays: int("MIRROR_TOKEN_TTL_DAYS", int("DEVICE_REFRESH_TTL_DAYS", 30)),
+  // Catálogo persistente / importação de M3U.
+  catalogMaxBytes: int("CATALOG_MAX_BYTES", 536870912),
+  catalogConcurrency: int("CATALOG_CONCURRENCY", 2),
+  catalogImportTimeoutMs: int("CATALOG_IMPORT_TIMEOUT_MS", 600000),
+  catalogRefreshHours: int("CATALOG_REFRESH_HOURS", 12),
+  playlistMaxBytes: int("PLAYLIST_MAX_MB", 0) * 1024 * 1024,
+  // Catálogo Xtream sob demanda (cache em memória).
+  xtreamCacheMaxBytes: int("XTREAM_CACHE_MAX_MB", 256) * 1024 * 1024,
+  xtreamCacheTtlSeconds: int("XTREAM_CACHE_TTL_SECONDS", 600),
+  xtreamCategoryTtlSeconds: int("XTREAM_CATEGORY_TTL_SECONDS", 3600),
+  xtreamServerInfoTtlSeconds: int("XTREAM_SERVER_INFO_TTL_SECONDS", 3600),
   publicBaseUrl,
   pairingTokenTtl: int("PAIRING_TOKEN_TTL_SECONDS", 900),
   // URL do painel do revendedor (opcional): a página do QR mostra um atalho "Abrir painel" se estiver definida (http/https).

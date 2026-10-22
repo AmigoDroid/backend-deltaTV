@@ -122,7 +122,7 @@ const hlsCtx = (req) => ({
 });
 
 async function proxyStream(req, res, target, activationId, ctx) {
-  if (activeProxies >= env.proxyMaxConcurrent)
+  if (env.proxyMaxConcurrent > 0 && activeProxies >= env.proxyMaxConcurrent)
     throw new AppError(
       503,
       "PROXY_BUSY",
