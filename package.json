@@ -1,0 +1,45 @@
+{
+  "name": "iptv-licensing-backend",
+  "version": "2.0.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "HOST=0.0.0.0 node --watch src/server.js",
+    "db:migrate": "sequelize-cli db:migrate",
+    "db:migrate:undo": "sequelize-cli db:migrate:undo",
+    "db:migrate:undo:all": "sequelize-cli db:migrate:undo:all",
+    "db:seed": "sequelize-cli db:seed:all",
+    "import:legacy": "node scripts/import-legacy-devices.js",
+    "test": "node --test --test-concurrency=1 \"tests/**/*.test.js\"",
+    "test:unit": "node --test \"tests/unit/*.test.js\"",
+    "verify:db": "bash scripts/verify-db.sh"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "express-rate-limit": "^7.5.0",
+    "helmet": "^8.0.0",
+    "pg": "^8.13.1",
+    "sequelize": "^6.37.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "dotenv": "^18.0.8",
+    "sequelize-cli": "^6.6.2"
+  },
+  "description": "servidor de licença e ativação do aplicativo DeltaTV",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "keywords": [
+    "iptv",
+    "deltaTV"
+  ],
+  "author": "Luciano",
+  "license": "UNLICENSED"
+}
