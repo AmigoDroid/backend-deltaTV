@@ -16,7 +16,8 @@ import { parseHttpUrl, safeGet } from "../../shared/ssrf.js";
 export const XTREAM_UA = "Mozilla/5.0";
 const MAX_BODY = 256 * 1024; // a resposta de autenticação tem poucos KB
 const TRIES = 3;             // alguns painéis devolvem 404/5xx de forma intermitente
-const PROBE_TTL_MS = 5 * 60_000;
+const PROBE_TTL_MS = 5 * 60_000;      // conta válida
+const PROBE_BAD_TTL_MS = 60_000;      // recusa definitiva: curto, para a correção no provedor valer logo
 const probeCache = new Map(); // chave (hash) -> { at, value }
 
 /** Só a origem (http://host:porta), sem caminho nem credenciais. */
@@ -59,7 +60,15 @@ export async function xtreamCredentialsOf(activation) {
   if (!provider || provider.status !== "active" || !activation.credentialsEnc) {
     throw new AppError(503, "PROVIDER_UNAVAILABLE", "Serviço indisponível. Contate seu fornecedor.");
   }
-  const { username, password } = JSON.parse(decryptSecret(activation.credentialsEnc));
+  let username, password;
+  try {
+    ({ username, password } = JSON.parse(decryptSecret(activation.credentialsEnc)));
+    if (typeof username !== "string" || typeof password !== "string" || !username || !password) throw new Error("credenciais incompletas");
+  } catch (err) {
+    // Chave de cifra trocada ou dado corrompido: erro explícito (e log) em vez de um 500 genérico.
+    console.error(`[xtream] credentials_enc ilegível (activation ${activation.id}): ${err.message}`);
+    throw new AppError(503, "CREDENTIALS_UNREADABLE", "Não foi possível ler as credenciais guardadas. Reconfigure a lista deste dispositivo.");
+  }
   return { baseUrl: xtreamOrigin(provider.baseUrl), username, password };
 }
 
@@ -78,12 +87,15 @@ async function readJson(res) {
 
 /**
  * Pergunta ao painel se a conta existe e está ativa (player_api.php sem "action").
- * @returns {{ok:true, account:object}|{ok:false, reason:"invalid"|"unreachable", status?:string}}
+ * @returns {{ok:true, account:object}|{ok:false, reason:"invalid"|"unreachable"|"unverified", status?:string}}
+ *   invalid    = o painel recusou a conta (auth=0, inativa/expirada)
+ *   unreachable= sem resposta útil (rede, 5xx, HTML)
+ *   unverified = 401/403 sem corpo do painel (bloqueio de IP/WAF): não prova que a senha está errada
  */
 export async function probeAccount({ baseUrl, username, password }) {
   const key = createHash("sha256").update(`${baseUrl}\0${username}\0${password}`).digest("hex");
   const hit = probeCache.get(key);
-  if (hit && Date.now() - hit.at < PROBE_TTL_MS) return hit.value;
+  if (hit && Date.now() - hit.at < (hit.value.ok ? PROBE_TTL_MS : PROBE_BAD_TTL_MS)) return hit.value;
 
   const url = `${baseUrl}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
   let value = { ok: false, reason: "unreachable" };
@@ -96,7 +108,16 @@ export async function probeAccount({ baseUrl, username, password }) {
       continue;
     }
     try {
-      if ([401, 403].includes(res.statusCode)) { res.resume(); value = { ok: false, reason: "invalid" }; break; }
+      if ([401, 403].includes(res.statusCode)) {
+        // Só é "senha recusada" se o PAINEL disser isso (JSON com auth=0/conta inativa). 401/403 sem esse corpo costuma ser
+        // WAF/anti-bot bloqueando o IP do servidor: não dá para saber se a senha está certa ("unverified").
+        let refusal = null;
+        try { refusal = (await readJson(res))?.user_info ?? null; } catch { /* corpo não-JSON: bloqueio, não recusa */ }
+        value = refusal && Number(refusal.auth) !== 1
+          ? { ok: false, reason: "invalid" }
+          : { ok: false, reason: "unverified", httpStatus: res.statusCode };
+        break;
+      }
       if (res.statusCode !== 200) { res.resume(); value = { ok: false, reason: "unreachable" }; continue; }
       const body = await readJson(res);
       const ui = body?.user_info;
@@ -120,7 +141,7 @@ export async function probeAccount({ baseUrl, username, password }) {
     }
     await new Promise((r) => setTimeout(r, 400));
   }
-  // Só guarda resposta definitiva; "unreachable" tenta de novo na próxima chamada.
+  // Só guarda resposta definitiva; "unreachable"/"unverified" tentam de novo na próxima chamada.
   if (value.ok || value.reason === "invalid") probeCache.set(key, { at: Date.now(), value });
   return value;
 }

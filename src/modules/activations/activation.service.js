@@ -207,10 +207,18 @@ export async function preparePartnerActivation({ code, username, password }) {
 
   let chosen = null;
   let refused = false;
+  let unverified = null; // painel que bloqueou a checagem do servidor (401/403 sem corpo): senha não provada errada
   for (const p of providers) {
     const r = await probeCredentials(p, { username, password });
     if (r.ok) { chosen = p; break; }
     if (r.reason === "invalid") refused = true;
+    else if (r.reason === "unverified") unverified ??= p;
+  }
+  if (!chosen && unverified) {
+    // O servidor não consegue validar (IP bloqueado pelo painel), mas a TV consegue falar com ele: guarda as credenciais
+    // e deixa o app validar. Se estiverem erradas, a TV/painel recusa.
+    console.warn(`[activation] credenciais NÃO verificadas no provedor ${unverified.id} (painel bloqueou o servidor).`);
+    chosen = unverified;
   }
   if (!chosen) {
     if (refused) throw invalidCredentials();

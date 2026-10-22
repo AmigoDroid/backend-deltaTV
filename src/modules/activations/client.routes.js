@@ -81,6 +81,9 @@ const configurationStatusOf = (activation, decision) => {
   if (!decision.allowed)
     return /EXPIRED/.test(decision.code ?? "") ? "expired" : "disabled";
   if (activation.partnerId && !activation.providerId) return "error";
+  // Mesmo critério de registration.service: provedor desativado = "error" (em /xtream seria 503).
+  if (activation.partnerId && activation.PartnerProvider && activation.PartnerProvider.status !== "active")
+    return "error";
   if (activation.partnerId && activation.providerId)
     return "configured_partner";
   if (activation.licenseId && activation.playlistUrlEnc)

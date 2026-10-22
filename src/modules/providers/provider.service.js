@@ -9,7 +9,7 @@ import { DEFAULT_TEMPLATE, buildPlaylistUrl, normalizeBaseUrl, validateTemplate 
 /**
  * Confirma no painel do provedor (API Xtream, player_api.php) que usuário/senha existem e a conta está ativa.
  * Não baixa lista M3U: a resposta tem poucos KB (e o /get.php de vários painéis responde 404 de forma intermitente).
- * @returns {{ok:true}|{ok:false, reason:"invalid"|"unreachable"}}
+ * @returns {{ok:true}|{ok:false, reason:"invalid"|"unreachable"|"unverified"}}
  */
 export async function probeCredentials(provider, credentials) {
   let baseUrl;

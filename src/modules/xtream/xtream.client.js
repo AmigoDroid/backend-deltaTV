@@ -48,7 +48,7 @@ const accountKey = (a) =>
  * Lista própria (URL cifrada) ou provedor de parceria com template padrão /get.php.
  */
 export async function xtreamAccountOf(activation) {
-  if (env.xtreamMode === "off" || !activation) return null;
+  if (!activation) return null;
   try {
     if (activation.playlistUrlEnc) {
       const a = accountFromPlaylistUrl(decryptSecret(activation.playlistUrlEnc));
@@ -64,7 +64,8 @@ export async function xtreamAccountOf(activation) {
       const a = { base: provider.baseUrl, username: String(username), password: String(password) };
       return { ...a, key: accountKey(a) };
     }
-  } catch {
+  } catch (err) {
+    console.error(`[xtream] conta Xtream ilegível (activation ${activation.id}): ${err.message}`);
     return null;
   }
   return null;
