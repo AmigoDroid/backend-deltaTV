@@ -70,6 +70,9 @@ export async function playerApi(ctx, req, res, query = {}) {
   // Só a resposta de autenticação (sem "action") é pequena e reescrita; as listas grandes passam em fluxo.
   return relay(req, res, url, {
     transform: query.action ? undefined : (buf) => rewriteAuthJson(buf, ctx),
+    // Listas inteiras (get_live_streams etc.) têm dezenas de MB e o painel demora a começar a responder:
+    // timeout maior e compressão em fluxo (o JSON encolhe ~10x até o navegador).
+    ...(query.action ? { timeoutMs: 180_000, gzip: true } : {}),
     recheck: ctx.recheck,
   });
 }

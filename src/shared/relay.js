@@ -1,5 +1,6 @@
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
+import zlib from "node:zlib";
 import { env } from "../config/env.js";
 import { AppError } from "./errors.js";
 import { safeGet } from "./ssrf.js";
@@ -75,7 +76,7 @@ async function peekBody(up, max = 300, waitMs = 1500) {
 }
 
 /** Abre a origem; em 403/406 repete com outro User-Agent e, por fim, sem `Range: bytes=0-`. */
-async function openUpstream(req, target, signal) {
+async function openUpstream(req, target, signal, timeoutMs) {
   const range = req.headers.range;
   let host = "";
   try { host = new URL(target).host; } catch { /* safeGet rejeita */ }
@@ -89,7 +90,7 @@ async function openUpstream(req, target, signal) {
     const headers = { accept: "*/*" };
     if (ua) headers["user-agent"] = ua;
     if (r) headers.range = r;
-    up = await safeGet(target, { headers, signal });
+    up = await safeGet(target, { headers, signal, ...(timeoutMs ? { timeoutMs } : {}) });
     const refused = RETRY_STATUS.has(up.statusCode);
     if (!refused) {
       if (n > 0 && up.statusCode < 400) {
@@ -134,9 +135,12 @@ async function readAll(it, first, limit, tooBig) {
  * @param {()=>import("node:stream").Transform} [opts.through]  passa o corpo (em fluxo) por um Transform; o tamanho final muda
  * @param {string} [opts.sessionKey]  com `stream`, só um stream principal por sessão: o novo corta o anterior
  * @param {()=>Promise<boolean>} [opts.recheck]  reavalia o acesso periodicamente; false corta o stream
+ * @param {number} [opts.timeoutMs]  tempo máximo sem receber dados da origem (padrão 20 s). Listas inteiras do painel
+ *                                   (dezenas de MB) demoram para começar a responder.
+ * @param {boolean} [opts.gzip]  comprime em fluxo (gzip) quando o cliente aceita: JSON de listas encolhe ~10x
  */
 export async function relay(req, res, target, opts = {}) {
-  const { stream = false, hlsWrap, transform, through, recheck, sessionKey } = opts;
+  const { stream = false, hlsWrap, transform, through, recheck, sessionKey, timeoutMs, gzip = false } = opts;
   if (stream && env.proxyMaxConcurrent > 0 && activeStreams >= env.proxyMaxConcurrent) {
     throw new AppError(503, "PROXY_BUSY", "Capacidade de retransmissão esgotada.");
   }
@@ -156,7 +160,7 @@ export async function relay(req, res, target, opts = {}) {
   try {
     let upstream;
     try {
-      upstream = await openUpstream(req, target, ac.signal);
+      upstream = await openUpstream(req, target, ac.signal, timeoutMs);
     } catch (e) {
       if (e?.name === "AbortError") return;
       throw originError(e);
@@ -240,6 +244,17 @@ export async function relay(req, res, target, opts = {}) {
       upstream.destroy();
       res.end();
       return;
+    }
+    if (
+      gzip && status === 200 && !req.headers.range && !upstream.headers["content-encoding"] &&
+      /\bgzip\b/i.test(String(req.headers["accept-encoding"] || ""))
+    ) {
+      const gz = zlib.createGzip({ level: 6 });
+      upstream.on("error", (e) => gz.destroy(e));
+      body = body.pipe(gz);
+      res.setHeader("content-encoding", "gzip");
+      res.setHeader("vary", "Accept-Encoding");
+      res.removeHeader("content-length");
     }
     if (recheck) {
       timer = setInterval(async () => {
