@@ -13,8 +13,10 @@ const entries = new Map(); // token -> { at, ttl, activationId, value?, error? }
 const inflight = new Map(); // token -> Promise
 
 export function dropMirrorAuth(activationId) {
-  for (const [k, v] of entries) if (v.activationId === activationId) entries.delete(k);
+  // Negações guardadas (activationId nulo) também saem: sem isso, um desbloqueio/reativação continuaria negado até o TTL negativo.
+  for (const [k, v] of entries) if (v.activationId === activationId || v.activationId === null) entries.delete(k);
 }
+/** Invalida TUDO (mudança que afeta várias ativações: provedor, parceria, licença). Chamar DEPOIS do commit da transação. */
 export const clearMirrorAuth = () => { entries.clear(); inflight.clear(); };
 export const mirrorAuthCacheSize = () => entries.size;
 

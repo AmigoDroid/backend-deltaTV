@@ -12,6 +12,7 @@ import { checkActivation, denialError, issueSession, overdueSinceFor, enforceSes
 import { activateLicense, activatePrepared, preparePartnerActivation } from "../activations/activation.service.js";
 import { evaluateAccess } from "../access/access.policy.js";
 import { pickPrimaryList } from "./device-lists.js";
+import { dropMirrorAuth } from "../mirror/mirror.cache.js";
 
 const live = { [Op.ne]: "revoked" };
 const installationFor = (mac) => `roku-${mac.replaceAll(":", "")}`;
@@ -226,6 +227,7 @@ export async function savePersonalPlaylist(activationId, { name, url }, actor) {
     });
     return row;
   });
+  dropMirrorAuth(activation.id);
   return { activationId: activation.id, mode: "playlist", listName: activation.playlistName };
 }
 
@@ -409,6 +411,7 @@ async function configurePartnerList(device, input, actor) {
     });
     return lockedActivation;
   });
+  dropMirrorAuth(updated.id);
   return { ...(await stateOf(device)), activationId: updated.id, confirmedAt: new Date().toISOString(), administratorId: actor.id };
 }
 

@@ -8,6 +8,7 @@ import { calculateAmount } from "./billing.calc.js";
 import { isDelinquent } from "../access/access.policy.js";
 import { overdueSinceFor } from "../access/access.service.js";
 import { AUTO_SUSPEND_REASON } from "../partners/partner.service.js";
+import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 
 const SYSTEM = { type: "system", id: null };
 
@@ -93,7 +94,7 @@ async function reactivateIfSettled(partnerId, actor, t) {
  * nunca por informação vinda do frontend do parceiro/cliente.
  */
 export async function confirmPayment(invoiceId, input, actor) {
-  return sequelize.transaction(async (t) => {
+  const result = await sequelize.transaction(async (t) => {
     const invoice = await Invoice.findByPk(invoiceId, { transaction: t, lock: t.LOCK.UPDATE });
     if (!invoice) throw notFound("Fatura");
     if (invoice.status === "cancelled") throw new AppError(409, "INVOICE_CANCELLED", "Fatura cancelada.");
@@ -121,18 +122,23 @@ export async function confirmPayment(invoiceId, input, actor) {
     });
     return { payment, invoice, reactivated };
   });
+  if (result.reactivated) clearMirrorAuth();
+  return result;
 }
 
 export async function cancelInvoice(id, { reason }, actor) {
-  return sequelize.transaction(async (t) => {
+  let reactivated = false;
+  const inv = await sequelize.transaction(async (t) => {
     const inv = await Invoice.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!inv) throw notFound("Fatura");
     if (inv.paidCents > 0) throw new AppError(409, "HAS_PAYMENTS", "Fatura com pagamentos não pode ser cancelada.");
     await inv.update({ status: "cancelled" }, { transaction: t });
-    await reactivateIfSettled(inv.partnerId, actor, t);
+    reactivated = await reactivateIfSettled(inv.partnerId, actor, t);
     await audit({ actor, action: "invoice.cancel", entityType: "invoice", entityId: id, metadata: { reason }, transaction: t });
     return inv;
   });
+  if (reactivated) clearMirrorAuth();
+  return inv;
 }
 
 /**
@@ -159,5 +165,6 @@ export async function sweepDelinquency(actor = SYSTEM) {
       suspended.push(p.id);
     });
   }
+  if (suspended.length) clearMirrorAuth();
   return { markedOverdue: marked, suspended };
 }

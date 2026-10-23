@@ -5,6 +5,7 @@ import { audit } from "../../shared/audit.js";
 import { assertPublicUrl } from "../../shared/ssrf.js";
 import { probeAccount, xtreamOrigin } from "../xtream/xtream.service.js";
 import { DEFAULT_TEMPLATE, buildPlaylistUrl, normalizeBaseUrl, validateTemplate } from "./playlist-url.js";
+import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 
 /**
  * Confirma no painel do provedor (API Xtream, player_api.php) que usuário/senha existem e a conta está ativa.
@@ -57,6 +58,8 @@ export async function updateProvider(partnerId, id, input, actor) {
   const patch = await prepare(input, p);
   await p.update(patch);
   await audit({ actor, action: "provider.update", entityType: "partner", entityId: partnerId, metadata: { providerId: id, ...patch } });
+  // Modo (proxy/redirect), URL base e status ficam em cache na rota espelho: sem isto a troca só vale após o TTL.
+  clearMirrorAuth();
   return p;
 }
 
@@ -68,5 +71,6 @@ export async function deleteProvider(partnerId, id, actor) {
     throw new AppError(409, "PROVIDER_IN_USE", `${used} dispositivo(s) usam este provedor. Desative-o em vez de excluir.`);
   }
   await p.destroy();
+  clearMirrorAuth();
   await audit({ actor, action: "provider.delete", entityType: "partner", entityId: partnerId, metadata: { providerId: id } });
 }

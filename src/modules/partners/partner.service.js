@@ -7,6 +7,7 @@ import { normalizeShortCode, shortCodeProblem, randomNumericCode } from "./short
 import { pageOf, paged } from "../../shared/pagination.js";
 import { effectivePartnerStatus } from "../access/access.policy.js";
 import { normalizeTiers } from "../billing/billing.calc.js";
+import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 
 export const AUTO_SUSPEND_REASON = "Suspensão automática por inadimplência";
 const DEVICE_COUNT = `(SELECT count(*) FROM activations a WHERE a.partner_id = "Partner".id AND a.status <> 'revoked')`;
@@ -77,7 +78,7 @@ export async function createPartner(input, actor) {
 }
 
 export async function updatePartner(id, input, actor) {
-  return sequelize.transaction(async (t) => {
+  const updated = await sequelize.transaction(async (t) => {
     const p = await Partner.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!p) throw notFound("Parceiro");
     const merged = { billingModel: p.billingModel, tiers: p.tiers, ...input };
@@ -91,6 +92,8 @@ export async function updatePartner(id, input, actor) {
     await audit({ actor, action: "partner.update", entityType: "partner", entityId: id, metadata: input, transaction: t });
     return p;
   });
+  clearMirrorAuth();
+  return updated;
 }
 
 const TRANSITIONS = {
@@ -103,7 +106,7 @@ const TRANSITIONS = {
 /** Afeta TODOS os dispositivos da parceria (qualquer código usado na ativação) na próxima requisição. */
 export async function changePartnerStatus(id, action, { reason }, actor) {
   const rule = TRANSITIONS[action];
-  return sequelize.transaction(async (t) => {
+  const changed = await sequelize.transaction(async (t) => {
     const p = await Partner.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!p) throw notFound("Parceiro");
     if (!rule.from.includes(p.status)) throw new AppError(409, "INVALID_STATE", `Não é possível '${action}' uma parceria '${p.status}'.`);
@@ -113,10 +116,12 @@ export async function changePartnerStatus(id, action, { reason }, actor) {
     await audit({ actor, action: `partner.${action}`, entityType: "partner", entityId: id, metadata: { from: previous, to: rule.to, reason }, transaction: t });
     return p;
   });
+  clearMirrorAuth(); // afeta todos os dispositivos da parceria: o espelho não pode seguir autorizando pelo cache
+  return changed;
 }
 
 export async function renewPartner(id, { endsAt }, actor) {
-  return sequelize.transaction(async (t) => {
+  const renewed = await sequelize.transaction(async (t) => {
     const p = await Partner.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!p) throw notFound("Parceiro");
     const next = new Date(endsAt);
@@ -126,6 +131,8 @@ export async function renewPartner(id, { endsAt }, actor) {
     await audit({ actor, action: "partner.renew", entityType: "partner", entityId: id, metadata: { from: previous, to: next }, transaction: t });
     return p;
   });
+  clearMirrorAuth();
+  return renewed;
 }
 
 /* ---------- Códigos curtos de parceria (únicos em toda a plataforma) ---------- */

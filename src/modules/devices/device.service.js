@@ -1,14 +1,17 @@
 import { Op } from "sequelize";
-import { sequelize, Activation, Device, License, Partner, Customer, AuditLog } from "../../db/models/index.js";
+import { sequelize, Activation, Device, License, Partner, PartnerProvider, Customer, AuditLog } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { macSearchSql, normalizeMac } from "../../shared/mac.js";
 import { pageOf, paged } from "../../shared/pagination.js";
 import { revokeSessionsOf, checkActivation } from "../access/access.service.js";
+import { dropMirrorAuth } from "../mirror/mirror.cache.js";
+import { describeDelivery } from "../mirror/mode.js";
 
 const include = [
   { model: License, attributes: ["id", "status", "expiresAt", "codeLast4"], include: [{ model: Customer, attributes: ["name", "email"] }] },
   { model: Partner, attributes: ["id", "name", "slug", "status"] },
+  { model: PartnerProvider, attributes: ["id", "name", "deliveryMode", "status"] },
 ];
 
 /** `scope.partnerId` restringe tudo ao parceiro (isolamento): nunca vem do cliente, vem do token. */
@@ -23,15 +26,17 @@ export async function listActivations({ q, status, licenseId, partnerId, page, p
   const { rows, count } = await Activation.findAndCountAll({
     where, include, order: [["activatedAt", "DESC"]], ...pageOf({ page, pageSize }), distinct: true,
   });
-  return paged(rows.map(serialize), count, { page, pageSize });
+  // O modo efetivo (proxy/redirect) é informação de operação: só o painel admin recebe (o portal do parceiro vem com scope).
+  return paged(rows.map((a) => serialize(a, { delivery: !scope.partnerId })), count, { page, pageSize });
 }
 
-const serialize = (a) => ({
+const serialize = (a, { delivery = false } = {}) => ({
   id: a.id, deviceId: a.deviceId, mac: a.mac, status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
   activatedAt: a.activatedAt, revokedAt: a.revokedAt, claimPending: a.claimPending,
   licenseId: a.licenseId, partnerId: a.partnerId,
   license: a.License ? { id: a.License.id, status: a.License.status, expiresAt: a.License.expiresAt, codeLast4: a.License.codeLast4, customer: a.License.Customer ? { name: a.License.Customer.name, email: a.License.Customer.email } : null } : null,
   partner: a.Partner ? { id: a.Partner.id, name: a.Partner.name, slug: a.Partner.slug, status: a.Partner.status } : null,
+  ...(delivery ? { ...describeDelivery(a), provider: a.PartnerProvider ? { id: a.PartnerProvider.id, name: a.PartnerProvider.name } : null } : {}),
 });
 
 export async function getActivation(id, scope = {}) {
@@ -40,7 +45,7 @@ export async function getActivation(id, scope = {}) {
   const a = await Activation.findOne({ where, include });
   if (!a) throw notFound("Ativação"); // 404 também para ativações de outro parceiro (sem vazar existência)
   const { decision } = await checkActivation(a.id);
-  return { ...serialize(a), access: { allowed: decision.allowed, code: decision.code } };
+  return { ...serialize(a, { delivery: !scope.partnerId }), access: { allowed: decision.allowed, code: decision.code } };
 }
 
 // Histórico completo do MAC: todas as ativações (inclusive revogadas) + trilha de auditoria.
@@ -62,7 +67,7 @@ export async function deviceHistory(mac) {
     },
     order: [["createdAt", "DESC"]], limit: 200,
   });
-  return { device: { id: device.id, mac: device.mac, lastSeenAt: device.lastSeenAt }, activations: activations.map(serialize), events };
+  return { device: { id: device.id, mac: device.mac, lastSeenAt: device.lastSeenAt }, activations: activations.map((a) => serialize(a, { delivery: true })), events };
 }
 
 const ACTIONS = {
@@ -79,7 +84,7 @@ const ACTIONS = {
 export async function changeActivation(id, action, { reason, actor, scope = {}, blockedBy }) {
   const rule = ACTIONS[action];
   if (!rule) throw new AppError(400, "INVALID_ACTION", "Ação inválida.");
-  return sequelize.transaction(async (t) => {
+  const changed = await sequelize.transaction(async (t) => {
     const where = { id };
     if (scope.partnerId) where.partnerId = scope.partnerId;
     const a = await Activation.findOne({ where, transaction: t, lock: t.LOCK.UPDATE });
@@ -104,4 +109,6 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
     });
     return a;
   });
+  dropMirrorAuth(changed.id); // bloquear/desbloquear/remover valem já para o espelho (depois do commit)
+  return changed;
 }

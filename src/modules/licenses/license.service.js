@@ -8,6 +8,7 @@ import { generateCode, hashCode } from "../../shared/crypto.js";
 import { addMonthsUTC } from "../../shared/dates.js";
 import { pageOf, paged } from "../../shared/pagination.js";
 import { effectiveLicenseStatus } from "../access/access.policy.js";
+import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 
 const DEVICE_COUNT = `(SELECT count(*) FROM activations a WHERE a.license_id = "License".id AND a.status <> 'revoked')`;
 
@@ -123,7 +124,7 @@ const TRANSITIONS = {
 /** Alterar o status afeta TODOS os dispositivos da licença na próxima requisição (gate no backend). */
 export async function changeLicenseStatus(id, action, { reason }, actor) {
   const rule = TRANSITIONS[action];
-  return sequelize.transaction(async (t) => {
+  const changed = await sequelize.transaction(async (t) => {
     const l = await License.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!l) throw notFound("Licença");
     if (!rule.from.includes(l.status)) throw new AppError(409, "INVALID_STATE", `Não é possível '${action}' uma licença '${l.status}'.`);
@@ -133,10 +134,12 @@ export async function changeLicenseStatus(id, action, { reason }, actor) {
     await audit({ actor, action: `license.${action}`, entityType: "license", entityId: id, metadata: { from: previous, to: rule.to, reason }, transaction: t });
     return l;
   });
+  clearMirrorAuth(); // afeta todos os dispositivos da licença
+  return changed;
 }
 
 export async function renewLicense(id, input, actor) {
-  return sequelize.transaction(async (t) => {
+  const renewed = await sequelize.transaction(async (t) => {
     const l = await License.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!l) throw notFound("Licença");
     if (["cancelled", "blocked"].includes(l.status)) {
@@ -168,4 +171,6 @@ export async function renewLicense(id, input, actor) {
     await audit({ actor, action: "license.renew", entityType: "license", entityId: id, metadata: { planId: plan.id, from: previous, to: next }, transaction: t });
     return l;
   });
+  clearMirrorAuth();
+  return renewed;
 }

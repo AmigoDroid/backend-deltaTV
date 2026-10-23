@@ -10,3 +10,14 @@ export function deliveryModeOf(activation) {
   if (activation?.playlistUrlEnc) return "proxy";
   return activation?.PartnerProvider?.deliveryMode === "proxy" ? "proxy" : "redirect";
 }
+
+/**
+ * Modo efetivo de UMA ativação, para exibição no painel admin.
+ *  - null  : ainda sem lista configurada (nada a entregar);
+ *  - fixed : lista própria do cliente — sempre proxy, não depende de configuração.
+ */
+export function describeDelivery(activation) {
+  if (activation?.playlistUrlEnc) return { deliveryMode: "proxy", deliveryModeFixed: true };
+  if (!activation?.providerId) return { deliveryMode: null, deliveryModeFixed: false };
+  return { deliveryMode: deliveryModeOf(activation), deliveryModeFixed: false };
+}
