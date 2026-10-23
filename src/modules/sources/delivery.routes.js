@@ -132,7 +132,8 @@ async function proxyStream(req, res, target, activationId, ctx) {
   const ac = new AbortController();
   let timer;
   try {
-    const headers = {};
+    // Sem User-Agent muitos painéis respondem 403; mesmo UA do relay do espelho.
+    const headers = { "user-agent": "Mozilla/5.0", accept: "*/*" };
     if (req.headers.range) headers.range = req.headers.range;
     const upstream = await safeGet(target, { headers, signal: ac.signal });
 

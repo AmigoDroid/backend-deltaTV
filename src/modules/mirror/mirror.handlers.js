@@ -124,7 +124,7 @@ export async function mediaStream(ctx, req, res, kind, file) {
   if (ctx.mode === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
-  return relay(req, res, url, { stream: true, hlsWrap: hlsWrapFor(ctx), recheck: ctx.recheck });
+  return relay(req, res, url, { stream: true, sessionKey: kind === "live" ? ctx.token : undefined, hlsWrap: hlsWrapFor(ctx), recheck: ctx.recheck });
 }
 
 /** GET /hls/:token/:blob — segmentos e sub-playlists HLS (o alvo vem cifrado na URL gerada por nós, nunca do cliente). */

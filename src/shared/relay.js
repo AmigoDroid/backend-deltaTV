@@ -17,12 +17,94 @@ import { isPlaylistHead, rewritePlaylist } from "../modules/sources/hls-rewrite.
  */
 
 export const RELAY_UA = "Mozilla/5.0";
+// Mesma estratégia do app Roku (RetryOtherUserAgent): se o painel recusar o UA (403/406), tenta VLC e depois sem UA.
+const UA_CHAIN = [RELAY_UA, "VLC/3.0.18 LibVLC/3.0.18", null];
+const RETRY_STATUS = new Set([403, 406]);
+const RETRY_DELAY_MS = 450; // dá tempo de o painel liberar a conexão anterior (limite de conexões por usuário)
 const MAX_PLAYLIST_BYTES = 2 * 1024 * 1024;
 const MAX_TRANSFORM_BYTES = 4 * 1024 * 1024;
 const RECHECK_MS = 30_000;
 const PASS_HEADERS = ["content-type", "content-length", "content-range", "accept-ranges", "content-disposition"];
 
 let activeStreams = 0;
+// Um stream "principal" por sessão: ao trocar de canal/filme, o anterior é cortado (libera a conexão no painel).
+const mainStreams = new Map(); // sessionKey -> { cut() }
+
+const sleep = (ms, signal) =>
+  new Promise((resolve) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => { clearTimeout(t); resolve(); }, { once: true });
+  });
+
+// URL segura para log: sem query string e sem credenciais/tokens no caminho.
+const maskUrl = (u) => {
+  try {
+    const x = new URL(String(u));
+    const path = x.pathname
+      .replace(/^\/(live|movie|series)\/[^/]+\/[^/]+\//i, "/$1/***/***/") // /live/<user>/<senha>/<id>.ext
+      .replace(/^\/[^/]+\/[^/]+\/(\d+(?:\.\w+)?)$/, "/***/***/$1") // formato curto /<user>/<senha>/<id>
+      .replace(/^\/hls\/[^/]+/i, "/hls/***") // /hls/<token>/...
+      .split("/")
+      .map((seg) => (seg.length > 24 ? "***" : seg)) // qualquer outro segmento longo pode ser token
+      .join("/");
+    return `${x.origin}${path}`;
+  } catch {
+    return "(url inválida)";
+  }
+};
+
+// Último User-Agent que a origem aceitou, por host: evita repetir tentativas que já sabemos que falham.
+const uaPref = new Map(); // host -> índice em UA_CHAIN
+
+// Primeiros bytes do corpo de uma resposta de erro da origem (para diagnóstico em log). Nunca vai ao cliente.
+async function peekBody(up, max = 300, waitMs = 1500) {
+  const chunks = [];
+  let n = 0;
+  const read = (async () => {
+    try {
+      for await (const c of up) {
+        chunks.push(c);
+        n += c.length;
+        if (n >= max) break;
+      }
+    } catch { /* ignora */ }
+  })();
+  await Promise.race([read, new Promise((r) => setTimeout(r, waitMs))]);
+  up.destroy();
+  return Buffer.concat(chunks).toString("utf8", 0, max).replace(/\s+/g, " ").trim();
+}
+
+/** Abre a origem; em 403/406 repete com outro User-Agent e, por fim, sem `Range: bytes=0-`. */
+async function openUpstream(req, target, signal) {
+  const range = req.headers.range;
+  let host = "";
+  try { host = new URL(target).host; } catch { /* safeGet rejeita */ }
+  const first = uaPref.get(host) ?? 0;
+  const order = [first, ...UA_CHAIN.map((_, i) => i).filter((i) => i !== first)];
+  const attempts = order.map((i) => ({ i, ua: UA_CHAIN[i], range }));
+  if (range && /^bytes=0-$/.test(range.trim())) attempts.push({ i: first, ua: UA_CHAIN[first], range: undefined });
+  let up;
+  for (let n = 0; n < attempts.length; n++) {
+    const { i, ua, range: r } = attempts[n];
+    const headers = { accept: "*/*" };
+    if (ua) headers["user-agent"] = ua;
+    if (r) headers.range = r;
+    up = await safeGet(target, { headers, signal });
+    const refused = RETRY_STATUS.has(up.statusCode);
+    if (!refused) {
+      if (n > 0 && up.statusCode < 400) {
+        if (r === range) uaPref.set(host, i); // só memoriza quando o que mudou foi o UA, não o Range
+        console.info(`[relay] origem aceitou na tentativa ${n + 1} (ua=${ua ?? "nenhum"}, range=${r ?? "-"}) host=${host}`);
+      }
+      return up;
+    }
+    if (n === attempts.length - 1) return up;
+    up.resume();
+    await sleep(RETRY_DELAY_MS, signal);
+    if (signal?.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" });
+  }
+  return up;
+}
 export const relayStats = () => ({ activeStreams });
 
 const originError = (e) =>
@@ -50,10 +132,11 @@ async function readAll(it, first, limit, tooBig) {
  * @param {(abs:string)=>string} [opts.hlsWrap]  reescreve playlists HLS (devolve a URI do servidor para a URL absoluta)
  * @param {(body:Buffer, upstream:object)=>Buffer|string|null} [opts.transform]  transforma a resposta 200 inteira (pequena)
  * @param {()=>import("node:stream").Transform} [opts.through]  passa o corpo (em fluxo) por um Transform; o tamanho final muda
+ * @param {string} [opts.sessionKey]  com `stream`, só um stream principal por sessão: o novo corta o anterior
  * @param {()=>Promise<boolean>} [opts.recheck]  reavalia o acesso periodicamente; false corta o stream
  */
 export async function relay(req, res, target, opts = {}) {
-  const { stream = false, hlsWrap, transform, through, recheck } = opts;
+  const { stream = false, hlsWrap, transform, through, recheck, sessionKey } = opts;
   if (stream && env.proxyMaxConcurrent > 0 && activeStreams >= env.proxyMaxConcurrent) {
     throw new AppError(503, "PROXY_BUSY", "Capacidade de retransmissão esgotada.");
   }
@@ -61,13 +144,19 @@ export async function relay(req, res, target, opts = {}) {
 
   const ac = new AbortController();
   let timer;
+  let mine;
+  // Só navegadores (enviam Sec-Fetch-*; o Roku e outros players nativos não). O UA não serve de critério:
+  // o Roku troca o próprio User-Agent em alguns casos (PlayerScreen.brs).
+  const isBrowser = typeof req.headers["sec-fetch-mode"] === "string";
+  if (stream && sessionKey && isBrowser) {
+    mainStreams.get(sessionKey)?.cut();
+    mine = { cut: () => { ac.abort(); if (!res.writableEnded) res.destroy(); } };
+    mainStreams.set(sessionKey, mine);
+  }
   try {
-    const headers = { "user-agent": RELAY_UA, accept: "*/*" };
-    if (req.headers.range) headers.range = req.headers.range;
-
     let upstream;
     try {
-      upstream = await safeGet(target, { headers, signal: ac.signal });
+      upstream = await openUpstream(req, target, ac.signal);
     } catch (e) {
       if (e?.name === "AbortError") return;
       throw originError(e);
@@ -79,7 +168,9 @@ export async function relay(req, res, target, opts = {}) {
 
     const status = upstream.statusCode;
     if (status >= 400 && status !== 416) {
-      upstream.resume();
+      const hint = await peekBody(upstream);
+      const via = [upstream.headers.server, upstream.headers["cf-ray"] && "cloudflare"].filter(Boolean).join("/") || "-";
+      console.warn(`[relay] origem respondeu ${status} para ${maskUrl(target)} (range=${req.headers.range ?? "-"}, via=${via}) corpo="${hint}"`);
       if (status === 404) throw new AppError(404, "NOT_FOUND", "Conteúdo não encontrado na origem.");
       throw new AppError(502, "ORIGIN_ERROR", "A origem não respondeu corretamente.", { upstreamStatus: status });
     }
@@ -170,6 +261,7 @@ export async function relay(req, res, target, opts = {}) {
     res.destroy();
   } finally {
     clearInterval(timer);
+    if (mine && mainStreams.get(sessionKey) === mine) mainStreams.delete(sessionKey);
     if (stream) activeStreams--;
   }
 }
