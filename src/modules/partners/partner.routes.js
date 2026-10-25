@@ -70,7 +70,10 @@ const codeBody = z.object({
   label: z.string().max(120).optional(),
   maxActivations: z.number().int().min(1).nullable().optional(),
   expiresAt: z.coerce.date().nullable().optional(),
+  // Servidor do parceiro para o qual o código aponta. Omitido: usa o único servidor do parceiro (se houver só um).
+  providerId: z.string().uuid().nullable().optional(),
 });
+const codeUpdateBody = codeBody.omit({ code: true }).partial();
 const providerBody = z.object({
   name: z.string().trim().min(2).max(120),
   baseUrl: z.string().trim().max(500),
@@ -83,6 +86,8 @@ const prov = z.object({ id: z.string().uuid(), providerId: z.string().uuid() });
 router.get("/:id/codes", requirePermission("partners:read"), validate({ params: id }), async (req, res) => res.json({ data: await svc.listCodes(req.valid.params.id) }));
 router.post("/:id/codes", requirePermission("partners:write"), validate({ params: id, body: codeBody }), async (req, res) =>
   res.status(201).json(await svc.createCode(req.valid.params.id, req.valid.body, actorOf(req))));
+router.patch("/:id/codes/:codeId", requirePermission("partners:write"), validate({ params: z.object({ id: z.string().uuid(), codeId: z.string().uuid() }), body: codeUpdateBody }), async (req, res) =>
+  res.json(await svc.updateCode(req.valid.params.id, req.valid.params.codeId, req.valid.body, actorOf(req))));
 router.post("/:id/codes/:codeId/revoke", requirePermission("partners:write"), validate({ params: z.object({ id: z.string().uuid(), codeId: z.string().uuid() }) }), async (req, res) => {
   await svc.revokeCode(req.valid.params.id, req.valid.params.codeId, actorOf(req));
   res.status(204).end();

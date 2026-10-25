@@ -1,5 +1,5 @@
 import { Op } from "sequelize";
-import { sequelize, Partner, PartnerProvider, Activation } from "../../db/models/index.js";
+import { sequelize, Partner, PartnerCode, PartnerProvider, Activation } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { assertPublicUrl } from "../../shared/ssrf.js";
@@ -70,7 +70,16 @@ export async function deleteProvider(partnerId, id, actor) {
   if (used > 0) {
     throw new AppError(409, "PROVIDER_IN_USE", `${used} dispositivo(s) usam este provedor. Desative-o em vez de excluir.`);
   }
-  await p.destroy();
+  // Códigos ativos apontando para este servidor: o admin precisa movê-los/revogá-los antes (senão ficariam sem destino).
+  const codes = await PartnerCode.count({ where: { providerId: id, status: { [Op.ne]: "revoked" } } });
+  if (codes > 0) {
+    throw new AppError(409, "PROVIDER_HAS_CODES", `${codes} código(s) apontam para este servidor. Mova-os para outro servidor ou revogue-os antes de excluir.`);
+  }
+  await sequelize.transaction(async (t) => {
+    // Códigos revogados só guardam histórico: soltam a referência para não travar a exclusão (FK).
+    await PartnerCode.update({ providerId: null }, { where: { providerId: id }, transaction: t });
+    await p.destroy({ transaction: t });
+  });
   clearMirrorAuth();
   await audit({ actor, action: "provider.delete", entityType: "partner", entityId: partnerId, metadata: { providerId: id } });
 }

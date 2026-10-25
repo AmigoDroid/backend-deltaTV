@@ -127,6 +127,8 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
     const code = await PartnerCode.findByPk(codeId, lock);
     if (!partner || !code || code.partnerId !== partner.id) throw invalidCredentials();
     if (code.status !== "active" || (code.expiresAt && code.expiresAt <= new Date())) throw invalidCredentials();
+    // O código aponta para um servidor: se o admin o trocou depois da triagem, a validação das credenciais ficou velha.
+    if (code.providerId && code.providerId !== provider.id) throw invalidCredentials();
 
     // Um MAC pode ter VÁRIOS parceiros: a ativação procurada é a deste MAC COM ESTE parceiro. As ativações dos
     // outros parceiros no mesmo MAC não são tocadas (antes, ativar outro parceiro substituía a ativação existente).
@@ -201,8 +203,11 @@ export async function preparePartnerActivation({ code, username, password }) {
   const pre = evaluateAccess({ activation: { status: "active" }, partner, overdueSince: await overdueSinceFor(partner.id) });
   if (!pre.allowed) throw denialError(pre);
 
+  // Código com servidor definido => SÓ esse servidor (sem fallback para outros do parceiro).
+  // Código antigo sem servidor (provider_id NULL) => comportamento anterior: servidores ativos por prioridade.
   const providers = await PartnerProvider.findAll({
-    where: { partnerId: partner.id, status: "active" }, order: [["priority", "ASC"], ["createdAt", "ASC"]],
+    where: { partnerId: partner.id, status: "active", ...(pc.providerId ? { id: pc.providerId } : {}) },
+    order: [["priority", "ASC"], ["createdAt", "ASC"]],
   });
   if (providers.length === 0) throw new AppError(503, "PROVIDER_NOT_CONFIGURED", "Serviço indisponível. Contate seu fornecedor.");
 

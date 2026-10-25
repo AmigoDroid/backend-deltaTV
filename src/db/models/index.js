@@ -57,6 +57,8 @@ export const PartnerCode = def("PartnerCode", "partner_codes", {
   partnerId: { type: T.UUID, allowNull: false }, code: str(12, { allowNull: false }), label: str(120),
   status: str(20, { allowNull: false, defaultValue: "active" }),
   maxActivations: { type: T.INTEGER }, expiresAt: ts(), createdBy: { type: T.UUID },
+  // Servidor (partner_providers) para o qual este código aponta. NULL = código antigo: testa os servidores do parceiro.
+  providerId: { type: T.UUID },
 });
 
 export const PartnerProvider = def("PartnerProvider", "partner_providers", {
@@ -192,6 +194,8 @@ Partner.hasMany(PartnerCode, { foreignKey: "partnerId" });
 PartnerCode.belongsTo(Partner, { foreignKey: "partnerId" });
 PartnerCode.hasMany(Activation, { foreignKey: "partnerCodeId" });
 Activation.belongsTo(PartnerCode, { foreignKey: "partnerCodeId" });
+PartnerProvider.hasMany(PartnerCode, { foreignKey: "providerId" });
+PartnerCode.belongsTo(PartnerProvider, { foreignKey: "providerId", as: "provider" });
 Device.hasMany(Activation, { foreignKey: "deviceId" });
 Activation.belongsTo(Device, { foreignKey: "deviceId" });
 Device.hasMany(DevicePairingToken, { foreignKey: "deviceId" });

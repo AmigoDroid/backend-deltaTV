@@ -385,7 +385,8 @@ async function configurePartnerList(device, input, actor) {
     const code = await PartnerCode.findByPk(prepared.pc.id, { transaction, lock: transaction.LOCK.UPDATE });
     const provider = await PartnerProvider.findByPk(prepared.provider.id, { transaction });
     if (!partner || !code || !provider || code.partnerId !== partner.id || provider.partnerId !== partner.id ||
-        code.status !== "active" || (code.expiresAt && code.expiresAt <= new Date()) || provider.status !== "active") {
+        code.status !== "active" || (code.expiresAt && code.expiresAt <= new Date()) || provider.status !== "active" ||
+        (code.providerId && code.providerId !== provider.id)) {
       throw new AppError(401, "INVALID_CODE_OR_CREDENTIALS", "Código, usuário ou senha inválidos.");
     }
     const overdueSince = await overdueSinceFor(partner.id, transaction);

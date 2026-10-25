@@ -20,6 +20,7 @@ const codeOut = (c) => {
 };
 const findCodes = (partnerId) => PartnerCode.findAll({
   where: { partnerId }, attributes: { include: [[sequelize.literal(CODE_ACTIVATIONS), "activationCount"]] }, order: [["createdAt", "DESC"]],
+  include: [{ model: PartnerProvider, as: "provider", attributes: ["id", "name", "baseUrl", "status"], required: false }],
 });
 
 const out = (p) => {
@@ -157,8 +158,25 @@ export async function checkCode(raw) {
   return { code, valid: true, available: !taken, message: taken ? "Este código já está em uso." : "Código disponível." };
 }
 
+/**
+ * Resolve o servidor do código. `providerId` informado: precisa ser DESTE parceiro e estar ativo.
+ * Omitido (undefined): se o parceiro tem exatamente um servidor, usa-o; senão fica NULL (comportamento antigo:
+ * a ativação testa os servidores ativos do parceiro).
+ */
+async function resolveProviderId(partnerId, providerId, transaction) {
+  if (providerId === undefined) {
+    const all = await PartnerProvider.findAll({ where: { partnerId }, attributes: ["id"], limit: 2, transaction });
+    return all.length === 1 ? all[0].id : null;
+  }
+  if (providerId === null) return null;
+  const provider = await PartnerProvider.findOne({ where: { id: providerId, partnerId }, transaction });
+  if (!provider) throw new AppError(422, "INVALID_PROVIDER", "Servidor inválido para esta parceria.");
+  if (provider.status !== "active") throw new AppError(422, "PROVIDER_DISABLED", "O servidor escolhido está desativado.");
+  return provider.id;
+}
+
 /** `code` informado = código escolhido (409 se já existir); omitido = gerado automaticamente. */
-export async function createCode(partnerId, { code, label, maxActivations, expiresAt }, actor) {
+export async function createCode(partnerId, { code, label, maxActivations, expiresAt, providerId }, actor) {
   const partner = await Partner.findByPk(partnerId);
   if (!partner) throw notFound("Parceiro");
   if (["cancelled", "blocked"].includes(partner.status)) throw new AppError(409, "INVALID_STATE", "Parceria não permite novos códigos.");
@@ -173,12 +191,19 @@ export async function createCode(partnerId, { code, label, maxActivations, expir
     const value = chosen ?? (await generateFreeCode());
     try {
       return await sequelize.transaction(async (t) => {
+        const resolvedProviderId = await resolveProviderId(partnerId, providerId, t);
         const row = await PartnerCode.create(
-          { partnerId, code: value, label: label ?? null, maxActivations: maxActivations ?? null, expiresAt: expiresAt ?? null, createdBy: actor.id },
+          {
+            partnerId, code: value, label: label ?? null, maxActivations: maxActivations ?? null, expiresAt: expiresAt ?? null,
+            providerId: resolvedProviderId, createdBy: actor.id,
+          },
           { transaction: t },
         );
-        await audit({ actor, action: "partner.code.create", entityType: "partner", entityId: partnerId, metadata: { codeId: row.id, code: value, generated: !chosen }, transaction: t });
-        return { id: row.id, code: row.code };
+        await audit({
+          actor, action: "partner.code.create", entityType: "partner", entityId: partnerId,
+          metadata: { codeId: row.id, code: value, generated: !chosen, providerId: resolvedProviderId }, transaction: t,
+        });
+        return { id: row.id, code: row.code, providerId: row.providerId };
       });
     } catch (e) {
       if (!(e instanceof UniqueConstraintError)) throw e;
@@ -191,6 +216,32 @@ export async function createCode(partnerId, { code, label, maxActivations, expir
 
 export async function listCodes(partnerId) {
   return (await findCodes(partnerId)).map(codeOut);
+}
+
+/**
+ * Edita um código existente (inclusive apontá-lo para outro servidor). Só vale para NOVAS ativações:
+ * dispositivos já ativados mantêm o servidor que usam hoje.
+ */
+export async function updateCode(partnerId, codeId, input, actor) {
+  const updated = await sequelize.transaction(async (t) => {
+    await Partner.findByPk(partnerId, { transaction: t, lock: t.LOCK.UPDATE });
+    const c = await PartnerCode.findOne({ where: { id: codeId, partnerId }, transaction: t, lock: t.LOCK.UPDATE });
+    if (!c) throw notFound("Código");
+    const patch = {};
+    for (const k of ["label", "maxActivations", "expiresAt"]) if (input[k] !== undefined) patch[k] = input[k];
+    if (input.providerId !== undefined) patch.providerId = await resolveProviderId(partnerId, input.providerId, t);
+    if (patch.maxActivations != null) {
+      const used = await Activation.count({ where: { partnerCodeId: c.id, status: { [Op.ne]: "revoked" } }, transaction: t });
+      if (patch.maxActivations < used) throw new AppError(409, "LIMIT_BELOW_USAGE", `Este código tem ${used} ativações; o limite não pode ser menor.`);
+    }
+    await c.update(patch, { transaction: t });
+    await audit({ actor, action: "partner.code.update", entityType: "partner", entityId: partnerId, metadata: { codeId, ...patch }, transaction: t });
+    return c;
+  });
+  return codeOut(await PartnerCode.findByPk(updated.id, {
+    attributes: { include: [[sequelize.literal(CODE_ACTIVATIONS), "activationCount"]] },
+    include: [{ model: PartnerProvider, as: "provider", attributes: ["id", "name", "baseUrl", "status"], required: false }],
+  }));
 }
 
 // Revogar um código impede NOVAS ativações; dispositivos já ativados permanecem vinculados à parceria.
