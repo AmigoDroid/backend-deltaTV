@@ -73,7 +73,7 @@ router.get("/codes/check", codeCheckLimiter, validate({ query: z.object({ code: 
 router.get("/codes", async (req, res) => res.json({ data: await partners.listCodes(req.user.partnerId) }));
 // Servidores do provedor: somente leitura para o parceiro (o cadastro é feito pela plataforma).
 router.get("/providers", async (req, res) => res.json({ data: (await listProviders(req.user.partnerId)).map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, status: p.status })) }));
-router.post("/codes", validate({ body: z.object({ code: z.string().trim().min(4).max(12).optional(), label: z.string().max(120).optional(), maxActivations: z.number().int().min(1).nullable().optional(), expiresAt: z.coerce.date().nullable().optional() }) }), async (req, res) =>
+router.post("/codes", validate({ body: z.object({ code: z.string().trim().min(4).max(12).optional(), label: z.string().max(120).optional(), maxActivations: z.number().int().min(1).nullable().optional(), expiresAt: z.coerce.date().nullable().optional(), providerId: z.string().uuid().nullable().optional() }) }), async (req, res) =>
   res.status(201).json(await partners.createCode(req.user.partnerId, req.valid.body, actorOf(req))));
 router.post("/codes/:id/revoke", validate({ params: id }), async (req, res) => {
   await partners.revokeCode(req.user.partnerId, req.valid.params.id, actorOf(req));
