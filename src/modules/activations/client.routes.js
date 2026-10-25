@@ -20,6 +20,7 @@ import { xtreamConfigFor, hasXtreamSource } from "../xtream/xtream.service.js";
 import * as deviceAccess from "../devices/device-access.service.js";
 import * as svc from "./activation.service.js";
 import * as deviceConfig from "../devices/registration.service.js";
+import { sameInstallation, VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT } from "../devices/device-identity.js";
 
 /** API pública para os aplicativos/frontends clientes (prefixo /api/v1/client). */
 const router = Router();
@@ -173,12 +174,7 @@ router.post(
   validate({
     body: z.object({
       mac: z.string().min(11).max(20),
-      installationId: z
-        .string()
-        .regex(
-          /^roku-[A-F0-9]{12}$/,
-          "Use roku- seguido do MAC sem separadores, em maiúsculas.",
-        ),
+      installationId: z.string().regex(VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT),
     }),
   }),
   async (req, res) =>
@@ -190,7 +186,7 @@ router.post(
   validate({
     body: z.object({
       mac: z.string().min(11).max(20),
-      installationId: z.string().regex(/^roku-[A-F0-9]{12}$/),
+      installationId: z.string().regex(VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT),
       registrationToken: z.string().min(40).max(100),
     }),
   }),
@@ -233,7 +229,7 @@ router.post(
     if (
       activation.installationId &&
       req.valid.body.installationId &&
-      activation.installationId !== req.valid.body.installationId
+      !sameInstallation(activation.installationId, req.valid.body.installationId)
     ) {
       throw new AppError(
         403,

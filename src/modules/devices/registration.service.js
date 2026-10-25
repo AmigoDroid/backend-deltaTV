@@ -12,10 +12,10 @@ import { checkActivation, denialError, issueSession, overdueSinceFor, enforceSes
 import { activateLicense, activatePrepared, preparePartnerActivation } from "../activations/activation.service.js";
 import { evaluateAccess } from "../access/access.policy.js";
 import { pickPrimaryList } from "./device-lists.js";
+import { parseVirtualInstallationId, sameInstallation, VIRTUAL_INSTALLATION_HINT } from "./device-identity.js";
 import { dropMirrorAuth } from "../mirror/mirror.cache.js";
 
 const live = { [Op.ne]: "revoked" };
-const installationFor = (mac) => `roku-${mac.replaceAll(":", "")}`;
 
 function statusName(activation, decision) {
   if (!activation) return "awaiting_configuration";
@@ -87,14 +87,18 @@ async function stateOf(device) {
   };
 }
 
-export function normalizeRokuRegistration(macInput, installationId) {
+/** Valida MAC + installationId de um aparelho de MAC virtual (roku, rokutv, androidtv, samsungtv, lgtv) e devolve a plataforma. */
+export function normalizeVirtualRegistration(macInput, installationId) {
   const mac = normalizeMac(macInput);
   if (!mac) throw new AppError(400, "INVALID_MAC", "Endereço MAC inválido.");
-  if (installationId !== installationFor(mac)) {
-    throw new AppError(400, "INSTALLATION_ID_MISMATCH", "O identificador deve ser roku- seguido do MAC sem separadores, em maiúsculas.");
+  const parsed = parseVirtualInstallationId(installationId);
+  if (!parsed || parsed.compact !== mac.replaceAll(":", "")) {
+    throw new AppError(400, "INSTALLATION_ID_MISMATCH", `O identificador não confere com o MAC. ${VIRTUAL_INSTALLATION_HINT}`);
   }
-  return { mac, installationId };
+  return { mac, installationId, platform: parsed.platform };
 }
+/** Nome antigo, mantido por compatibilidade. */
+export const normalizeRokuRegistration = normalizeVirtualRegistration;
 
 /**
  * Recuperação após reinstalação/reset (decisão D1/D2, docs/03):
@@ -105,8 +109,13 @@ export function normalizeRokuRegistration(macInput, installationId) {
  */
 const recoveryMode = () => (process.env.DEVICE_RECOVERY_MODE === "proof_required" ? "proof_required" : "mac_lookup");
 
+/** Plataforma/app do aparelho conforme o prefixo do installationId (o MAC continua sendo a identidade). */
+const platformFields = ({ platform, mac }) => ({
+  platform, appId: `delta-tv-${platform}`, identifierType: "virtual_mac", deviceKey: `${platform}:${mac}`,
+});
+
 export async function registerDevice({ mac: macInput, installationId }) {
-  const normalized = normalizeRokuRegistration(macInput, installationId);
+  const normalized = normalizeVirtualRegistration(macInput, installationId);
   const pairToken = randomToken(32);
   const registrationToken = randomToken(32);
   const expiresAt = new Date(Date.now() + env.pairingTokenTtl * 1000);
@@ -114,7 +123,7 @@ export async function registerDevice({ mac: macInput, installationId }) {
   const result = await sequelize.transaction(async (transaction) => {
     const [device] = await Device.findOrCreate({
       where: { mac: normalized.mac },
-      defaults: { mac: normalized.mac },
+      defaults: { mac: normalized.mac, ...platformFields(normalized) },
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
@@ -124,10 +133,10 @@ export async function registerDevice({ mac: macInput, installationId }) {
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
-    if (actives.some((a) => a.installationId && a.installationId !== normalized.installationId)) {
+    if (actives.some((a) => a.installationId && !sameInstallation(a.installationId, normalized.installationId))) {
       throw new AppError(409, "INSTALLATION_MISMATCH", "Este dispositivo pertence a outra instalação.");
     }
-    await device.update({ lastInstallationId: normalized.installationId, lastSeenAt: new Date() }, { transaction });
+    await device.update({ lastInstallationId: normalized.installationId, lastSeenAt: new Date(), ...platformFields(normalized) }, { transaction });
     const active = actives.length > 0;
     const recoverable = active && recoveryMode() === "mac_lookup";
     let pairing = null;
@@ -232,7 +241,7 @@ export async function savePersonalPlaylist(activationId, { name, url }, actor) {
 }
 
 export async function pollRegistration({ mac: macInput, installationId, registrationToken, meta }) {
-  const normalized = normalizeRokuRegistration(macInput, installationId);
+  const normalized = normalizeVirtualRegistration(macInput, installationId);
   const pairing = await DevicePairingToken.findOne({
     where: {
       registrationHash: sha256(registrationToken),
@@ -240,7 +249,7 @@ export async function pollRegistration({ mac: macInput, installationId, registra
     },
     include: [Device],
   });
-  if (!pairing || pairing.Device.mac !== normalized.mac || pairing.Device.lastInstallationId !== normalized.installationId) {
+  if (!pairing || pairing.Device.mac !== normalized.mac || !sameInstallation(pairing.Device.lastInstallationId, normalized.installationId)) {
     throw new AppError(403, "REGISTRATION_TOKEN_INVALID", "Registro não reconhecido. Gere um novo QR Code no dispositivo.");
   }
   if (pairing.registrationUsedAt) {

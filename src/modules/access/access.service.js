@@ -6,6 +6,7 @@ import { signJwt, randomToken, sha256 } from "../../shared/crypto.js";
 import { evaluateAccess } from "./access.policy.js";
 import { sessionsToRevoke } from "./session-cap.js";
 import { dropMirrorAuth } from "../mirror/mirror.cache.js";
+import { sameInstallation } from "../devices/device-identity.js";
 
 // Fatura vencida mais antiga ainda não quitada (data em UTC) — base da política de inadimplência.
 export async function overdueSinceFor(partnerId, transaction) {
@@ -78,7 +79,7 @@ export async function refreshSession(refreshToken, { installationId } = {}) {
   if (!session) throw new AppError(401, "INVALID_REFRESH_TOKEN", "Sessão inválida ou expirada.");
   const { activation, decision } = await checkActivation(session.activationId);
   if (!decision.allowed) throw denialError(decision);
-  if (activation.installationId && installationId && activation.installationId !== installationId) {
+  if (activation.installationId && installationId && !sameInstallation(activation.installationId, installationId)) {
     throw new AppError(403, "INSTALLATION_MISMATCH", "Instalação não reconhecida.");
   }
   const next = randomToken(48);

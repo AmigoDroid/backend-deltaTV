@@ -66,6 +66,39 @@ export function normalizeIdentity(input) {
   return { platform, appId, identifierType, deviceKey: `${platform}:${appId}:${identifier}`, mac: null, installationId: identifier, legacy: false };
 }
 
+/**
+ * Aparelhos que se identificam por MAC virtual enviam installationId "<prefixo>-<MAC sem separadores, maiúsculas>".
+ * O prefixo diz qual aplicativo é; "roku" é o legado do app Roku e "rokutv" é aceito como sinônimo dele.
+ */
+export const VIRTUAL_MAC_PREFIXES = Object.freeze({
+  roku: "roku",
+  rokutv: "roku",
+  androidtv: "android",
+  samsungtv: "tizen",
+  lgtv: "webos",
+});
+export const VIRTUAL_INSTALLATION_PATTERN = new RegExp(`^(${Object.keys(VIRTUAL_MAC_PREFIXES).join("|")})-([A-F0-9]{12})$`);
+export const VIRTUAL_INSTALLATION_HINT =
+  `Use o prefixo do aplicativo (${Object.keys(VIRTUAL_MAC_PREFIXES).join(", ")}) seguido de "-" e do MAC sem separadores, em maiúsculas.`;
+
+/** @returns {{prefix:string, platform:string, compact:string}|null} null se não for um installationId de MAC virtual. */
+export function parseVirtualInstallationId(installationId) {
+  const m = VIRTUAL_INSTALLATION_PATTERN.exec(String(installationId ?? ""));
+  return m ? { prefix: m[1], platform: VIRTUAL_MAC_PREFIXES[m[1]], compact: m[2] } : null;
+}
+
+/**
+ * Forma canônica para comparar instalações: para MAC virtual vale só o MAC (o prefixo é apenas o rótulo do app, e o
+ * MAC já é a identidade do aparelho). Outros formatos (ex.: UUID) são comparados como estão.
+ */
+export function canonicalInstallationId(installationId) {
+  const p = parseVirtualInstallationId(installationId);
+  return p ? `mac:${p.compact}` : installationId;
+}
+
+/** Mesma instalação? Use no lugar de `a !== b` ao comparar installationId. */
+export const sameInstallation = (a, b) => canonicalInstallationId(a) === canonicalInstallationId(b);
+
 /** Rótulo curto para telas e suporte (nunca o identificador inteiro). */
 export function displayIdentifier(identity) {
   if (identity.mac) return identity.mac;

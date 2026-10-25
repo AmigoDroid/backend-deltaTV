@@ -11,6 +11,7 @@ import { evaluateAccess } from "../access/access.policy.js";
 import { issueSession, overdueSinceFor, denialError, checkActivation, revokeSessionsOf, enforceSessionCap } from "../access/access.service.js";
 import { normalizeShortCode, shortCodeProblem } from "../partners/short-code.js";
 import { probeCredentials } from "../providers/provider.service.js";
+import { sameInstallation } from "../devices/device-identity.js";
 
 const live = { [Op.ne]: "revoked" };
 const invalidCode = () => new AppError(404, "INVALID_CODE", "Código inválido.");
@@ -19,7 +20,7 @@ const invalidCode = () => new AppError(404, "INVALID_CODE", "Código inválido."
 const invalidCredentials = () => new AppError(401, "INVALID_CODE_OR_CREDENTIALS", "Código, usuário ou senha inválidos.");
 
 function installationCheck(activation, installationId) {
-  if (activation.installationId && installationId && activation.installationId !== installationId) {
+  if (activation.installationId && installationId && !sameInstallation(activation.installationId, installationId)) {
     throw new AppError(409, "INSTALLATION_MISMATCH", "Este dispositivo já está ativado em outra instalação.");
   }
 }
@@ -258,7 +259,7 @@ export async function issueSiblingSession({ currentActivation, targetActivationI
     if (!target || target.status === "revoked" || target.deviceId !== currentActivation.deviceId) {
       throw new AppError(404, "LIST_NOT_FOUND", "Lista não encontrada.");
     }
-    const mismatch = (a, b) => a && b && a !== b;
+    const mismatch = (a, b) => a && b && !sameInstallation(a, b);
     if (mismatch(target.installationId, installationId) || mismatch(target.installationId, currentActivation.installationId)) {
       throw new AppError(403, "INSTALLATION_MISMATCH", "Instalação não reconhecida.");
     }
