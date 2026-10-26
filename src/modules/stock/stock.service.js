@@ -1,9 +1,10 @@
 import crypto from "node:crypto";
-import { Op, QueryTypes, UniqueConstraintError } from "sequelize";
+import { Op, UniqueConstraintError } from "sequelize";
 import {
   sequelize, Partner, AdminUser, License, Activation, Renewal, LicenseStockLedger,
 } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
+import { STOCK_KINDS, balancesOf, move } from "./stock-ledger.js";
 import { audit } from "../../shared/audit.js";
 import { generateCode, hashCode } from "../../shared/crypto.js";
 import { addMonthsUTC } from "../../shared/dates.js";
@@ -21,38 +22,7 @@ import { ensurePlan } from "../licenses/plan.service.js";
  *    tempo nunca gastam a mesma licença. Todo movimento gera uma linha no extrato (license_stock_ledger).
  */
 const live = { [Op.ne]: "revoked" };
-export const STOCK_KINDS = ["reseller", "both"];
-
-const sql = (text, replacements, transaction, type = QueryTypes.SELECT) =>
-  sequelize.query(text, { replacements, transaction, type });
-
-/** Soma `delta` ao saldo (partner, months) e grava o extrato. Falta de saldo => 409 e a transação inteira desfaz. */
-async function move(t, { partnerId, months, delta, kind, actor, counterpartyPartnerId = null, transferId = null, deviceId = null, licenseId = null, unitPriceCents = null, note = null }) {
-  await sql(
-    `INSERT INTO license_stock (partner_id, months, quantity) VALUES (:partnerId, :months, 0) ON CONFLICT (partner_id, months) DO NOTHING`,
-    { partnerId, months }, t, QueryTypes.RAW,
-  );
-  const rows = await sql(
-    `UPDATE license_stock SET quantity = quantity + :delta, updated_at = now()
-      WHERE partner_id = :partnerId AND months = :months AND quantity + :delta >= 0
-      RETURNING quantity`,
-    { partnerId, months, delta }, t,
-  );
-  if (rows.length === 0) {
-    throw new AppError(409, "INSUFFICIENT_STOCK", `Estoque insuficiente de licenças de ${months} ${months === 1 ? "mês" : "meses"}.`);
-  }
-  const balanceAfter = Number(rows[0].quantity);
-  await LicenseStockLedger.create({
-    partnerId, months, delta, balanceAfter, kind, counterpartyPartnerId, transferId, deviceId, licenseId, unitPriceCents,
-    note: note ?? null, actorUserId: actor?.id ?? null, actorName: actor?.name ?? null,
-  }, { transaction: t });
-  return balanceAfter;
-}
-
-export async function balancesOf(partnerId) {
-  const rows = await sql(`SELECT months, quantity FROM license_stock WHERE partner_id = :partnerId AND quantity > 0 ORDER BY months`, { partnerId });
-  return rows.map((r) => ({ months: Number(r.months), quantity: Number(r.quantity) }));
-}
+export { STOCK_KINDS, balancesOf };
 
 const ledgerOut = (r) => {
   const j = r.toJSON();
@@ -162,8 +132,12 @@ async function applyOnce({ partner, actor, device, months }) {
     const lock = { transaction: t, lock: t.LOCK.UPDATE };
     const plan = await ensurePlan(months, { transaction: t });
     const now = new Date();
-    // Licença individual viva deste MAC (as ativações por parceria de conteúdo não contam).
-    const existing = await Activation.findOne({
+    // Licença viva deste MAC: primeiro a que ESTE revendedor concedeu pelo código dele (ativação de parceria com
+    // granted_license_id); senão a licença individual (as ativações por parceria de conteúdo não contam).
+    const granted = await Activation.findOne({
+      where: { deviceId: device.id, partnerId: partner.id, status: live, grantedLicenseId: { [Op.ne]: null } }, ...lock,
+    });
+    const existing = granted ?? await Activation.findOne({
       where: { deviceId: device.id, partnerId: null, status: live, licenseId: { [Op.ne]: null } }, ...lock,
     });
 
@@ -173,7 +147,7 @@ async function applyOnce({ partner, actor, device, months }) {
     let expiresAt;
     if (existing) {
       // Renovação: soma ao saldo se ainda vale, ou conta a partir de agora se já venceu (mesma regra do admin).
-      license = await License.findByPk(existing.licenseId, lock);
+      license = await License.findByPk(existing.grantedLicenseId ?? existing.licenseId, lock);
       if (!license || ["cancelled", "blocked"].includes(license.status)) {
         throw new AppError(409, "NOT_RENEWABLE", "A licença deste dispositivo está cancelada ou bloqueada. Fale com a plataforma.");
       }

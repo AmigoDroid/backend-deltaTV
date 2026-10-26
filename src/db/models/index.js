@@ -59,6 +59,8 @@ export const PartnerCode = def("PartnerCode", "partner_codes", {
   maxActivations: { type: T.INTEGER }, expiresAt: ts(), createdBy: { type: T.UUID },
   // Servidor (partner_providers) para o qual este código aponta. NULL = código antigo: testa os servidores do parceiro.
   providerId: { type: T.UUID },
+  // Duração (meses) da licença do ESTOQUE do dono que este código consome ao ativar um dispositivo. NULL = código sem licença.
+  licenseMonths: { type: T.INTEGER },
 });
 
 export const PartnerProvider = def("PartnerProvider", "partner_providers", {
@@ -85,6 +87,9 @@ export const Activation = def("Activation", "activations", {
   statusReason: str(500), blockedBy: str(20), activatedAt: { ...ts(), allowNull: false, defaultValue: T.NOW },
   revokedAt: ts(), claimPending: { type: T.BOOLEAN, allowNull: false, defaultValue: false },
   idempotencyKey: str(140),
+  // Licença concedida a esta ativação a partir do estoque do revendedor (migration 20261027000001). Diferente de licenseId,
+  // que é a licença individual com lista própria.
+  grantedLicenseId: { type: T.UUID },
 });
 
 export const DevicePairingToken = def("DevicePairingToken", "device_pairing_tokens", {
@@ -168,6 +173,14 @@ export const LicenseStockLedger = def("LicenseStockLedger", "license_stock_ledge
   note: str(500), actorUserId: { type: T.UUID }, actorName: str(160),
 }, { updatedAt: false });
 
+// Histórico imutável de uma licença (tabela license_events, migration 20261018000004): compra, ativação, transferência...
+export const LicenseEvent = def("LicenseEvent", "license_events", {
+  licenseId: { type: T.UUID, allowNull: false }, partnerId: { type: T.UUID },
+  event: str(16, { allowNull: false }), fromDeviceId: { type: T.UUID }, toDeviceId: { type: T.UUID },
+  actorType: str(12, { allowNull: false }), actorId: { type: T.UUID },
+  metadata: { type: T.JSONB, allowNull: false, defaultValue: {} },
+}, { updatedAt: false });
+
 export const WebhookEvent = def("WebhookEvent", "webhook_events", {
   provider: str(30, { allowNull: false }), eventId: str(120, { allowNull: false }),
   payload: { type: T.JSONB, allowNull: false }, status: str(20, { allowNull: false, defaultValue: "received" }),
@@ -193,6 +206,9 @@ Customer.hasMany(License, { foreignKey: "customerId" });
 License.belongsTo(Customer, { foreignKey: "customerId" });
 License.hasMany(Activation, { foreignKey: "licenseId" });
 Activation.belongsTo(License, { foreignKey: "licenseId" });
+Activation.belongsTo(License, { foreignKey: "grantedLicenseId", as: "GrantedLicense" });
+License.hasMany(LicenseEvent, { foreignKey: "licenseId" });
+LicenseEvent.belongsTo(License, { foreignKey: "licenseId" });
 Partner.hasMany(Activation, { foreignKey: "partnerId" });
 Activation.belongsTo(Partner, { foreignKey: "partnerId" });
 Partner.hasMany(PartnerProvider, { foreignKey: "partnerId" });

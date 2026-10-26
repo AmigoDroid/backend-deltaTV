@@ -21,11 +21,14 @@ export async function overdueSinceFor(partnerId, transaction) {
 
 /** Carrega o estado ATUAL no banco e aplica a política. Chamado em toda requisição protegida. */
 export async function checkActivation(activationId, { now = new Date(), transaction } = {}) {
-  const activation = await Activation.findByPk(activationId, { include: [License, Partner, PartnerProvider], transaction });
+  const activation = await Activation.findByPk(activationId, {
+    include: [License, Partner, PartnerProvider, { model: License, as: "GrantedLicense" }], transaction,
+  });
   if (!activation) return { activation: null, decision: evaluateAccess({ activation: null }) };
-  const overdueSince = activation.partnerId ? await overdueSinceFor(activation.partnerId, transaction) : null;
+  // Com licença concedida pelo estoque do revendedor, o prazo é o da licença: a inadimplência do portal não é consultada.
+  const overdueSince = activation.partnerId && !activation.GrantedLicense ? await overdueSinceFor(activation.partnerId, transaction) : null;
   const decision = evaluateAccess({
-    activation, license: activation.License, partner: activation.Partner, now, overdueSince,
+    activation, license: activation.License, grantedLicense: activation.GrantedLicense, partner: activation.Partner, now, overdueSince,
   });
   return { activation, decision };
 }

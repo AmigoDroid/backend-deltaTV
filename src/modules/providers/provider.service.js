@@ -42,8 +42,12 @@ async function prepare(input, current) {
   return patch;
 }
 
-export async function createProvider(partnerId, input, actor) {
+/** `max`: teto de servidores da parceria (usado no portal do revendedor, que cadastra os próprios). Admin não passa. */
+export async function createProvider(partnerId, input, actor, { max } = {}) {
   if (!(await Partner.findByPk(partnerId))) throw notFound("Parceiro");
+  if (max && (await PartnerProvider.count({ where: { partnerId } })) >= max) {
+    throw new AppError(409, "PROVIDER_LIMIT", `Limite de ${max} servidores atingido. Exclua ou reaproveite um servidor existente.`);
+  }
   const patch = await prepare({ playlistTemplate: DEFAULT_TEMPLATE, ...input });
   return sequelize.transaction(async (t) => {
     const p = await PartnerProvider.create({ partnerId, ...patch }, { transaction: t });

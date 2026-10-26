@@ -7,9 +7,11 @@ import { pageOf, paged } from "../../shared/pagination.js";
 import { revokeSessionsOf, checkActivation } from "../access/access.service.js";
 import { dropMirrorAuth } from "../mirror/mirror.cache.js";
 import { describeDelivery } from "../mirror/mode.js";
+import { isLiveLicense, lockedByLicense } from "../stock/stock-license.js";
 
 const include = [
   { model: License, attributes: ["id", "status", "expiresAt", "codeLast4"], include: [{ model: Customer, attributes: ["name", "email"] }] },
+  { model: License, as: "GrantedLicense", attributes: ["id", "status", "startsAt", "expiresAt"], required: false },
   { model: Partner, attributes: ["id", "name", "slug", "status"] },
   { model: PartnerProvider, attributes: ["id", "name", "deliveryMode", "status"] },
 ];
@@ -35,6 +37,11 @@ const serialize = (a, { delivery = false } = {}) => ({
   activatedAt: a.activatedAt, revokedAt: a.revokedAt, claimPending: a.claimPending,
   licenseId: a.licenseId, partnerId: a.partnerId,
   license: a.License ? { id: a.License.id, status: a.License.status, expiresAt: a.License.expiresAt, codeLast4: a.License.codeLast4, customer: a.License.Customer ? { name: a.License.Customer.name, email: a.License.Customer.email } : null } : null,
+  // Licença vendida pelo código do revendedor (estoque): o vencimento é dela. remainingDays = dias inteiros que ainda restam.
+  grantedLicense: a.GrantedLicense ? {
+    id: a.GrantedLicense.id, status: a.GrantedLicense.status, startsAt: a.GrantedLicense.startsAt, expiresAt: a.GrantedLicense.expiresAt,
+    remainingDays: a.GrantedLicense.expiresAt ? Math.max(0, Math.ceil((new Date(a.GrantedLicense.expiresAt).getTime() - Date.now()) / 86_400_000)) : 0,
+  } : null,
   partner: a.Partner ? { id: a.Partner.id, name: a.Partner.name, slug: a.Partner.slug, status: a.Partner.status } : null,
   ...(delivery ? { ...describeDelivery(a), provider: a.PartnerProvider ? { id: a.PartnerProvider.id, name: a.PartnerProvider.name } : null } : {}),
 });
@@ -93,6 +100,11 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
       throw new AppError(409, "INVALID_STATE", `Não é possível executar '${action}' em uma ativação '${a.status}'.`);
     }
     if (action === "block" && !reason) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo do bloqueio.");
+    // O revendedor não joga fora tempo pago: com licença em vigor, a saída é Transferir para outro MAC (o admin da plataforma pode remover).
+    if (action === "revoke" && scope.partnerId && a.grantedLicenseId) {
+      const granted = await License.findByPk(a.grantedLicenseId, { transaction: t });
+      if (isLiveLicense(granted)) throw lockedByLicense();
+    }
     if (action === "unblock" && scope.partnerId && a.blockedBy !== "partner") {
       throw new AppError(403, "BLOCKED_BY_PLATFORM", "Este bloqueio foi aplicado pela plataforma.");
     }

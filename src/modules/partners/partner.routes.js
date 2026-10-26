@@ -73,6 +73,8 @@ const codeBody = z.object({
   expiresAt: z.coerce.date().nullable().optional(),
   // Servidor do parceiro para o qual o código aponta. Omitido: usa o único servidor do parceiro (se houver só um).
   providerId: z.string().uuid().nullable().optional(),
+  // Duração (meses) da licença do ESTOQUE do revendedor que o código consome ao ativar um dispositivo.
+  licenseMonths: z.number().int().min(1).max(120).nullable().optional(),
 });
 const codeUpdateBody = codeBody.omit({ code: true }).partial();
 const providerBody = z.object({

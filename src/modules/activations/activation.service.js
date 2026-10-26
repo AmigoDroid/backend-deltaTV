@@ -12,6 +12,8 @@ import { issueSession, overdueSinceFor, denialError, checkActivation, revokeSess
 import { normalizeShortCode, shortCodeProblem } from "../partners/short-code.js";
 import { probeCredentials } from "../providers/provider.service.js";
 import { sameInstallation } from "../devices/device-identity.js";
+import { STOCK_KINDS } from "../stock/stock-ledger.js";
+import { sellFromStock } from "../stock/stock-license.js";
 
 const live = { [Op.ne]: "revoked" };
 const invalidCode = () => new AppError(404, "INVALID_CODE", "Código inválido.");
@@ -152,8 +154,17 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
       if (prev && prev.status !== "revoked" && prev.partnerId === partner.id) { activation = prev; reused = true; }
     }
 
+    // Código de REVENDEDOR atrelado a uma licença do estoque dele: ativar o dispositivo gasta 1 licença daquela duração e a
+    // aplica a este cliente (o prazo conta desde agora). Reativar com o mesmo parceiro NÃO gasta outra enquanto a
+    // licença do cliente estiver em vigor; só quando ela já venceu (aí é uma renovação, contada a partir de agora).
+    const months = code.licenseMonths && STOCK_KINDS.includes(partner.kind) ? code.licenseMonths : null;
+    const granted = activation?.grantedLicenseId ? await License.findByPk(activation.grantedLicenseId, lock) : null;
+    const sell = !!months && (!granted || (granted.status === "active" && !!granted.expiresAt && granted.expiresAt <= new Date()));
+
     const overdueSince = await overdueSinceFor(partner.id, t);
-    const decision = evaluateAccess({ activation: activation ?? { status: "active" }, partner, overdueSince });
+    const decision = granted && !sell
+      ? evaluateAccess({ activation, grantedLicense: granted, partner })
+      : evaluateAccess({ activation: activation ?? { status: "active" }, partner, overdueSince });
     if (!decision.allowed) throw denialError(decision);
 
     if (!activation) {
@@ -191,14 +202,34 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
       );
     }
 
+    let expiresAt = decision.expiresAt;
+    let soldLicenseId = null;
+    if (sell) {
+      try {
+        const sale = await sellFromStock(t, {
+          partner, months, deviceId: activation.deviceId, activationId: activation.id, renew: granted,
+          note: `${granted ? "Renovação" : "Ativação"} pelo código ${code.code}`,
+        });
+        await activation.update({ grantedLicenseId: sale.license.id }, { transaction: t });
+        expiresAt = sale.expiresAt;
+        soldLicenseId = sale.license.id;
+      } catch (e) {
+        // Sem saldo: a transação inteira desfaz (nenhum vínculo fica criado). Mensagem neutra: serve ao cliente na TV e ao revendedor no painel.
+        if (e instanceof AppError && e.code === "INSUFFICIENT_STOCK") {
+          throw new AppError(409, "LICENSE_UNAVAILABLE", "Não há licença disponível para este código no momento. Contate seu fornecedor.");
+        }
+        throw e;
+      }
+    }
+
     const otherLive = await Activation.count({ where: { mac, status: live, id: { [Op.ne]: activation.id } }, transaction: t });
     const session = await issueSession(activation, meta, t);
     await audit({
       actor: { type: "device", id: activation.id, ip: meta.ip }, action: reused ? "activation.reuse" : "activation.create",
       entityType: "activation", entityId: activation.id,
-      metadata: { kind: "partner", mac, partnerId: partner.id, providerId: provider.id, otherLiveActivationsOnMac: otherLive }, transaction: t,
+      metadata: { kind: "partner", mac, partnerId: partner.id, providerId: provider.id, otherLiveActivationsOnMac: otherLive, ...(soldLicenseId ? { soldLicenseId, licenseMonths: months } : {}) }, transaction: t,
     });
-    return { activation, session, reused, expiresAt: decision.expiresAt };
+    return { activation, session, reused, expiresAt };
   });
 }
 

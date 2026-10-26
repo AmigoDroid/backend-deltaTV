@@ -10,7 +10,7 @@ import * as devices from "../devices/device.service.js";
 import * as partners from "../partners/partner.service.js";
 import { listInvoices } from "../billing/billing.service.js";
 import { effectivePartnerStatus } from "../access/access.policy.js";
-import { listProviders } from "../providers/provider.service.js";
+import { listProviders, createProvider, updateProvider, deleteProvider } from "../providers/provider.service.js";
 import { codeCheckLimiter, macLookupLimiter, macWriteLimiter, stockLookupLimiter, stockWriteLimiter } from "../../middleware/security.js";
 import * as stock from "../stock/stock.service.js";
 import * as reseller from "../devices/reseller-devices.service.js";
@@ -90,14 +90,57 @@ router.post("/stock/apply", stockWriteLimiter, requireReseller, validate({ body:
 
 router.get("/codes/check", codeCheckLimiter, validate({ query: z.object({ code: z.string().max(40) }) }), async (req, res) => res.json(await partners.checkCode(req.valid.query.code)));
 router.get("/codes", async (req, res) => res.json({ data: await partners.listCodes(req.user.partnerId) }));
-// Servidores do provedor: somente leitura para o parceiro (o cadastro é feito pela plataforma).
-router.get("/providers", async (req, res) => res.json({ data: (await listProviders(req.user.partnerId)).map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, status: p.status })) }));
-router.post("/codes", validate({ body: z.object({ code: z.string().trim().min(4).max(12).optional(), label: z.string().max(120).optional(), maxActivations: z.number().int().min(1).nullable().optional(), expiresAt: z.coerce.date().nullable().optional(), providerId: z.string().uuid().nullable().optional() }) }), async (req, res) =>
+
+/**
+ * Servidores IPTV do próprio revendedor (autonomia: ele cadastra o servidor e cria os códigos que apontam para ele).
+ * O partnerId vem do token. Só contas de revendedor mexem; as demais continuam só lendo (a plataforma cadastra).
+ * Regras que o revendedor NÃO controla: o modo de entrega fica em "redirect" (o modo proxy gasta a banda da plataforma e
+ * continua sendo decisão do admin) e a URL passa pela mesma proteção SSRF do painel admin. Teto de servidores por conta.
+ */
+const MAX_PROVIDERS_PER_RESELLER = 20;
+router.get("/providers", async (req, res) => res.json({ data: (await listProviders(req.user.partnerId)).map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, status: p.status, priority: p.priority, deliveryMode: p.deliveryMode })) }));
+const providerBody = z.object({
+  name: z.string().trim().min(2).max(120),
+  baseUrl: z.string().trim().min(8).max(500),
+  priority: z.number().int().min(0).max(1000).default(0),
+  status: z.enum(["active", "disabled"]).default("active"),
+});
+const providerOut = (p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, status: p.status, priority: p.priority, deliveryMode: p.deliveryMode });
+const providerParams = z.object({ providerId: z.string().uuid() });
+router.post("/providers", macWriteLimiter, requireReseller, validate({ body: providerBody }), async (req, res) =>
+  res.status(201).json(providerOut(await createProvider(req.user.partnerId, req.valid.body, actorOf(req), { max: MAX_PROVIDERS_PER_RESELLER }))));
+router.patch("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams, body: providerBody.partial() }), async (req, res) =>
+  res.json(providerOut(await updateProvider(req.user.partnerId, req.valid.params.providerId, req.valid.body, actorOf(req)))));
+router.delete("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams }), async (req, res) => {
+  await deleteProvider(req.user.partnerId, req.valid.params.providerId, actorOf(req));
+  res.status(204).end();
+});
+
+// Código de ativação. Para revendedor, `licenseMonths` (duração da licença do estoque que o código consome) é obrigatório
+// e o estoque precisa ter essa duração; a validação está em partners.createCode / updateCode.
+const codeFields = {
+  label: z.string().max(120).optional(),
+  maxActivations: z.number().int().min(1).nullable().optional(),
+  expiresAt: z.coerce.date().nullable().optional(),
+  providerId: z.string().uuid().nullable().optional(),
+  licenseMonths: z.number().int().min(1).max(120).nullable().optional(),
+};
+router.post("/codes", validate({ body: z.object({ code: z.string().trim().min(4).max(12).optional(), ...codeFields }) }), async (req, res) =>
   res.status(201).json(await partners.createCode(req.user.partnerId, req.valid.body, actorOf(req))));
+router.patch("/codes/:id", validate({ params: id, body: z.object(codeFields).partial() }), async (req, res) =>
+  res.json(await partners.updateCode(req.user.partnerId, req.valid.params.id, req.valid.body, actorOf(req))));
 router.post("/codes/:id/revoke", validate({ params: id }), async (req, res) => {
   await partners.revokeCode(req.user.partnerId, req.valid.params.id, actorOf(req));
   res.status(204).end();
 });
+
+/**
+ * Passa a licença de um cliente (vendida pelo código do revendedor) para OUTRO MAC, sem perder o tempo restante.
+ * A ativação de origem vem por id e precisa ser deste revendedor (token).
+ */
+router.post("/licenses/transfer", stockWriteLimiter, requireReseller,
+  validate({ body: z.object({ activationId: z.string().uuid(), toMac: macBody.shape.mac }) }),
+  async (req, res) => res.json(await reseller.transferLicenseToMac({ ...resellerCtx(req), ...req.valid.body })));
 
 router.get("/invoices", validate({ query: z.object({ ...pageQuery }) }), async (req, res) =>
   res.json(await listInvoices({ ...req.valid.query, partnerId: req.user.partnerId })));

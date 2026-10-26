@@ -9,6 +9,8 @@ import { evaluateResellerAccess, normalizePolicy } from "./device-edit-policy.js
 import * as registration from "./registration.service.js";
 import { selectActivation } from "./device-lists.js";
 import { applyStockToDevice } from "../stock/stock.service.js";
+import { transferGrantedLicense } from "../stock/license-transfer.service.js";
+import { isLiveLicense, lockedByLicense } from "../stock/stock-license.js";
 
 /**
  * Painel do revendedor: consulta e edição de dispositivo POR MAC.
@@ -88,7 +90,7 @@ async function resolveEditableDevice({ partner, actor, macInput }) {
 async function lastChangeOf(device, activationIds = []) {
   const ids = [String(device.id), ...activationIds.map(String)];
   const row = await AuditLog.findOne({
-    where: { entityId: { [Op.in]: ids }, action: { [Op.in]: ["device.configuration.confirm", "device.list.remove", "activation.revoke", "activation.block", "activation.unblock"] }, result: "success" },
+    where: { entityId: { [Op.in]: ids }, action: { [Op.in]: ["device.configuration.confirm", "device.list.remove", "activation.revoke", "activation.block", "activation.unblock", "license.transfer.in", "license.transfer.out"] }, result: "success" },
     order: [["createdAt", "DESC"]],
   });
   return row ? publicEvent(row) : null;
@@ -132,6 +134,15 @@ export async function applyStockByMac({ partner, actor, mac: macInput, months })
 }
 
 /**
+ * Passa a licença vendida (concedida pelo código do revendedor) para OUTRO MAC, mantendo o vencimento. A ativação de origem é
+ * identificada por `activationId` (nunca por MAC solto) e precisa ser deste revendedor; o destino segue a política de edição por MAC.
+ */
+export async function transferLicenseToMac({ partner, actor, activationId, toMac }) {
+  const { device } = await resolveEditableDevice({ partner, actor, macInput: toMac });
+  return transferGrantedLicense({ partner, actor, activationId, toDevice: device });
+}
+
+/**
  * Remove UMA lista do dispositivo SEM tocar em fonte/parceria compartilhada, na licença nem nas listas dos outros parceiros:
  *  - lista própria (playlist): apaga só o vínculo da lista no dispositivo; a licença continua ativa;
  *  - parceria (credenciais do provedor): revoga a ativação desta TV com aquele parceiro; parceria e provedor seguem intactos.
@@ -140,6 +151,8 @@ export async function applyStockByMac({ partner, actor, mac: macInput, months })
 export async function removeListByMac({ partner, actor, mac: macInput, reason, activationId }) {
   const { device, mac } = await resolveEditableDevice({ partner, actor, macInput });
   const activation = await selectLiveActivation(device.id, activationId);
+  // Licença vendida em vigor: remover jogaria o tempo restante fora. O caminho certo é Transferir para outro MAC.
+  if (activation?.grantedLicenseId && isLiveLicense(await License.findByPk(activation.grantedLicenseId))) throw lockedByLicense();
   return removeList({ device, activation, mac, actor, reason });
 }
 

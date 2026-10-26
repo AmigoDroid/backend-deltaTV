@@ -36,23 +36,23 @@ const deny = (code, reason = null) => ({
  * @param {object} p
  * @param {object} p.activation { status, statusReason }
  * @param {object|null} p.license { status, startsAt, expiresAt }
+ * @param {object|null} p.grantedLicense licença concedida a uma ativação de PARCERIA a partir do estoque do revendedor.
+ *   O prazo é o da licença (conta desde a venda, não desde o pagamento da mensalidade do portal). Do cadastro do
+ *   revendedor só derrubam o cliente o bloqueio e o cancelamento; vigência/inadimplência do portal não.
  * @param {object|null} p.partner { status, startsAt, endsAt, suspendPolicy, graceDays }
  * @param {string|null} p.overdueSince "YYYY-MM-DD" da fatura vencida mais antiga ainda não paga
  */
-export function evaluateAccess({ activation, license = null, partner = null, now = new Date(), overdueSince = null }) {
+export function evaluateAccess({ activation, license = null, grantedLicense = null, partner = null, now = new Date(), overdueSince = null }) {
   if (!activation) return deny("ACTIVATION_NOT_FOUND");
   if (activation.status === "revoked") return deny("ACTIVATION_REVOKED");
   if (activation.status === "blocked") return deny("DEVICE_BLOCKED", activation.statusReason);
 
-  if (license) {
-    if (license.status === "blocked") return deny("LICENSE_BLOCKED", license.statusReason);
-    if (license.status === "suspended") return deny("LICENSE_SUSPENDED", license.statusReason);
-    if (license.status === "cancelled") return deny("LICENSE_CANCELLED", license.statusReason);
-    if (license.status === "pending" || !license.startsAt || new Date(license.startsAt) > now) {
-      return deny("LICENSE_NOT_STARTED");
-    }
-    if (new Date(license.expiresAt) <= now) return deny("LICENSE_EXPIRED");
-    return { allowed: true, code: "OK", message: "Acesso autorizado.", reason: null, expiresAt: new Date(license.expiresAt) };
+  if (license) return evaluateLicense(license, now);
+
+  if (grantedLicense) {
+    if (partner?.status === "blocked") return deny("PARTNER_BLOCKED", partner.statusReason);
+    if (partner?.status === "cancelled") return deny("PARTNER_CANCELLED", partner.statusReason);
+    return evaluateLicense(grantedLicense, now);
   }
 
   if (partner) {
@@ -66,6 +66,17 @@ export function evaluateAccess({ activation, license = null, partner = null, now
   }
 
   return deny("NO_LICENSE");
+}
+
+function evaluateLicense(license, now) {
+  if (license.status === "blocked") return deny("LICENSE_BLOCKED", license.statusReason);
+  if (license.status === "suspended") return deny("LICENSE_SUSPENDED", license.statusReason);
+  if (license.status === "cancelled") return deny("LICENSE_CANCELLED", license.statusReason);
+  if (license.status === "pending" || !license.startsAt || new Date(license.startsAt) > now) {
+    return deny("LICENSE_NOT_STARTED");
+  }
+  if (new Date(license.expiresAt) <= now) return deny("LICENSE_EXPIRED");
+  return { allowed: true, code: "OK", message: "Acesso autorizado.", reason: null, expiresAt: new Date(license.expiresAt) };
 }
 
 // Inadimplente = fatura vencida há mais dias que a tolerância (grace_days), com política automática.

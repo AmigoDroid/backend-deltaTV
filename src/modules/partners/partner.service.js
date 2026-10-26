@@ -9,16 +9,20 @@ import { effectivePartnerStatus } from "../access/access.policy.js";
 import { normalizeTiers } from "../billing/billing.calc.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { SIGNUP_PENDING_REASON } from "./reseller-signup.service.js";
+import { STOCK_KINDS, balancesOf, quantityOf } from "../stock/stock-ledger.js";
 
 export const AUTO_SUSPEND_REASON = "Suspensão automática por inadimplência";
 const DEVICE_COUNT = `(SELECT count(*) FROM activations a WHERE a.partner_id = "Partner".id AND a.status <> 'revoked')`;
 const CODE_ACTIVATIONS = `(SELECT count(*) FROM activations a WHERE a.partner_code_id = "PartnerCode".id AND a.status <> 'revoked')`;
 
-const codeOut = (c) => {
+const codeOut = (c, stock = null) => {
   const j = c.toJSON();
   j.activationCount = Number(j.activationCount ?? 0);
+  // Quantas licenças da duração deste código ainda existem no estoque do dono (null = código sem licença).
+  j.stockAvailable = j.licenseMonths && stock ? stock.get(j.licenseMonths) ?? 0 : j.licenseMonths ? 0 : null;
   return j;
 };
+const stockMap = async (partnerId) => new Map((await balancesOf(partnerId)).map((b) => [b.months, b.quantity]));
 const findCodes = (partnerId) => PartnerCode.findAll({
   where: { partnerId }, attributes: { include: [[sequelize.literal(CODE_ACTIVATIONS), "activationCount"]] }, order: [["createdAt", "DESC"]],
   include: [{ model: PartnerProvider, as: "provider", attributes: ["id", "name", "baseUrl", "status"], required: false }],
@@ -47,12 +51,13 @@ export async function listPartners({ q, status, page, pageSize }) {
 export async function getPartner(id) {
   const p = await Partner.findByPk(id, { attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"]] } });
   if (!p) throw notFound("Parceiro");
-  const [codes, invoices, providers] = await Promise.all([
+  const [codes, stock, invoices, providers] = await Promise.all([
     findCodes(id),
+    stockMap(id),
     Invoice.findAll({ where: { partnerId: id }, order: [["competence", "DESC"]], limit: 24 }),
     PartnerProvider.findAll({ where: { partnerId: id }, order: [["priority", "ASC"], ["createdAt", "ASC"]] }),
   ]);
-  return { ...out(p), codes: codes.map(codeOut), invoices, providers };
+  return { ...out(p), codes: codes.map((c) => codeOut(c, stock)), invoices, providers };
 }
 
 function checkCommercial(input) {
@@ -177,8 +182,31 @@ async function resolveProviderId(partnerId, providerId, transaction) {
   return provider.id;
 }
 
+/**
+ * Licença (duração em meses) do código.
+ *  - Revendedor: todo código precisa estar atrelado a uma licença do estoque dele, e o estoque precisa ter essa duração.
+ *  - Conteúdo: não tem estoque; o código não pode ter licença. "Conteúdo e revendedor": opcional.
+ * `current` = valor atual do código (na edição): manter o mesmo valor não exige saldo de novo.
+ */
+async function resolveLicenseMonths(partner, licenseMonths, { transaction, current } = {}) {
+  if (licenseMonths === undefined) return current ?? null;
+  if (licenseMonths === null) {
+    if (partner.kind === "reseller") {
+      throw new AppError(422, "LICENSE_MONTHS_REQUIRED", "Todo código de revendedor precisa estar atrelado a uma licença do seu estoque.");
+    }
+    return null;
+  }
+  if (!STOCK_KINDS.includes(partner.kind)) {
+    throw new AppError(422, "CODE_LICENSE_NOT_ALLOWED", "Só cadastros do tipo Revendedor (ou Conteúdo e revendedor) têm licenças em estoque.");
+  }
+  if (licenseMonths !== current && (await quantityOf(partner.id, licenseMonths, transaction)) < 1) {
+    throw new AppError(422, "NO_STOCK_FOR_DURATION", `Não há licença de ${licenseMonths} ${licenseMonths === 1 ? "mês" : "meses"} no estoque. Lance licenças dessa duração antes de criar o código.`);
+  }
+  return licenseMonths;
+}
+
 /** `code` informado = código escolhido (409 se já existir); omitido = gerado automaticamente. */
-export async function createCode(partnerId, { code, label, maxActivations, expiresAt, providerId }, actor) {
+export async function createCode(partnerId, { code, label, maxActivations, expiresAt, providerId, licenseMonths }, actor) {
   const partner = await Partner.findByPk(partnerId);
   if (!partner) throw notFound("Parceiro");
   if (["cancelled", "blocked"].includes(partner.status)) throw new AppError(409, "INVALID_STATE", "Parceria não permite novos códigos.");
@@ -194,18 +222,19 @@ export async function createCode(partnerId, { code, label, maxActivations, expir
     try {
       return await sequelize.transaction(async (t) => {
         const resolvedProviderId = await resolveProviderId(partnerId, providerId, t);
+        const months = await resolveLicenseMonths(partner, licenseMonths ?? null, { transaction: t });
         const row = await PartnerCode.create(
           {
             partnerId, code: value, label: label ?? null, maxActivations: maxActivations ?? null, expiresAt: expiresAt ?? null,
-            providerId: resolvedProviderId, createdBy: actor.id,
+            providerId: resolvedProviderId, licenseMonths: months, createdBy: actor.id,
           },
           { transaction: t },
         );
         await audit({
           actor, action: "partner.code.create", entityType: "partner", entityId: partnerId,
-          metadata: { codeId: row.id, code: value, generated: !chosen, providerId: resolvedProviderId }, transaction: t,
+          metadata: { codeId: row.id, code: value, generated: !chosen, providerId: resolvedProviderId, licenseMonths: months }, transaction: t,
         });
-        return { id: row.id, code: row.code, providerId: row.providerId };
+        return { id: row.id, code: row.code, providerId: row.providerId, licenseMonths: row.licenseMonths };
       });
     } catch (e) {
       if (!(e instanceof UniqueConstraintError)) throw e;
@@ -217,7 +246,8 @@ export async function createCode(partnerId, { code, label, maxActivations, expir
 }
 
 export async function listCodes(partnerId) {
-  return (await findCodes(partnerId)).map(codeOut);
+  const [codes, stock] = await Promise.all([findCodes(partnerId), stockMap(partnerId)]);
+  return codes.map((c) => codeOut(c, stock));
 }
 
 /**
@@ -226,12 +256,16 @@ export async function listCodes(partnerId) {
  */
 export async function updateCode(partnerId, codeId, input, actor) {
   const updated = await sequelize.transaction(async (t) => {
-    await Partner.findByPk(partnerId, { transaction: t, lock: t.LOCK.UPDATE });
+    const partner = await Partner.findByPk(partnerId, { transaction: t, lock: t.LOCK.UPDATE });
     const c = await PartnerCode.findOne({ where: { id: codeId, partnerId }, transaction: t, lock: t.LOCK.UPDATE });
-    if (!c) throw notFound("Código");
+    if (!partner || !c) throw notFound("Código");
     const patch = {};
     for (const k of ["label", "maxActivations", "expiresAt"]) if (input[k] !== undefined) patch[k] = input[k];
     if (input.providerId !== undefined) patch.providerId = await resolveProviderId(partnerId, input.providerId, t);
+    // Só vale para NOVAS ativações: licenças já vendidas por este código não mudam.
+    if (input.licenseMonths !== undefined) {
+      patch.licenseMonths = await resolveLicenseMonths(partner, input.licenseMonths, { transaction: t, current: c.licenseMonths });
+    }
     if (patch.maxActivations != null) {
       const used = await Activation.count({ where: { partnerCodeId: c.id, status: { [Op.ne]: "revoked" } }, transaction: t });
       if (patch.maxActivations < used) throw new AppError(409, "LIMIT_BELOW_USAGE", `Este código tem ${used} ativações; o limite não pode ser menor.`);
@@ -243,7 +277,7 @@ export async function updateCode(partnerId, codeId, input, actor) {
   return codeOut(await PartnerCode.findByPk(updated.id, {
     attributes: { include: [[sequelize.literal(CODE_ACTIVATIONS), "activationCount"]] },
     include: [{ model: PartnerProvider, as: "provider", attributes: ["id", "name", "baseUrl", "status"], required: false }],
-  }));
+  }), await stockMap(partnerId));
 }
 
 // Revogar um código impede NOVAS ativações; dispositivos já ativados permanecem vinculados à parceria.
