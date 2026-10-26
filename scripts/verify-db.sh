@@ -21,7 +21,7 @@ if [[ "$host" != "localhost" && "$host" != "127.0.0.1" && "${ALLOW_REMOTE_TEST_D
 fi
 
 export DATABASE_URL="$url" NODE_ENV=test
-NEW_MIGRATIONS=6   # 20261018000001..04 + 20261021000001 + 20261025000001
+NEW_MIGRATIONS=7   # 20261018000001..04 + 20261021000001 + 20261025000001 + 20261026000001
 
 step() { printf '\n=== %s ===\n' "$*"; }
 

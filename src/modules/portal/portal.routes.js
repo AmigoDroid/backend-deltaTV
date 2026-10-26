@@ -11,7 +11,8 @@ import * as partners from "../partners/partner.service.js";
 import { listInvoices } from "../billing/billing.service.js";
 import { effectivePartnerStatus } from "../access/access.policy.js";
 import { listProviders } from "../providers/provider.service.js";
-import { codeCheckLimiter, macLookupLimiter, macWriteLimiter } from "../../middleware/security.js";
+import { codeCheckLimiter, macLookupLimiter, macWriteLimiter, stockLookupLimiter, stockWriteLimiter } from "../../middleware/security.js";
+import * as stock from "../stock/stock.service.js";
 import * as reseller from "../devices/reseller-devices.service.js";
 import { configurationSchema } from "../devices/device-config.schema.js";
 
@@ -68,6 +69,22 @@ router.post("/mac/configure", macWriteLimiter, requireReseller, validate({ body:
   res.json(await reseller.configureByMac({ ...resellerCtx(req), mac: req.valid.body.mac, input: req.valid.body.configuration })));
 router.post("/mac/remove-list", macWriteLimiter, requireReseller, validate({ body: z.object({ mac: macBody.shape.mac, reason: z.string().trim().min(3).max(500).optional(), activationId: z.string().uuid().optional() }) }), async (req, res) =>
   res.json(await reseller.removeListByMac({ ...resellerCtx(req), mac: req.valid.body.mac, reason: req.valid.body.reason, activationId: req.valid.body.activationId })));
+
+/**
+ * Estoque de licenças do revendedor: saldo/extrato, transferência para outro revendedor (pelo e-mail dele) e aplicação
+ * ao MAC de um cliente. O revendedor vem do token; nada de partnerId do cliente.
+ */
+// Duração padrão: 1 mês (quando o campo é omitido).
+const monthsField = z.number().int().min(1).max(120).default(1);
+router.get("/stock", requireReseller, validate({ query: z.object({ ...pageQuery }) }), async (req, res) =>
+  res.json(await stock.stockOf(req.user.partnerId, req.valid.query)));
+router.post("/stock/recipient", stockLookupLimiter, requireReseller, validate({ body: z.object({ email: z.string().trim().email().max(200) }) }), async (req, res) =>
+  res.json(await stock.lookupRecipient({ partner: req.reseller.partner, email: req.valid.body.email })));
+router.post("/stock/transfer", stockWriteLimiter, requireReseller,
+  validate({ body: z.object({ email: z.string().trim().email().max(200), months: monthsField, quantity: z.number().int().min(1).max(1000), note: z.string().trim().max(200).optional() }) }),
+  async (req, res) => res.json(await stock.transferStock({ ...resellerCtx(req), ...req.valid.body })));
+router.post("/stock/apply", stockWriteLimiter, requireReseller, validate({ body: z.object({ mac: macBody.shape.mac, months: monthsField }) }), async (req, res) =>
+  res.json(await reseller.applyStockByMac({ ...resellerCtx(req), mac: req.valid.body.mac, months: req.valid.body.months })));
 
 router.get("/codes/check", codeCheckLimiter, validate({ query: z.object({ code: z.string().max(40) }) }), async (req, res) => res.json(await partners.checkCode(req.valid.query.code)));
 router.get("/codes", async (req, res) => res.json({ data: await partners.listCodes(req.user.partnerId) }));

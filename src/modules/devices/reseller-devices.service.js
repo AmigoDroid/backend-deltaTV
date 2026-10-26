@@ -8,6 +8,7 @@ import { revokeSessionsOf } from "../access/access.service.js";
 import { evaluateResellerAccess, normalizePolicy } from "./device-edit-policy.js";
 import * as registration from "./registration.service.js";
 import { selectActivation } from "./device-lists.js";
+import { applyStockToDevice } from "../stock/stock.service.js";
 
 /**
  * Painel do revendedor: consulta e edição de dispositivo POR MAC.
@@ -119,6 +120,15 @@ export async function lookupByMac({ partner, actor, mac: macInput }) {
 export async function configureByMac({ partner, actor, mac: macInput, input }) {
   const { device } = await resolveEditableDevice({ partner, actor, macInput });
   return registration.configureDeviceByAdmin(device.id, input, actor);
+}
+
+/**
+ * Aplica uma licença do ESTOQUE do revendedor ao MAC: ativa uma licença nova ou renova a que o MAC já tem.
+ * Mesma autorização e auditoria das demais ações por MAC (política DEVICE_EDIT_POLICY).
+ */
+export async function applyStockByMac({ partner, actor, mac: macInput, months }) {
+  const { device } = await resolveEditableDevice({ partner, actor, macInput });
+  return applyStockToDevice({ partner, actor, device, months });
 }
 
 /**

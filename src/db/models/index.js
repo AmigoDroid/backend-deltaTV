@@ -159,6 +159,15 @@ export const Renewal = def("Renewal", "renewals", {
   paymentId: { type: T.UUID }, createdBy: { type: T.UUID },
 });
 
+// Estoque de licenças do revendedor (migration 20261026000001). O saldo é gravado por SQL atômico (stock.service.js).
+export const LicenseStockLedger = def("LicenseStockLedger", "license_stock_ledger", {
+  partnerId: { type: T.UUID, allowNull: false }, months: { type: T.INTEGER, allowNull: false },
+  delta: { type: T.INTEGER, allowNull: false }, balanceAfter: { type: T.INTEGER, allowNull: false },
+  kind: str(16, { allowNull: false }), counterpartyPartnerId: { type: T.UUID }, transferId: { type: T.UUID },
+  deviceId: { type: T.UUID }, licenseId: { type: T.UUID }, unitPriceCents: { type: T.INTEGER },
+  note: str(500), actorUserId: { type: T.UUID }, actorName: str(160),
+}, { updatedAt: false });
+
 export const WebhookEvent = def("WebhookEvent", "webhook_events", {
   provider: str(30, { allowNull: false }), eventId: str(120, { allowNull: false }),
   payload: { type: T.JSONB, allowNull: false }, status: str(20, { allowNull: false, defaultValue: "received" }),
@@ -194,6 +203,8 @@ Partner.hasMany(PartnerCode, { foreignKey: "partnerId" });
 PartnerCode.belongsTo(Partner, { foreignKey: "partnerId" });
 PartnerCode.hasMany(Activation, { foreignKey: "partnerCodeId" });
 Activation.belongsTo(PartnerCode, { foreignKey: "partnerCodeId" });
+LicenseStockLedger.belongsTo(Partner, { foreignKey: "partnerId" });
+LicenseStockLedger.belongsTo(Partner, { foreignKey: "counterpartyPartnerId", as: "counterparty" });
 PartnerProvider.hasMany(PartnerCode, { foreignKey: "providerId" });
 PartnerCode.belongsTo(PartnerProvider, { foreignKey: "providerId", as: "provider" });
 Device.hasMany(Activation, { foreignKey: "deviceId" });

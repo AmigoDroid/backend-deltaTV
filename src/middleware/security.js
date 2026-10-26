@@ -58,5 +58,8 @@ export const deviceKeyIssueLimiter = limiter(60 * 60_000, 10, (req) => `dkeyissu
 export const pairingResolveLimiter = limiter(60_000, 30);
 // Consulta/edição de dispositivo por MAC no painel do revendedor: por usuário (não por IP), contra varredura de MACs.
 export const macLookupLimiter = limiter(60_000, 30, (req) => `maclookup:${req.user?.id ?? req.ip}`);
+// Estoque de licenças: consulta de destinatário por e-mail (anti-enumeração) e escritas (transferir/aplicar), por usuário.
+export const stockLookupLimiter = limiter(60_000, 10, (req) => `stocklookup:${req.user?.id ?? req.ip}`);
+export const stockWriteLimiter = limiter(60_000, 20, (req) => `stockwrite:${req.user?.id ?? req.ip}`);
 export const macWriteLimiter = limiter(60_000, 20, (req) => `macwrite:${req.user?.id ?? req.ip}`);
 export const pairingPollLimiter = limiter(60_000, 60);

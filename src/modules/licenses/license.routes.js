@@ -6,6 +6,7 @@ import { actorOf } from "../../shared/audit.js";
 import { requirePermission } from "../../middleware/authenticate.js";
 import { Plan } from "../../db/models/index.js";
 import * as svc from "./license.service.js";
+import { ensurePlan } from "./plan.service.js";
 
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
@@ -14,8 +15,13 @@ const payment = z.object({ amountCents: z.number().int().positive(), method: z.s
 const reason = z.object({ reason: z.string().trim().min(3).max(500).optional() });
 
 router.get("/plans", requirePermission("licenses:read"), async (_req, res) => {
+  await ensurePlan(1); // o plano de 1 mês (padrão) sempre existe e aparece na lista
   res.json({ data: await Plan.findAll({ order: [["durationMonths", "ASC"]] }) });
 });
+
+// Cria (ou devolve) o plano individual de N meses, 1 a 120.
+router.post("/plans", requirePermission("licenses:write"), validate({ body: z.object({ months: z.number().int().min(1).max(120).default(1) }) }), async (req, res) =>
+  res.status(201).json(await ensurePlan(req.valid.body.months)));
 
 router.get(
   "/", requirePermission("licenses:read"),

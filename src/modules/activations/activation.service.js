@@ -56,12 +56,16 @@ const needMac = (raw) => {
 
 /* ============ Licença individual (código longo e secreto) ============ */
 
-async function activateLicenseOnce({ code, mac, installationId, idempotencyKey, meta }) {
-  return sequelize.transaction(async (t) => {
+// `licenseId` (em vez de `code`) e `transaction` externa são usados pelo estoque do revendedor: consumir o estoque e
+// ativar a licença precisam ser atômicos. Sem transaction externa, abre a própria (comportamento de sempre).
+async function activateLicenseOnce({ code, licenseId, mac, installationId, idempotencyKey, meta, transaction }) {
+  const run = async (t) => {
     const lock = { transaction: t, lock: t.LOCK.UPDATE };
     const idemKey = idempotencyKey ? `${mac}:${idempotencyKey}`.slice(0, 140) : null;
 
-    const license = await License.findOne({ where: { codeHash: hashCode(code) }, ...lock });
+    const license = licenseId
+      ? await License.findByPk(licenseId, lock)
+      : await License.findOne({ where: { codeHash: hashCode(code) }, ...lock });
     if (!license) throw invalidCode();
     const plan = await Plan.findByPk(license.planId, { transaction: t });
 
@@ -107,13 +111,18 @@ async function activateLicenseOnce({ code, mac, installationId, idempotencyKey, 
       entityType: "activation", entityId: activation.id, metadata: { kind: "license", mac, licenseId: license.id }, transaction: t,
     });
     return { activation, session, reused, expiresAt: decision.expiresAt };
-  });
+  };
+  return transaction ? run(transaction) : sequelize.transaction(run);
 }
 
 export const activateLicense = (input) => {
   const mac = needMac(input.mac);
   return withRetry(() => activateLicenseOnce({ ...input, mac }));
 };
+
+/** Ativa uma licença JÁ criada (estoque do revendedor) dentro da transação do chamador. Sem retry interno (a transação é dele). */
+export const activateLicenseById = ({ licenseId, mac, installationId, meta, transaction }) =>
+  activateLicenseOnce({ licenseId, mac: needMac(mac), installationId, meta, transaction });
 
 /* ============ Parceria: código curto + usuário/senha do provedor ============ */
 

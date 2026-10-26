@@ -8,6 +8,7 @@ import { generateInvoice } from "../billing/billing.service.js";
 import { listActivations } from "../devices/device.service.js";
 import * as svc from "./partner.service.js";
 import * as providers from "../providers/provider.service.js";
+import * as stock from "../stock/stock.service.js";
 import { DEFAULT_TEMPLATE } from "../providers/playlist-url.js";
 import { codeCheckLimiter } from "../../middleware/security.js";
 
@@ -102,6 +103,18 @@ router.delete("/:id/providers/:providerId", requirePermission("partners:write"),
   await providers.deleteProvider(req.valid.params.id, req.valid.params.providerId, actorOf(req));
   res.status(204).end();
 });
+
+// Estoque de licenças do revendedor (lançamento manual pelo admin).
+// Duração padrão: 1 mês (quando o campo é omitido).
+const stockMonths = z.number().int().min(1).max(120).default(1);
+router.get("/:id/stock", requirePermission("partners:read"), validate({ params: id, query: z.object({ ...pageQuery }) }), async (req, res) =>
+  res.json(await stock.stockOf(req.valid.params.id, req.valid.query)));
+router.post("/:id/stock/grant", requirePermission("partners:write"),
+  validate({ params: id, body: z.object({ months: stockMonths, quantity: z.number().int().min(1).max(10000), unitPriceCents: cents.optional(), note: z.string().trim().max(500).optional() }) }),
+  async (req, res) => res.status(201).json(await stock.grantStock(req.valid.params.id, req.valid.body, actorOf(req))));
+router.post("/:id/stock/adjust", requirePermission("partners:write"),
+  validate({ params: id, body: z.object({ months: stockMonths, delta: z.number().int().min(-10000).max(10000).refine((n) => n !== 0, "Informe uma quantidade diferente de zero."), note: z.string().trim().min(3).max(500) }) }),
+  async (req, res) => res.json(await stock.adjustStock(req.valid.params.id, req.valid.body, actorOf(req))));
 
 router.get(
   "/:id/devices", requirePermission("devices:read"),
