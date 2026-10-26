@@ -14,6 +14,7 @@ import { listProviders } from "../providers/provider.service.js";
 import { codeCheckLimiter, macLookupLimiter, macWriteLimiter, stockLookupLimiter, stockWriteLimiter } from "../../middleware/security.js";
 import * as stock from "../stock/stock.service.js";
 import * as reseller from "../devices/reseller-devices.service.js";
+import { isPendingSignup } from "../partners/reseller-signup.service.js";
 import { configurationSchema } from "../devices/device-config.schema.js";
 
 /**
@@ -32,6 +33,7 @@ router.get("/me", async (req, res) => {
   if (!p) throw notFound("Parceiro");
   res.json({
     id: p.id, name: p.name, slug: p.slug, kind: p.kind, status: p.status, effectiveStatus: effectivePartnerStatus(p),
+    pendingApproval: isPendingSignup(p), statusReason: p.status === "active" ? null : p.statusReason,
     startsAt: p.startsAt, endsAt: p.endsAt, deviceLimit: p.deviceLimit, deviceCount: Number(p.get("deviceCount")),
     billingModel: p.billingModel, dueDay: p.dueDay, graceDays: p.graceDays,
   });

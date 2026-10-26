@@ -9,6 +9,7 @@ import { isDelinquent } from "../access/access.policy.js";
 import { overdueSinceFor } from "../access/access.service.js";
 import { AUTO_SUSPEND_REASON } from "../partners/partner.service.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
+import { SIGNUP_PENDING_REASON } from "../partners/reseller-signup.service.js";
 
 const SYSTEM = { type: "system", id: null };
 
@@ -51,7 +52,11 @@ export async function generateInvoice(partnerId, competence, actor = SYSTEM) {
 export async function generateForAll(competence = currentCompetence(), actor = SYSTEM) {
   const { start, end } = competenceBounds(competence);
   const partners = await Partner.findAll({
-    where: { status: { [Op.in]: ["active", "suspended"] }, startsAt: { [Op.lt]: end }, endsAt: { [Op.gt]: start } },
+    where: {
+      status: { [Op.in]: ["active", "suspended"] }, startsAt: { [Op.lt]: end }, endsAt: { [Op.gt]: start },
+      // Cadastro público ainda não aprovado não gera cobrança.
+      [Op.or]: [{ statusReason: null }, { statusReason: { [Op.ne]: SIGNUP_PENDING_REASON } }],
+    },
   });
   let created = 0;
   for (const p of partners) {

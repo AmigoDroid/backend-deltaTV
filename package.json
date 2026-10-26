@@ -1,6 +1,6 @@
 {
   "name": "iptv-licensing-backend",
-  "version": "2.1.4",
+  "version": "2.1.5",
   "type": "module",
   "engines": {
     "node": ">=22"

@@ -1,20 +1,40 @@
 import { Router } from "express";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
-import { loginLimiter, refreshLimiter } from "../../middleware/security.js";
+import { loginLimiter, refreshLimiter, signupLimiter } from "../../middleware/security.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import { AdminUser } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
 import { hashPassword, verifyPassword } from "../../shared/crypto.js";
 import * as svc from "./auth.service.js";
+import { registerReseller } from "../partners/reseller-signup.service.js";
 
 const router = Router();
 const meta = (req) => ({ ip: req.ip, userAgent: req.get("user-agent") });
 
 router.post(
   "/login", loginLimiter,
-  validate({ body: z.object({ email: z.string().email().max(200), password: z.string().min(1).max(128) }) }),
+  // `audience` separa os dois painéis: o painel admin envia "admin", o portal do revendedor envia "partner".
+  // Conta do outro tipo recebe o mesmo erro de senha inválida (não revela que o e-mail existe).
+  validate({ body: z.object({ email: z.string().email().max(200), password: z.string().min(1).max(128), audience: z.enum(["admin", "partner"]).optional() }) }),
   async (req, res) => res.json(await svc.login(req.valid.body, meta(req))),
+);
+
+// Autocadastro de revendedor (público). O cadastro fica aguardando aprovação do admin. Resposta igual para qualquer e-mail.
+const SIGNUP_OK = { ok: true, message: "Cadastro recebido. Você poderá entrar assim que a plataforma aprovar." };
+router.post(
+  "/register-reseller", signupLimiter,
+  validate({ body: z.object({
+    name: z.string().trim().min(2).max(160), contactName: z.string().trim().min(2).max(160),
+    email: z.string().trim().email().max(200), phone: z.string().trim().min(8).max(40),
+    password: z.string().min(12).max(128),
+    website: z.string().max(200).optional(), // isca anti-robô: campo invisível; se vier preenchido, ignora em silêncio
+  }) }),
+  async (req, res) => {
+    const { website, ...input } = req.valid.body;
+    if (!website) await registerReseller(input, meta(req));
+    res.status(202).json(SIGNUP_OK);
+  },
 );
 
 router.post(

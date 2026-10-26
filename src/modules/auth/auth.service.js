@@ -31,7 +31,7 @@ async function issue(user, meta, transaction) {
   };
 }
 
-export async function login({ email, password }, meta) {
+export async function login({ email, password, audience }, meta) {
   const user = await AdminUser.findOne({
     where: sequelize.where(sequelize.fn("lower", sequelize.col("email")), email.toLowerCase()),
   });
@@ -52,6 +52,11 @@ export async function login({ email, password }, meta) {
     const lock = failed >= MAX_FAILED;
     await user.update({ failedLogins: lock ? 0 : failed, lockedUntil: lock ? new Date(Date.now() + LOCK_MINUTES * 60000) : null });
     await audit({ actor, action: "auth.login", entityType: "admin_user", entityId: user.id, result: "failure", metadata: { reason: "bad_password", locked: lock } });
+    throw new AppError(401, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.");
+  }
+  // Painel admin x portal do revendedor: a senha estava certa, mas a conta é do outro painel.
+  if (audience && (audience === "partner") !== (user.role === "partner")) {
+    await audit({ actor, action: "auth.login", entityType: "admin_user", entityId: user.id, result: "failure", metadata: { reason: "wrong_audience", audience } });
     throw new AppError(401, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.");
   }
   await user.update({ failedLogins: 0, lockedUntil: null, lastLoginAt: new Date() });

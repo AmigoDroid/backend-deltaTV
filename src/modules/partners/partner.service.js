@@ -8,6 +8,7 @@ import { pageOf, paged } from "../../shared/pagination.js";
 import { effectivePartnerStatus } from "../access/access.policy.js";
 import { normalizeTiers } from "../billing/billing.calc.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
+import { SIGNUP_PENDING_REASON } from "./reseller-signup.service.js";
 
 export const AUTO_SUSPEND_REASON = "Suspensão automática por inadimplência";
 const DEVICE_COUNT = `(SELECT count(*) FROM activations a WHERE a.partner_id = "Partner".id AND a.status <> 'revoked')`;
@@ -33,6 +34,7 @@ const out = (p) => {
 export async function listPartners({ q, status, page, pageSize }) {
   const where = {};
   if (status === "expired") Object.assign(where, { status: "active", endsAt: { [Op.lte]: new Date() } });
+  else if (status === "pending") Object.assign(where, { status: "suspended", statusReason: SIGNUP_PENDING_REASON }); // cadastros públicos aguardando aprovação
   else if (status) where.status = status;
   if (q) where[Op.or] = [{ name: { [Op.iLike]: `%${q}%` } }, { slug: { [Op.iLike]: `%${q}%` } }];
   const { rows, count } = await Partner.findAndCountAll({

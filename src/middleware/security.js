@@ -38,6 +38,8 @@ export const mirrorLimiter = limiter(60_000, 3000, (req) => {
   return `mirror:${typeof k === "string" && k ? k.slice(-64) : req.ip}`;
 });
 export const loginLimiter = limiter(15 * 60_000, 10);
+// Cadastro público de revendedor: poucas tentativas por hora por IP (cada uma gera um registro e um hash de senha).
+export const signupLimiter = limiter(60 * 60_000, 5);
 // Ativação: limita por IP e também por MAC (impede varredura de códigos por dispositivo).
 export const activationIpLimiter = limiter(15 * 60_000, 30);
 export const activationMacLimiter = limiter(15 * 60_000, 10, (req) => `mac:${String(req.body?.mac ?? "").toUpperCase()}:${req.ip}`);

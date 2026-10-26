@@ -41,7 +41,7 @@ const reason = z.object({ reason: z.string().trim().min(3).max(500).optional() }
 
 router.get(
   "/", requirePermission("partners:read"),
-  validate({ query: z.object({ ...pageQuery, q: z.string().max(100).optional(), status: z.enum(["active", "expired", "suspended", "blocked", "cancelled"]).optional() }) }),
+  validate({ query: z.object({ ...pageQuery, q: z.string().max(100).optional(), status: z.enum(["pending", "active", "expired", "suspended", "blocked", "cancelled"]).optional() }) }),
   async (req, res) => res.json(await svc.listPartners(req.valid.query)),
 );
 router.post("/", requirePermission("partners:write"), validate({ body: createBody }), async (req, res) => {
