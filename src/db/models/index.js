@@ -76,6 +76,8 @@ export const Device = def("Device", "devices", {
   platform: str(20, { allowNull: false, defaultValue: "roku" }), appId: str(64, { allowNull: false, defaultValue: "delta-tv-roku" }),
   identifierType: str(20, { allowNull: false, defaultValue: "virtual_mac" }), deviceKey: str(160),
   appVersion: str(40), firstRegisteredAt: ts(), secretHash: { type: T.CHAR(64) }, installationChangedAt: ts(),
+  // Lista por link enviada pelo site enquanto o MAC não tem licença (migration 20261031000001). Passa para a ativação ao licenciar.
+  pendingPlaylistName: str(160), pendingPlaylistUrlEnc: T.TEXT, pendingPlaylistAt: ts(),
 });
 
 export const Activation = def("Activation", "activations", {

@@ -12,6 +12,7 @@ import { issueSession, overdueSinceFor, denialError, checkActivation, revokeSess
 import { normalizeShortCode, shortCodeProblem } from "../partners/short-code.js";
 import { probeCredentials } from "../providers/provider.service.js";
 import { sameInstallation } from "../devices/device-identity.js";
+import { applyPendingPlaylist } from "../devices/playlist-by-url.service.js";
 import { STOCK_KINDS } from "../stock/stock-ledger.js";
 import { sellFromStock } from "../stock/stock-license.js";
 
@@ -106,6 +107,9 @@ async function activateLicenseOnce({ code, licenseId, mac, installationId, idemp
     } else if (!activation.installationId && installationId) {
       await activation.update({ installationId }, { transaction: t });
     }
+
+    // Lista por link enviada pelo site antes de a licença existir: passa a valer agora.
+    await applyPendingPlaylist(activation, t);
 
     const session = await issueSession(activation, meta, t);
     await audit({

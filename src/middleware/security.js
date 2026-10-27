@@ -57,6 +57,9 @@ export const registerMacLimiter = limiter(60 * 60_000, 12, (req) => `regmac:${St
 export const deviceKeyIpLimiter = limiter(15 * 60_000, 20);
 export const deviceKeyMacLimiter = limiter(15 * 60_000, 10, (req) => `dkey:${String(req.body?.mac ?? "").toUpperCase().replace(/[^0-9A-F]/g, "")}`);
 export const deviceKeyIssueLimiter = limiter(60 * 60_000, 10, (req) => `dkeyissue:${req.device?.activation?.id ?? req.ip}`);
+// Cadastro de lista por link (site público): cada tentativa pode consultar o provedor, então limita por IP e por MAC.
+export const listUrlIpLimiter = limiter(15 * 60_000, 20);
+export const listUrlMacLimiter = limiter(60 * 60_000, 15, (req) => `listurl:${String(req.body?.mac ?? "").toUpperCase().replace(/[^0-9A-F]/g, "")}`);
 export const pairingResolveLimiter = limiter(60_000, 30);
 // Consulta/edição de dispositivo por MAC no painel do revendedor: por usuário (não por IP), contra varredura de MACs.
 export const macLookupLimiter = limiter(60_000, 30, (req) => `maclookup:${req.user?.id ?? req.ip}`);

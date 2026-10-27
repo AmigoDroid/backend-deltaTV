@@ -12,6 +12,8 @@ import {
   registerMacLimiter,
   pairingPollLimiter,
   deviceKeyIssueLimiter,
+  listUrlIpLimiter,
+  listUrlMacLimiter,
 } from "../../middleware/security.js";
 import { requireDevice } from "../access/access.middleware.js";
 import { refreshSession, playTokenFor } from "../access/access.service.js";
@@ -20,6 +22,7 @@ import { xtreamConfigFor, hasXtreamSource } from "../xtream/xtream.service.js";
 import * as deviceAccess from "../devices/device-access.service.js";
 import * as svc from "./activation.service.js";
 import * as deviceConfig from "../devices/registration.service.js";
+import { addListByUrl } from "../devices/playlist-by-url.service.js";
 import { sameInstallation, VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT } from "../devices/device-identity.js";
 
 /** API pública para os aplicativos/frontends clientes (prefixo /api/v1/client). */
@@ -329,6 +332,24 @@ router.post(
       { type: "device", id: req.device.activation.id, ip: req.ip },
     );
     res.json({ ...result, configurationStatus: "configured_playlist" });
+  },
+);
+
+// Cadastro pelo site (rota /upload/playlist do QR da TV): MAC + nome + link M3U completo. Público (sem sessão da TV): o servidor só
+// extrai servidor/usuário/senha do link e NÃO baixa a lista. Sem licença o cadastro é aceito, mas só passa a valer quando houver uma.
+router.post(
+  "/playlist/by-url",
+  listUrlIpLimiter,
+  listUrlMacLimiter,
+  validate({
+    body: z.object({
+      mac,
+      name: z.string().trim().min(1).max(160),
+      url: z.string().trim().min(1).max(2048),
+    }),
+  }),
+  async (req, res) => {
+    res.set("Cache-Control", "no-store").json(await addListByUrl({ ...req.valid.body, ip: req.ip }));
   },
 );
 
