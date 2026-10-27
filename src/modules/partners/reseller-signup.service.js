@@ -28,7 +28,10 @@ const slugify = (name) => {
  * Cria o revendedor (pendente) + o usuário do portal. A resposta é SEMPRE a mesma, exista ou não o e-mail:
  * não revela quais e-mails já têm conta (e-mail repetido não cria nada).
  */
-export async function registerReseller({ name, contactName, email, phone, password }, meta) {
+export async function registerReseller({ name: companyName, contactName, email, phone, password }, meta) {
+  // O cadastro público pede só o nome da pessoa. O nome do parceiro (e o identificador interno/slug, que nunca é
+  // digitado) nascem dele; o admin pode ajustar depois. `name` continua aceito por compatibilidade com clientes antigos.
+  const name = companyName?.trim() || contactName;
   if (!signupEnabled()) throw new AppError(404, "NOT_FOUND", "Rota não encontrada.");
   const actor = { type: "anonymous", id: null, ip: meta.ip };
   const mail = email.trim().toLowerCase();

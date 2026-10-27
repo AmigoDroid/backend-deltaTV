@@ -25,7 +25,7 @@ const SIGNUP_OK = { ok: true, message: "Cadastro recebido. Você poderá entrar 
 router.post(
   "/register-reseller", signupLimiter,
   validate({ body: z.object({
-    name: z.string().trim().min(2).max(160), contactName: z.string().trim().min(2).max(160),
+    name: z.string().trim().min(2).max(160).optional(), contactName: z.string().trim().min(2).max(160),
     email: z.string().trim().email().max(200), phone: z.string().trim().min(8).max(40),
     password: z.string().min(12).max(128),
     website: z.string().max(200).optional(), // isca anti-robô: campo invisível; se vier preenchido, ignora em silêncio
