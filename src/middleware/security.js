@@ -65,3 +65,6 @@ export const stockLookupLimiter = limiter(60_000, 10, (req) => `stocklookup:${re
 export const stockWriteLimiter = limiter(60_000, 20, (req) => `stockwrite:${req.user?.id ?? req.ip}`);
 export const macWriteLimiter = limiter(60_000, 20, (req) => `macwrite:${req.user?.id ?? req.ip}`);
 export const pairingPollLimiter = limiter(60_000, 60);
+// Pix: gerar QR Code (cada um chama a API do provedor) e consultar o estado (polling da tela), por usuário.
+export const pixCreateLimiter = limiter(60_000, 10, (req) => `pixcreate:${req.user?.id ?? req.ip}`);
+export const pixReadLimiter = limiter(60_000, 60, (req) => `pixread:${req.user?.id ?? req.ip}`);

@@ -98,35 +98,38 @@ async function reactivateIfSettled(partnerId, actor, t) {
  * Confirma pagamento. Só é chamado por (a) webhook autenticado ou (b) administrador autenticado e auditado —
  * nunca por informação vinda do frontend do parceiro/cliente.
  */
-export async function confirmPayment(invoiceId, input, actor) {
-  const result = await sequelize.transaction(async (t) => {
-    const invoice = await Invoice.findByPk(invoiceId, { transaction: t, lock: t.LOCK.UPDATE });
-    if (!invoice) throw notFound("Fatura");
-    if (invoice.status === "cancelled") throw new AppError(409, "INVOICE_CANCELLED", "Fatura cancelada.");
-    const remaining = invoice.amountCents - invoice.paidCents;
-    if (remaining <= 0) throw new AppError(409, "ALREADY_PAID", "Fatura já quitada.");
-    if (input.amountCents > remaining) throw new AppError(422, "AMOUNT_EXCEEDS_BALANCE", "Valor maior que o saldo da fatura.");
+export async function confirmPaymentTx(t, invoiceId, input, actor) {
+  const invoice = await Invoice.findByPk(invoiceId, { transaction: t, lock: t.LOCK.UPDATE });
+  if (!invoice) throw notFound("Fatura");
+  if (invoice.status === "cancelled") throw new AppError(409, "INVOICE_CANCELLED", "Fatura cancelada.");
+  const remaining = invoice.amountCents - invoice.paidCents;
+  if (remaining <= 0) throw new AppError(409, "ALREADY_PAID", "Fatura já quitada.");
+  if (input.amountCents > remaining) throw new AppError(422, "AMOUNT_EXCEEDS_BALANCE", "Valor maior que o saldo da fatura.");
 
-    const payment = await Payment.create(
-      {
-        invoiceId, amountCents: input.amountCents, method: input.method ?? null,
-        provider: input.provider ?? "manual", providerRef: input.providerRef ?? null,
-        origin: input.origin, confirmedBy: input.origin === "admin" ? actor.id : null, note: input.note ?? null,
-      },
-      { transaction: t },
-    );
-    const paid = invoice.paidCents + input.amountCents;
-    await invoice.update(
-      { paidCents: paid, status: paid >= invoice.amountCents ? "paid" : "partial", paidAt: paid >= invoice.amountCents ? new Date() : null },
-      { transaction: t },
-    );
-    const reactivated = await reactivateIfSettled(invoice.partnerId, actor, t);
-    await audit({
-      actor, action: "payment.confirm", entityType: "invoice", entityId: invoiceId,
-      metadata: { paymentId: payment.id, amountCents: input.amountCents, origin: input.origin, provider: input.provider, reactivated }, transaction: t,
-    });
-    return { payment, invoice, reactivated };
+  const payment = await Payment.create(
+    {
+      invoiceId, amountCents: input.amountCents, method: input.method ?? null,
+      provider: input.provider ?? "manual", providerRef: input.providerRef ?? null,
+      origin: input.origin, confirmedBy: input.origin === "admin" ? actor.id : null, note: input.note ?? null,
+    },
+    { transaction: t },
+  );
+  const paid = invoice.paidCents + input.amountCents;
+  await invoice.update(
+    { paidCents: paid, status: paid >= invoice.amountCents ? "paid" : "partial", paidAt: paid >= invoice.amountCents ? new Date() : null },
+    { transaction: t },
+  );
+  const reactivated = await reactivateIfSettled(invoice.partnerId, actor, t);
+  await audit({
+    actor, action: "payment.confirm", entityType: "invoice", entityId: invoiceId,
+    metadata: { paymentId: payment.id, amountCents: input.amountCents, origin: input.origin, provider: input.provider, reactivated }, transaction: t,
   });
+  return { payment, invoice, reactivated };
+}
+
+/** Versão autônoma (abre a própria transação). O Pix usa confirmPaymentTx para entregar tudo na MESMA transação. */
+export async function confirmPayment(invoiceId, input, actor) {
+  const result = await sequelize.transaction((t) => confirmPaymentTx(t, invoiceId, input, actor));
   if (result.reactivated) clearMirrorAuth();
   return result;
 }

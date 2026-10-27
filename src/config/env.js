@@ -54,7 +54,23 @@ if (isProd && !e.PUBLIC_BASE_URL) {
   throw new Error("Variável de ambiente obrigatória ausente: PUBLIC_BASE_URL");
 }
 
+// Pix: "" (desligado), "mercadopago" (produção) ou "mock" (só desenvolvimento: o admin simula o pagamento).
+const pixProvider = (e.PIX_PROVIDER || "").trim().toLowerCase();
+if (pixProvider && !["mercadopago", "mock"].includes(pixProvider)) {
+  throw new Error('PIX_PROVIDER deve ser "mercadopago", "mock" ou vazio (desligado).');
+}
+if (pixProvider === "mock" && isProd) throw new Error('PIX_PROVIDER=mock não é permitido em produção.');
+if (pixProvider === "mercadopago" && !e.MP_ACCESS_TOKEN) throw new Error("MP_ACCESS_TOKEN é obrigatório com PIX_PROVIDER=mercadopago.");
+if (pixProvider === "mercadopago" && isProd && !e.MP_WEBHOOK_SECRET) {
+  throw new Error("MP_WEBHOOK_SECRET é obrigatório em produção com PIX_PROVIDER=mercadopago (assinatura do webhook).");
+}
+
 export const env = Object.freeze({
+  pixProvider,
+  mpAccessToken: e.MP_ACCESS_TOKEN || "",
+  mpWebhookSecret: e.MP_WEBHOOK_SECRET || "",
+  // Validade do QR Code (o Mercado Pago aceita de 30 min a 30 dias).
+  pixExpirationMinutes: Math.min(Math.max(int("PIX_EXPIRATION_MINUTES", 60), 30), 43200),
   nodeEnv,
   isProd,
   port: int("PORT", 3000),

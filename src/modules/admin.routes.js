@@ -7,6 +7,7 @@ import billing from "./billing/billing.routes.js";
 import sources from "./sources/sources.routes.js";
 import audit from "./audit/audit.routes.js";
 import dashboard from "./dashboard/dashboard.routes.js";
+import { adminRouter as pix } from "./pix/pix.routes.js";
 import users from "./users/users.routes.js";
 
 // Tudo em /api/v1/admin exige autenticação; cada rota exige a permissão correspondente.
@@ -20,4 +21,5 @@ router.use("/sources", sources);
 router.use("/audit", audit);
 router.use("/dashboard", dashboard);
 router.use("/users", users);
+router.use("/pix", pix);
 export default router;

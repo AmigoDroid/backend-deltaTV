@@ -15,6 +15,7 @@ import { codeCheckLimiter, macLookupLimiter, macWriteLimiter, stockLookupLimiter
 import * as stock from "../stock/stock.service.js";
 import * as reseller from "../devices/reseller-devices.service.js";
 import { isPendingSignup } from "../partners/reseller-signup.service.js";
+import { partnerRouter as pixRoutes } from "../pix/pix.routes.js";
 import { configurationSchema } from "../devices/device-config.schema.js";
 
 /**
@@ -23,6 +24,7 @@ import { configurationSchema } from "../devices/device-config.schema.js";
  */
 const router = Router();
 router.use(authenticate, requirePartnerRole);
+router.use("/pix", pixRoutes);
 const scope = (req) => ({ partnerId: req.user.partnerId });
 const id = z.object({ id: z.string().uuid() });
 

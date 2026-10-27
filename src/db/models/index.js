@@ -181,6 +181,22 @@ export const LicenseEvent = def("LicenseEvent", "license_events", {
   metadata: { type: T.JSONB, allowNull: false, defaultValue: {} },
 }, { updatedAt: false });
 
+// Pix (migration 20261028000001): tabela de preços das licenças e cobranças (QR Codes) geradas.
+export const LicensePrice = def("LicensePrice", "license_prices", {
+  partnerId: { type: T.UUID }, months: { type: T.INTEGER, allowNull: false },
+  priceCents: { type: T.INTEGER, allowNull: false }, active: { type: T.BOOLEAN, allowNull: false, defaultValue: true },
+});
+
+export const PixCharge = def("PixCharge", "pix_charges", {
+  partnerId: { type: T.UUID, allowNull: false }, purpose: str(10, { allowNull: false }), invoiceId: { type: T.UUID },
+  months: { type: T.INTEGER }, quantity: { type: T.INTEGER }, unitPriceCents: { type: T.INTEGER },
+  amountCents: { type: T.INTEGER, allowNull: false }, provider: str(30, { allowNull: false }), providerRef: str(120),
+  status: str(16, { allowNull: false, defaultValue: "pending" }),
+  qrCode: { type: T.TEXT }, qrCodeBase64: { type: T.TEXT }, ticketUrl: { type: T.TEXT },
+  expiresAt: { ...ts(), allowNull: false }, paidAt: ts(), paidAmountCents: { type: T.INTEGER }, fulfilledAt: ts(),
+  paymentId: { type: T.UUID }, error: str(500), createdBy: { type: T.UUID }, lastCheckedAt: ts(),
+});
+
 export const WebhookEvent = def("WebhookEvent", "webhook_events", {
   provider: str(30, { allowNull: false }), eventId: str(120, { allowNull: false }),
   payload: { type: T.JSONB, allowNull: false }, status: str(20, { allowNull: false, defaultValue: "received" }),
@@ -235,6 +251,11 @@ Invoice.hasMany(Payment, { foreignKey: "invoiceId" });
 Payment.belongsTo(Invoice, { foreignKey: "invoiceId" });
 License.hasMany(Payment, { foreignKey: "licenseId" });
 Payment.belongsTo(License, { foreignKey: "licenseId" });
+Partner.hasMany(PixCharge, { foreignKey: "partnerId" });
+PixCharge.belongsTo(Partner, { foreignKey: "partnerId" });
+Invoice.hasMany(PixCharge, { foreignKey: "invoiceId" });
+PixCharge.belongsTo(Invoice, { foreignKey: "invoiceId" });
+LicensePrice.belongsTo(Partner, { foreignKey: "partnerId" });
 License.hasMany(Renewal, { foreignKey: "licenseId" });
 Renewal.belongsTo(License, { foreignKey: "licenseId" });
 Renewal.belongsTo(Plan, { foreignKey: "planId" });
