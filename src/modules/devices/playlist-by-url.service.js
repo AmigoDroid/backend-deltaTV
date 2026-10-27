@@ -109,6 +109,27 @@ export async function addListByUrl({ mac: macInput, name, url, ip }) {
       return { activationId: standalone.id, created, licensed: !!decision.allowed, code: decision.allowed ? "OK" : decision.code };
     }
 
+    // Sem licença individual, mas o MAC já tem acesso liberado por PARCERIA (código do parceiro / licença do estoque do revendedor):
+    // a lista vai para essa ativação. Sem isto ela ficava "pendente" para sempre (applyPendingPlaylist só roda ao ativar licença
+    // individual) e a TV, que já está liberada, nunca a recebia. xtreamCredentialsOf lê playlistUrlEnc antes do provedor da parceria.
+    const partnerActs = await Activation.findAll({
+      where: { deviceId: locked.id, partnerId: { [Op.ne]: null }, status: live },
+      order: [["activatedAt", "DESC"]],
+      transaction,
+    });
+    for (const act of partnerActs) {
+      const { decision } = await checkActivation(act.id, { transaction });
+      if (!decision.allowed) continue;
+      const created = !act.playlistUrlEnc;
+      await act.update({ playlistName: listName, playlistUrlEnc: urlEnc }, { transaction });
+      await locked.update({ pendingPlaylistName: null, pendingPlaylistUrlEnc: null, pendingPlaylistAt: null }, { transaction });
+      await audit({
+        actor: { type: "anonymous", id: null, ip }, action: "device.playlist.by_url", entityType: "activation", entityId: act.id,
+        metadata: { mac, listName, host, licensed: true, created, viaPartner: true }, transaction,
+      });
+      return { activationId: act.id, created, licensed: true, code: "OK" };
+    }
+
     const created = !locked.pendingPlaylistUrlEnc;
     await locked.update({ pendingPlaylistName: listName, pendingPlaylistUrlEnc: urlEnc, pendingPlaylistAt: new Date() }, { transaction });
     await audit({
