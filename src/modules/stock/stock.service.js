@@ -7,7 +7,7 @@ import { AppError, notFound } from "../../shared/errors.js";
 import { STOCK_KINDS, balancesOf, move } from "./stock-ledger.js";
 import { audit } from "../../shared/audit.js";
 import { generateCode, hashCode } from "../../shared/crypto.js";
-import { addMonthsUTC } from "../../shared/dates.js";
+import { addLicenseMonthsUTC } from "../../shared/dates.js";
 import { pageOf, paged } from "../../shared/pagination.js";
 import { effectivePartnerStatus } from "../access/access.policy.js";
 import { activateLicenseById } from "../activations/activation.service.js";
@@ -153,7 +153,7 @@ async function applyOnce({ partner, actor, device, months }) {
       }
       const previous = license.expiresAt;
       const base = license.expiresAt && license.expiresAt > now ? license.expiresAt : now;
-      expiresAt = addMonthsUTC(base, months);
+      expiresAt = addLicenseMonthsUTC(base, months);
       await license.update({
         planId: plan.id, expiresAt, startsAt: license.startsAt ?? now,
         status: license.status === "pending" ? "active" : license.status,

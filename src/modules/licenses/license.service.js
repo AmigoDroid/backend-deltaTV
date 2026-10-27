@@ -5,7 +5,7 @@ import {
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { generateCode, hashCode } from "../../shared/crypto.js";
-import { addMonthsUTC } from "../../shared/dates.js";
+import { addLicenseMonthsUTC } from "../../shared/dates.js";
 import { pageOf, paged } from "../../shared/pagination.js";
 import { effectiveLicenseStatus } from "../access/access.policy.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
@@ -73,7 +73,7 @@ export async function createLicense(input, actor) {
         codeHash: hashCode(code), codeLast4: code.slice(-4), planId: plan.id, customerId: customer?.id ?? null,
         status: pending ? "pending" : "active",
         startsAt: pending ? null : startsAt,
-        expiresAt: pending ? null : addMonthsUTC(startsAt, plan.durationMonths),
+        expiresAt: pending ? null : addLicenseMonthsUTC(startsAt, plan.durationMonths),
         maxDevices: input.maxDevices ?? plan.maxDevices, notes: input.notes ?? null, createdBy: actor.id,
       },
       { transaction: t },
@@ -151,7 +151,7 @@ export async function renewLicense(id, input, actor) {
     const previous = l.expiresAt;
     // Renovar antes do vencimento soma ao saldo; depois do vencimento, conta a partir de agora.
     const base = l.expiresAt && l.expiresAt > now ? l.expiresAt : now;
-    const next = addMonthsUTC(base, plan.durationMonths);
+    const next = addLicenseMonthsUTC(base, plan.durationMonths);
     await l.update(
       {
         planId: plan.id, expiresAt: next, startsAt: l.startsAt ?? now,

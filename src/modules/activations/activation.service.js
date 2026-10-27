@@ -6,7 +6,7 @@ import { AppError } from "../../shared/errors.js";
 import { normalizeMac } from "../../shared/mac.js";
 import { hashCode, encryptSecret } from "../../shared/crypto.js";
 import { audit } from "../../shared/audit.js";
-import { addMonthsUTC } from "../../shared/dates.js";
+import { addLicenseMonthsUTC } from "../../shared/dates.js";
 import { evaluateAccess } from "../access/access.policy.js";
 import { issueSession, overdueSinceFor, denialError, checkActivation, revokeSessionsOf, enforceSessionCap } from "../access/access.service.js";
 import { normalizeShortCode, shortCodeProblem } from "../partners/short-code.js";
@@ -74,7 +74,7 @@ async function activateLicenseOnce({ code, licenseId, mac, installationId, idemp
     // Licença "pending" começa a valer na primeira ativação.
     if (license.status === "pending") {
       const start = new Date();
-      await license.update({ status: "active", startsAt: start, expiresAt: addMonthsUTC(start, plan.durationMonths) }, { transaction: t });
+      await license.update({ status: "active", startsAt: start, expiresAt: addLicenseMonthsUTC(start, plan.durationMonths) }, { transaction: t });
     }
 
     // Ativações por parceria no mesmo MAC não ocupam este espaço: só a ativação "sem parceiro" (licença individual) conta.

@@ -1,14 +1,14 @@
 // Regra de datas: tudo é armazenado e calculado em UTC (timestamptz).
 // A interface exibe em America/Sao_Paulo. Competências são "YYYY-MM".
 
-export function addMonthsUTC(date, months) {
-  const d = new Date(date);
-  const day = d.getUTCDate();
-  d.setUTCDate(1);
-  d.setUTCMonth(d.getUTCMonth() + months);
-  const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
-  d.setUTCDate(Math.min(day, lastDay));
-  return d;
+// Regra de negócio: 1 mês de licença = 30 dias corridos (N meses = N × 30 dias), sempre calculado no backend.
+// Não usar mês de calendário aqui: ele dá 28–31 dias e fazia a licença de "1 mês" durar 31 dias em alguns meses.
+export const LICENSE_DAYS_PER_MONTH = 30;
+const DAY_MS = 86_400_000;
+
+export function addLicenseMonthsUTC(date, months) {
+  if (!Number.isInteger(months) || months < 1) throw new RangeError(`Duração inválida: ${months} mês(es).`);
+  return new Date(new Date(date).getTime() + months * LICENSE_DAYS_PER_MONTH * DAY_MS);
 }
 
 export const isCompetence = (s) => /^\d{4}-(0[1-9]|1[0-2])$/.test(s);

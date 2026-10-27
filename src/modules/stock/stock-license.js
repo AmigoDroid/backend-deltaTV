@@ -2,7 +2,7 @@ import { Op } from "sequelize";
 import { License, Renewal, LicenseEvent } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
 import { generateCode, hashCode } from "../../shared/crypto.js";
-import { addMonthsUTC } from "../../shared/dates.js";
+import { addLicenseMonthsUTC } from "../../shared/dates.js";
 import { ensurePlan } from "../licenses/plan.service.js";
 import { move } from "./stock-ledger.js";
 
@@ -24,11 +24,11 @@ export async function sellFromStock(t, { partner, months, deviceId, activationId
   if (renew) {
     const previous = renew.expiresAt;
     const base = renew.expiresAt && renew.expiresAt > now ? renew.expiresAt : now;
-    expiresAt = addMonthsUTC(base, months);
+    expiresAt = addLicenseMonthsUTC(base, months);
     license = await renew.update({ planId: plan.id, expiresAt, startsAt: renew.startsAt ?? now, status: "active", statusReason: null }, { transaction: t });
     await Renewal.create({ licenseId: license.id, planId: plan.id, previousExpiresAt: previous, newExpiresAt: expiresAt, createdBy: actor?.id ?? null }, { transaction: t });
   } else {
-    expiresAt = addMonthsUTC(now, months);
+    expiresAt = addLicenseMonthsUTC(now, months);
     const code = generateCode("LIC");
     license = await License.create({
       codeHash: hashCode(code), codeLast4: code.slice(-4), planId: plan.id, status: "active", startsAt: now, expiresAt,
