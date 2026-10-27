@@ -21,7 +21,7 @@ router.use(async (req, _res, next) => {
 
 const id = z.object({ id: z.string().uuid() });
 const text = (max) => z.string().max(max * 2).nullable().optional(); // folga: o limite exato é aplicado após normalizar espaços
-const body = z.object({
+export const clientBody = z.object({
   mac: z.string().max(40),
   name: z.string().max(400), phone: text(30), address: text(300), notes: text(500),
   priceCents: z.number().int().nullable().optional(), dueDate: z.string().max(10).nullable().optional(),
@@ -31,9 +31,9 @@ router.get("/", validate({ query: z.object({ ...pageQuery, q: z.string().max(60)
   res.json(await svc.listClients({ partnerId: req.user.partnerId, ...req.valid.query })));
 router.get("/summary", async (req, res) => res.json(await svc.summary(req.user.partnerId)));
 
-router.post("/", clientWriteLimiter, validate({ body }), async (req, res) =>
+router.post("/", clientWriteLimiter, validate({ body: clientBody }), async (req, res) =>
   res.status(201).json(await svc.createClient({ partnerId: req.user.partnerId, actor: actorOf(req), input: req.valid.body })));
-router.patch("/:id", clientWriteLimiter, validate({ params: id, body: body.partial().refine((b) => Object.keys(b).length > 0, "Nada para alterar.") }), async (req, res) =>
+router.patch("/:id", clientWriteLimiter, validate({ params: id, body: clientBody.partial().refine((b) => Object.keys(b).length > 0, "Nada para alterar.") }), async (req, res) =>
   res.json(await svc.updateClient({ partnerId: req.user.partnerId, id: req.valid.params.id, actor: actorOf(req), input: req.valid.body })));
 router.delete("/:id", clientWriteLimiter, validate({ params: id }), async (req, res) => {
   await svc.deleteClient({ partnerId: req.user.partnerId, id: req.valid.params.id, actor: actorOf(req) });

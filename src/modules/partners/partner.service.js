@@ -92,6 +92,10 @@ export async function updatePartner(id, input, actor) {
     const merged = { billingModel: p.billingModel, tiers: p.tiers, ...input };
     checkCommercial(merged);
     if (merged.tiers) input.tiers = merged.tiers;
+    // Vigência: o término sempre posterior ao início, mesmo quando só um dos dois veio no pedido.
+    const startsAt = input.startsAt ?? p.startsAt;
+    const endsAt = input.endsAt ?? p.endsAt;
+    if ((input.startsAt || input.endsAt) && !(new Date(endsAt) > new Date(startsAt))) throw new AppError(422, "INVALID_PERIOD", "O término deve ser posterior ao início.");
     if (input.deviceLimit !== undefined && input.deviceLimit !== null) {
       const used = await Activation.count({ where: { partnerId: id, status: { [Op.ne]: "revoked" } }, transaction: t });
       if (input.deviceLimit < used) throw new AppError(409, "LIMIT_BELOW_USAGE", `Existem ${used} dispositivos ativos; reduza-os antes de baixar o limite.`);

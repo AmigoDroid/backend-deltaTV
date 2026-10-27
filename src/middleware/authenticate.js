@@ -7,10 +7,11 @@ const PERMISSIONS = {
   admin: [
     "licenses:read", "licenses:write", "partners:read", "partners:write", "billing:read", "billing:write",
     "devices:read", "devices:write", "sources:read", "sources:write", "audit:read", "dashboard:read",
+    "clients:read", "clients:write", "partner-users:manage", // fichas de clientes das revendas e usuários do portal (role partner)
   ],
   support: [
     "licenses:read", "partners:read", "billing:read", "devices:read", "devices:write",
-    "sources:read", "dashboard:read",
+    "sources:read", "dashboard:read", "clients:read",
   ],
   partner: [], // parceiros só acessam /api/v1/partner (escopo próprio)
 };

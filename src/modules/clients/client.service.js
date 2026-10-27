@@ -50,7 +50,7 @@ export async function summary(partnerId) {
 }
 
 /** Valida/normaliza os campos enviados. Só devolve as chaves que vieram (PATCH parcial); `create` exige nome e MAC. */
-function fieldsFrom(input, { create }) {
+export function fieldsFrom(input, { create }) {
   const out = {};
   if (input.mac !== undefined || create) {
     const mac = normalizeMac(input.mac);
@@ -82,7 +82,7 @@ function fieldsFrom(input, { create }) {
   return out;
 }
 
-const duplicate = () => new AppError(409, "CLIENT_EXISTS", "Já existe um cliente cadastrado com este MAC. Edite o cadastro existente.");
+export const duplicate = () => new AppError(409, "CLIENT_EXISTS", "Já existe um cliente cadastrado com este MAC. Edite o cadastro existente.");
 
 export async function createClient({ partnerId, actor, input }) {
   const fields = fieldsFrom(input, { create: true });

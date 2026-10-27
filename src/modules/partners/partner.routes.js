@@ -50,7 +50,12 @@ router.post("/", requirePermission("partners:write"), validate({ body: createBod
 });
 router.get("/codes/check", requirePermission("partners:read"), codeCheckLimiter, validate({ query: z.object({ code: z.string().max(40) }) }), async (req, res) => res.json(await svc.checkCode(req.valid.query.code)));
 router.get("/:id", requirePermission("partners:read"), validate({ params: id }), async (req, res) => res.json(await svc.getPartner(req.valid.params.id)));
-router.patch("/:id", requirePermission("partners:write"), validate({ params: id, body: commercial.partial() }), async (req, res) => {
+// O admin também corrige identificador (slug) e vigência; o endpoint /renew continua existindo para o caso comum.
+const identity = z.object({
+  slug: z.string().regex(/^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$/, "Use letras minúsculas, números e hífens").optional(),
+  startsAt: z.coerce.date().optional(), endsAt: z.coerce.date().optional(),
+});
+router.patch("/:id", requirePermission("partners:write"), validate({ params: id, body: commercial.partial().merge(identity).refine((v) => !v.startsAt || !v.endsAt || v.endsAt > v.startsAt, { message: "O término deve ser posterior ao início", path: ["endsAt"] }) }), async (req, res) => {
   await svc.updatePartner(req.valid.params.id, req.valid.body, actorOf(req));
   res.json(await svc.getPartner(req.valid.params.id));
 });
