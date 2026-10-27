@@ -197,6 +197,13 @@ export const PixCharge = def("PixCharge", "pix_charges", {
   paymentId: { type: T.UUID }, error: str(500), createdBy: { type: T.UUID }, lastCheckedAt: ts(),
 });
 
+// Clientes do revendedor (migration 20261029000001): agenda privada por MAC (nome, contato, valor, vencimento).
+export const ResellerClient = def("ResellerClient", "reseller_clients", {
+  partnerId: { type: T.UUID, allowNull: false }, mac: { type: T.CHAR(17), allowNull: false },
+  name: str(160, { allowNull: false }), phone: str(30), address: str(300),
+  priceCents: { type: T.INTEGER }, dueDate: { type: T.DATEONLY }, notes: str(500),
+});
+
 export const WebhookEvent = def("WebhookEvent", "webhook_events", {
   provider: str(30, { allowNull: false }), eventId: str(120, { allowNull: false }),
   payload: { type: T.JSONB, allowNull: false }, status: str(20, { allowNull: false, defaultValue: "received" }),
@@ -251,6 +258,8 @@ Invoice.hasMany(Payment, { foreignKey: "invoiceId" });
 Payment.belongsTo(Invoice, { foreignKey: "invoiceId" });
 License.hasMany(Payment, { foreignKey: "licenseId" });
 Payment.belongsTo(License, { foreignKey: "licenseId" });
+Partner.hasMany(ResellerClient, { foreignKey: "partnerId" });
+ResellerClient.belongsTo(Partner, { foreignKey: "partnerId" });
 Partner.hasMany(PixCharge, { foreignKey: "partnerId" });
 PixCharge.belongsTo(Partner, { foreignKey: "partnerId" });
 Invoice.hasMany(PixCharge, { foreignKey: "invoiceId" });

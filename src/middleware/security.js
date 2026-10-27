@@ -68,3 +68,5 @@ export const pairingPollLimiter = limiter(60_000, 60);
 // Pix: gerar QR Code (cada um chama a API do provedor) e consultar o estado (polling da tela), por usuário.
 export const pixCreateLimiter = limiter(60_000, 10, (req) => `pixcreate:${req.user?.id ?? req.ip}`);
 export const pixReadLimiter = limiter(60_000, 60, (req) => `pixread:${req.user?.id ?? req.ip}`);
+// Cadastro de clientes do revendedor (criar/editar/renovar/excluir): por usuário.
+export const clientWriteLimiter = limiter(60_000, 60, (req) => `clientwrite:${req.user?.id ?? req.ip}`);
