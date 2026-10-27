@@ -5,6 +5,7 @@ import { AppError } from "../../shared/errors.js";
  *  - fixed:      valor mensal fixo
  *  - per_device: dispositivos × valor unitário (respeitando mínimo)
  *  - tiered:     preço fechado da faixa em que o total de dispositivos se encaixa
+ *  - none:       sem mensalidade (ex.: revendedor que só compra licenças); nunca gera cobrança
  * Valores sempre em centavos (inteiros).
  */
 export function calculateAmount(partner, deviceCount) {
@@ -14,6 +15,10 @@ export function calculateAmount(partner, deviceCount) {
   let rule;
 
   switch (partner.billingModel) {
+    case "none":
+      amount = 0;
+      rule = "none";
+      break;
     case "fixed":
       amount = Number(partner.monthlyFeeCents) || 0;
       rule = "fixed";

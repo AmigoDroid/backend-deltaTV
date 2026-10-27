@@ -21,7 +21,7 @@ const commercial = z.object({
   contactName: z.string().max(160).nullable().optional(),
   contactEmail: z.string().email().max(200).nullable().optional(),
   contactPhone: z.string().max(40).nullable().optional(),
-  billingModel: z.enum(["fixed", "per_device", "tiered"]),
+  billingModel: z.enum(["none", "fixed", "per_device", "tiered"]), // none = sem mensalidade
   monthlyFeeCents: cents.optional(), perDeviceCents: cents.optional(), minFeeCents: cents.optional(),
   tiers: z.array(z.object({ upTo: z.number().int().min(1).nullable(), amountCents: cents })).max(20).optional(),
   deviceLimit: z.number().int().min(0).nullable().optional(),

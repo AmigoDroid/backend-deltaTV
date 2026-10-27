@@ -35,8 +35,11 @@ export async function generateInvoice(partnerId, competence, actor = SYSTEM) {
   if (partner.startsAt >= end || partner.endsAt <= start) {
     throw new AppError(422, "OUT_OF_CONTRACT", "A competência está fora do período do contrato.");
   }
+  // Sem mensalidade (modelo "none") ou valor zero: não existe cobrança a fazer. Nunca se gera fatura de R$ 0,00.
+  if (partner.billingModel === "none") return { invoice: null, created: false, skipped: "NO_BILLING" };
   const count = await billableDeviceCount(partnerId, competence);
   const { amountCents, breakdown } = calculateAmount(partner, count);
+  if (amountCents <= 0) return { invoice: null, created: false, skipped: "ZERO_AMOUNT" };
   try {
     const invoice = await Invoice.create({
       partnerId, competence, deviceCount: count, amountCents, dueDate: dueDateFor(competence, partner.dueDay), breakdown,
@@ -53,7 +56,7 @@ export async function generateForAll(competence = currentCompetence(), actor = S
   const { start, end } = competenceBounds(competence);
   const partners = await Partner.findAll({
     where: {
-      status: { [Op.in]: ["active", "suspended"] }, startsAt: { [Op.lt]: end }, endsAt: { [Op.gt]: start },
+      status: { [Op.in]: ["active", "suspended"] }, billingModel: { [Op.ne]: "none" }, startsAt: { [Op.lt]: end }, endsAt: { [Op.gt]: start },
       // Cadastro público ainda não aprovado não gera cobrança.
       [Op.or]: [{ statusReason: null }, { statusReason: { [Op.ne]: SIGNUP_PENDING_REASON } }],
     },

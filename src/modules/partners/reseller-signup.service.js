@@ -45,7 +45,7 @@ export async function registerReseller({ name, contactName, email, phone, passwo
       const partner = await Partner.create({
         name, slug: slugify(name), kind: "reseller", status: "suspended", statusReason: SIGNUP_PENDING_REASON,
         startsAt: now, endsAt: new Date(Date.UTC(now.getUTCFullYear() + 10, now.getUTCMonth(), now.getUTCDate())),
-        billingModel: "fixed", monthlyFeeCents: 0, suspendPolicy: "manual",
+        billingModel: "none", monthlyFeeCents: 0, suspendPolicy: "manual", // revendedor compra licenças: sem mensalidade
         contactName, contactEmail: mail, contactPhone: phone,
       }, { transaction: t });
       await AdminUser.create({ name: contactName, email: mail, passwordHash, role: "partner", partnerId: partner.id }, { transaction: t });
