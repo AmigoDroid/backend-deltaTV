@@ -14,6 +14,7 @@ import { listProviders, createProvider, updateProvider, deleteProvider } from ".
 import { codeCheckLimiter, macLookupLimiter, macWriteLimiter, stockLookupLimiter, stockWriteLimiter } from "../../middleware/security.js";
 import * as stock from "../stock/stock.service.js";
 import * as reseller from "../devices/reseller-devices.service.js";
+import * as resellerLicenses from "../licenses/reseller-licenses.service.js";
 import { isPendingSignup } from "../partners/reseller-signup.service.js";
 import clientsRoutes from "../clients/client.routes.js";
 import { partnerRouter as pixRoutes } from "../pix/pix.routes.js";
@@ -91,6 +92,26 @@ router.post("/stock/transfer", stockWriteLimiter, requireReseller,
   async (req, res) => res.json(await stock.transferStock({ ...resellerCtx(req), ...req.valid.body })));
 router.post("/stock/apply", stockWriteLimiter, requireReseller, validate({ body: z.object({ mac: macBody.shape.mac, months: monthsField }) }), async (req, res) =>
   res.json(await reseller.applyStockByMac({ ...resellerCtx(req), mac: req.valid.body.mac, months: req.valid.body.months })));
+
+/**
+ * Licenças do revendedor: as que ele é DONO (nascidas do estoque dele). Ver, renovar com uma licença do estoque e
+ * suspender/reativar a própria suspensão. Bloquear/cancelar continua só com a plataforma. O id de licença alheia dá 404.
+ */
+router.get("/licenses", requireReseller, validate({ query: z.object({ ...pageQuery, q: z.string().max(60).optional(), filter: z.enum(resellerLicenses.LICENSE_FILTERS).optional() }) }), async (req, res) =>
+  res.json(await resellerLicenses.listOwned({ partnerId: req.user.partnerId, ...req.valid.query })));
+router.get("/licenses/summary", requireReseller, async (req, res) => res.json(await resellerLicenses.summaryOf(req.user.partnerId)));
+router.get("/licenses/:id", requireReseller, validate({ params: id }), async (req, res) =>
+  res.json(await resellerLicenses.getOwned({ partnerId: req.user.partnerId, id: req.valid.params.id })));
+router.post("/licenses/:id/renew", stockWriteLimiter, requireReseller, validate({ params: id, body: z.object({ months: monthsField }) }), async (req, res) =>
+  res.json(await resellerLicenses.renewOwned({ ...resellerCtx(req), id: req.valid.params.id, months: req.valid.body.months })));
+router.post("/licenses/:id/suspend", stockWriteLimiter, requireReseller, validate({ params: id, body: z.object({ reason: z.string().trim().min(3).max(500).optional() }) }), async (req, res) => {
+  await resellerLicenses.suspendOwned({ ...resellerCtx(req), id: req.valid.params.id, reason: req.valid.body.reason });
+  res.json(await resellerLicenses.getOwned({ partnerId: req.user.partnerId, id: req.valid.params.id }));
+});
+router.post("/licenses/:id/reactivate", stockWriteLimiter, requireReseller, validate({ params: id }), async (req, res) => {
+  await resellerLicenses.reactivateOwned({ ...resellerCtx(req), id: req.valid.params.id });
+  res.json(await resellerLicenses.getOwned({ partnerId: req.user.partnerId, id: req.valid.params.id }));
+});
 
 router.get("/codes/check", codeCheckLimiter, validate({ query: z.object({ code: z.string().max(40) }) }), async (req, res) => res.json(await partners.checkCode(req.valid.query.code)));
 router.get("/codes", async (req, res) => res.json({ data: await partners.listCodes(req.user.partnerId) }));
