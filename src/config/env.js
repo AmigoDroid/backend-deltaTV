@@ -54,6 +54,24 @@ if (isProd && !e.PUBLIC_BASE_URL) {
   throw new Error("Variável de ambiente obrigatória ausente: PUBLIC_BASE_URL");
 }
 
+const mailPort = int("SMTP_PORT", 587);
+const mailSecure = e.SMTP_SECURE ? e.SMTP_SECURE === "true" : mailPort === 465;
+const mailUser = (e.SMTP_USER || "").trim();
+const mailHost = (e.SMTP_HOST || "").trim();
+const mailFrom = (e.MAIL_FROM || "").trim();
+if (mailHost && !mailFrom) throw new Error('MAIL_FROM é obrigatório quando SMTP_HOST está definido (ex.: "DeltaTV <no-reply@seudominio.com>").');
+if (mailFrom && /[\r\n]/.test(mailFrom)) throw new Error("MAIL_FROM inválido.");
+const mailBrand = (e.MAIL_BRAND || "DeltaTV").trim();
+const mailConfig = Object.freeze({
+  host: mailHost, port: mailPort, secure: mailSecure, user: mailUser, pass: e.SMTP_PASS || "",
+  // Com login, exige STARTTLS (a senha não vai em texto puro). Só desligue em laboratório.
+  requireTls: e.SMTP_REQUIRE_TLS ? e.SMTP_REQUIRE_TLS === "true" : !mailSecure && !!mailUser,
+  from: mailFrom, replyTo: (e.MAIL_REPLY_TO || "").trim(), brand: mailBrand,
+  footer: e.MAIL_FOOTER ?? `${mailBrand} · Você recebeu este e-mail por ser cliente ou parceiro. Para deixar de receber, responda pedindo a remoção.`,
+  ratePerMinute: Math.max(1, int("MAIL_RATE_PER_MINUTE", 30)), maxRecipients: Math.max(1, int("MAIL_MAX_RECIPIENTS", 2000)),
+  configured: !!mailHost && !!mailFrom,
+});
+
 // Pix: "" (desligado), "mercadopago" (produção) ou "mock" (só desenvolvimento: o admin simula o pagamento).
 const pixProvider = (e.PIX_PROVIDER || "").trim().toLowerCase();
 if (pixProvider && !["mercadopago", "mock"].includes(pixProvider)) {
@@ -126,6 +144,8 @@ export const env = Object.freeze({
   // Sessões simultâneas por ativação (recuperação por MAC abre espaço removendo as mais antigas) e duração do acesso por chave.
   maxSessionsPerActivation: int("MAX_SESSIONS_PER_ACTIVATION", 3),
   deviceScopedSessionMinutes: int("DEVICE_SCOPED_SESSION_MINUTES", 30),
+  // E-mail de saída (SMTP). Sem SMTP_HOST + MAIL_FROM o envio fica desligado e o painel avisa. A senha só existe aqui (.env).
+  mail: mailConfig,
   enableScheduler: e.ENABLE_SCHEDULER !== "false",
   // Somente fora de produção (usado pela suíte de testes de integração).
   rateLimitDisabled: !isProd && e.RATE_LIMIT_DISABLED === "true",

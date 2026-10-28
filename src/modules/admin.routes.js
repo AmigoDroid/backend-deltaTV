@@ -10,6 +10,7 @@ import dashboard from "./dashboard/dashboard.routes.js";
 import { adminRouter as pix } from "./pix/pix.routes.js";
 import users from "./users/users.routes.js";
 import clients from "./clients/client.admin.routes.js";
+import mail from "./mail/mail.routes.js";
 
 // Tudo em /api/v1/admin exige autenticação; cada rota exige a permissão correspondente.
 const router = Router();
@@ -24,4 +25,5 @@ router.use("/dashboard", dashboard);
 router.use("/users", users);
 router.use("/clients", clients);
 router.use("/pix", pix);
+router.use("/mail", mail);
 export default router;

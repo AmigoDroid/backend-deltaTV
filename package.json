@@ -23,6 +23,7 @@
     "express": "^5.1.0",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
+    "nodemailer": "^10.2.1",
     "pg": "^8.13.1",
     "sequelize": "^6.37.5",
     "zod": "^3.23.8"

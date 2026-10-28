@@ -78,4 +78,6 @@ export const pixSiteReadLimiter = limiter(60_000, 90);
 // Cadastro de clientes do revendedor (criar/editar/renovar/excluir): por usuário.
 // Ver usuário/senha da lista de um cliente: dado sensível, poucas consultas por minuto por usuário.
 export const credentialsViewLimiter = limiter(60_000, 20, (req) => `credview:${req.user?.id ?? req.ip}`);
+// Enviar e-mail em massa / teste: poucas vezes por minuto por usuário.
+export const mailSendLimiter = limiter(60_000, 6, (req) => `mailsend:${req.user?.id ?? req.ip}`);
 export const clientWriteLimiter = limiter(60_000, 60, (req) => `clientwrite:${req.user?.id ?? req.ip}`);

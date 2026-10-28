@@ -1,6 +1,7 @@
 import { currentCompetence } from "../shared/dates.js";
 import { reconcile as reconcilePix } from "../modules/pix/pix.service.js";
 import { generateForAll, sweepDelinquency } from "../modules/billing/billing.service.js";
+import { startMailWorker } from "../modules/mail/mail.worker.js";
 
 // Rotina horária e idempotente: gera a cobrança do mês e aplica a política de inadimplência.
 export async function runBillingJobs() {
@@ -22,4 +23,5 @@ export function startScheduler() {
   const safePix = () => runPixJobs().catch((e) => console.error("[jobs] pix falhou:", e.message));
   setTimeout(safePix, 20_000).unref();
   setInterval(safePix, 2 * 60 * 1000).unref();
+  startMailWorker(); // fila de e-mails (só age se SMTP_HOST/MAIL_FROM estiverem definidos)
 }
