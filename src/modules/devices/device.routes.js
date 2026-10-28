@@ -76,6 +76,21 @@ router.get(
 router.get("/history", requirePermission("devices:read"), validate({ query: z.object({ mac: z.string().min(11).max(20) }) }), async (req, res) => res.json(await svc.deviceHistory(req.valid.query.mac)));
 router.get("/activations/:id", requirePermission("devices:read"), validate({ params: id }), async (req, res) => res.json(await svc.getActivation(req.valid.params.id)));
 
+// Edição completa do dispositivo: SÓ superadmin (permissão "devices:edit" não existe nos outros perfis).
+router.patch(
+  "/activations/:id", requirePermission("devices:edit"),
+  validate({
+    params: id,
+    body: z.object({
+      deliveryMode: z.enum(["proxy", "redirect"]).nullable().optional(),
+      playlistName: z.string().trim().min(1).max(160).optional(),
+      playlistUrl: z.string().trim().min(1).max(2048).optional(),
+      removeList: z.boolean().optional(),
+    }),
+  }),
+  async (req, res) => res.json(await svc.editActivation(req.valid.params.id, req.valid.body, actorOf(req))),
+);
+
 for (const action of ["block", "unblock", "revoke"]) {
   router.post(`/activations/:id/${action}`, requirePermission("devices:write"), validate({ params: id, body: z.object({ reason: z.string().trim().min(3).max(500).optional() }) }), async (req, res) => {
     await svc.changeActivation(req.valid.params.id, action, { reason: req.valid.body.reason, actor: actorOf(req), blockedBy: "admin" });

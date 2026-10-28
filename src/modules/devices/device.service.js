@@ -8,6 +8,9 @@ import { revokeSessionsOf, checkActivation } from "../access/access.service.js";
 import { dropMirrorAuth } from "../mirror/mirror.cache.js";
 import { describeDelivery } from "../mirror/mode.js";
 import { isLiveLicense, lockedByLicense } from "../stock/stock-license.js";
+import { encryptSecret } from "../../shared/crypto.js";
+import { assertPublicUrl } from "../../shared/ssrf.js";
+import { parseListUrl, canonicalListUrl } from "./playlist-by-url.service.js";
 
 const include = [
   { model: License, attributes: ["id", "status", "expiresAt", "codeLast4"], include: [{ model: Customer, attributes: ["name", "email"] }] },
@@ -43,7 +46,7 @@ const serialize = (a, { delivery = false } = {}) => ({
     remainingDays: a.GrantedLicense.expiresAt ? Math.max(0, Math.ceil((new Date(a.GrantedLicense.expiresAt).getTime() - Date.now()) / 86_400_000)) : 0,
   } : null,
   partner: a.Partner ? { id: a.Partner.id, name: a.Partner.name, slug: a.Partner.slug, status: a.Partner.status } : null,
-  ...(delivery ? { ...describeDelivery(a), provider: a.PartnerProvider ? { id: a.PartnerProvider.id, name: a.PartnerProvider.name } : null } : {}),
+  ...(delivery ? { ...describeDelivery(a), listName: a.playlistName ?? null, hasOwnList: !!a.playlistUrlEnc, provider: a.PartnerProvider ? { id: a.PartnerProvider.id, name: a.PartnerProvider.name } : null } : {}),
 });
 
 export async function getActivation(id, scope = {}) {
@@ -123,4 +126,52 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
   });
   dropMirrorAuth(changed.id); // bloquear/desbloquear/remover valem já para o espelho (depois do commit)
   return changed;
+}
+
+/**
+ * Edição de uma ativação pelo SUPERADMIN (só o painel admin; nunca o portal do parceiro).
+ *  - deliveryMode: "proxy" | "redirect" força o modo; null volta ao automático;
+ *  - playlistName / playlistUrl: troca a lista própria (link M3U completo: o servidor extrai servidor, usuário e senha);
+ *  - removeList: remove a lista própria (a ativação de parceria volta a usar o provedor da parceria).
+ */
+export async function editActivation(id, input, actor) {
+  const patch = {};
+  const changes = {};
+  if (input.deliveryMode !== undefined) {
+    patch.deliveryMode = input.deliveryMode;
+    changes.deliveryMode = input.deliveryMode;
+  }
+  if (input.removeList) {
+    Object.assign(patch, { playlistName: null, playlistUrlEnc: null });
+    changes.listRemoved = true;
+  } else {
+    if (input.playlistUrl) {
+      const cred = parseListUrl(input.playlistUrl);
+      await assertPublicUrl(cred.baseUrl);
+      patch.playlistUrlEnc = encryptSecret(canonicalListUrl(cred));
+      changes.listUrlHost = new URL(cred.baseUrl).hostname;
+    }
+    if (input.playlistName !== undefined) {
+      patch.playlistName = input.playlistName;
+      changes.listName = input.playlistName;
+    }
+  }
+  if (Object.keys(patch).length === 0) throw new AppError(422, "NOTHING_TO_CHANGE", "Nenhuma alteração informada.");
+
+  const row = await sequelize.transaction(async (t) => {
+    const a = await Activation.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!a) throw notFound("Ativação");
+    if (a.status === "revoked") throw new AppError(409, "INVALID_STATE", "Esta ativação foi removida e não pode ser editada.");
+    if (patch.playlistName !== undefined && patch.playlistName !== null && !a.playlistUrlEnc && !patch.playlistUrlEnc) {
+      throw new AppError(422, "NO_OWN_LIST", "Este dispositivo não tem lista própria: informe também o link da lista.");
+    }
+    await a.update(patch, { transaction: t });
+    await audit({
+      actor, action: "device.admin.edit", entityType: "activation", entityId: a.id,
+      metadata: { mac: a.mac, ...changes }, transaction: t,
+    });
+    return a;
+  });
+  dropMirrorAuth(row.id); // vale já para o espelho (depois do commit)
+  return getActivation(row.id);
 }

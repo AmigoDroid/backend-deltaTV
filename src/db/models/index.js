@@ -92,6 +92,8 @@ export const Activation = def("Activation", "activations", {
   // Licença concedida a esta ativação a partir do estoque do revendedor (migration 20261027000001). Diferente de licenseId,
   // que é a licença individual com lista própria.
   grantedLicenseId: { type: T.UUID },
+  // Modo de entrega definido pelo superadmin para ESTA ativação (migration 20261101000001). NULL = automático (ver mirror/mode.js).
+  deliveryMode: str(20),
 });
 
 export const DevicePairingToken = def("DevicePairingToken", "device_pairing_tokens", {
