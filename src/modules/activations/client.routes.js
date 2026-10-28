@@ -14,6 +14,9 @@ import {
   deviceKeyIssueLimiter,
   listUrlIpLimiter,
   listUrlMacLimiter,
+  pixSiteCreateIpLimiter,
+  pixSiteCreateMacLimiter,
+  pixSiteReadLimiter,
 } from "../../middleware/security.js";
 import { requireDevice } from "../access/access.middleware.js";
 import { refreshSession, playTokenFor } from "../access/access.service.js";
@@ -23,6 +26,7 @@ import * as deviceAccess from "../devices/device-access.service.js";
 import * as svc from "./activation.service.js";
 import * as deviceConfig from "../devices/registration.service.js";
 import { addListByUrl } from "../devices/playlist-by-url.service.js";
+import * as pix from "../pix/pix.service.js";
 import { sameInstallation, VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT } from "../devices/device-identity.js";
 
 /** API pública para os aplicativos/frontends clientes (prefixo /api/v1/client). */
@@ -350,6 +354,30 @@ router.post(
   }),
   async (req, res) => {
     res.set("Cache-Control", "no-store").json(await addListByUrl({ ...req.valid.body, ip: req.ip }));
+  },
+);
+
+// Compra da licença anual pelo SITE, paga via Pix (público, sem sessão da TV). O preço e o produto vêm do servidor; o cliente só informa
+// MAC + e-mail. Ao confirmar o pagamento (webhook ou consulta), o servidor cria/renova a licença e ativa no MAC.
+router.get("/pix/license/config", pixSiteReadLimiter, async (_req, res) => {
+  res.set("Cache-Control", "no-store").json(await pix.licenseOffer());
+});
+router.post(
+  "/pix/license",
+  pixSiteCreateIpLimiter,
+  pixSiteCreateMacLimiter,
+  validate({ body: z.object({ mac, email: z.string().trim().toLowerCase().email().max(200) }) }),
+  async (req, res) => {
+    const charge = await pix.createLicenseCharge({ ...req.valid.body, ip: req.ip });
+    res.status(201).set("Cache-Control", "no-store").json(pix.chargeView(charge));
+  },
+);
+router.get(
+  "/pix/license/:id",
+  pixSiteReadLimiter,
+  validate({ params: z.object({ id: z.string().uuid() }) }),
+  async (req, res) => {
+    res.set("Cache-Control", "no-store").json(pix.chargeView(await pix.getLicenseCharge(req.valid.params.id)));
   },
 );
 

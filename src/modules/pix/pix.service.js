@@ -1,5 +1,5 @@
 import { Op } from "sequelize";
-import { sequelize, Partner, Invoice, PixCharge } from "../../db/models/index.js";
+import { sequelize, Partner, Invoice, PixCharge, Device, Activation, License, Customer, Renewal } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
@@ -9,7 +9,12 @@ import { confirmPaymentTx } from "../billing/billing.service.js";
 import { STOCK_KINDS, move } from "../stock/stock-ledger.js";
 import { ensurePlan } from "../licenses/plan.service.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
-import { priceOf } from "./pix.pricing.js";
+import { priceOf, pricesFor } from "./pix.pricing.js";
+import { normalizeMac } from "../../shared/mac.js";
+import { generateCode, hashCode } from "../../shared/crypto.js";
+import { addLicenseMonthsUTC } from "../../shared/dates.js";
+import { activateLicenseById } from "../activations/activation.service.js";
+import { isLiveLicense } from "../stock/stock-license.js";
 
 /**
  * Cobranças Pix.
@@ -46,7 +51,7 @@ export function chargeView(c, { admin = false } = {}) {
   const pending = c.status === "pending";
   const j = {
     id: c.id, purpose: c.purpose, status: c.status, amountCents: c.amountCents,
-    months: c.months, quantity: c.quantity, unitPriceCents: c.unitPriceCents,
+    months: c.months, quantity: c.quantity, unitPriceCents: c.unitPriceCents, mac: c.mac ?? null,
     invoice: c.Invoice ? { id: c.Invoice.id, competence: c.Invoice.competence } : null,
     // O QR só é útil enquanto aguarda pagamento.
     qrCode: pending ? c.qrCode : null, qrCodeBase64: pending ? c.qrCodeBase64 : null,
@@ -191,6 +196,9 @@ async function fulfil(chargeId, info, actor) {
         }, { ...actor, type: actor.type ?? "system" });
         paymentId = r.payment.id;
         reactivated = r.reactivated;
+      } else if (c.purpose === "license") {
+        const sold = await fulfilLicenseSale(t, c);
+        await c.update({ licenseId: sold.licenseId }, { transaction: t });
       } else {
         const partner = await Partner.findByPk(c.partnerId, { transaction: t });
         if (!partner || !STOCK_KINDS.includes(partner.kind) || ["cancelled", "blocked"].includes(partner.status)) {
@@ -381,4 +389,125 @@ export async function reconcile({ limit = 100 } = {}) {
   }
   const [others] = await PixCharge.update({ status: "expired" }, { where: { status: "pending", expiresAt: { [Op.lt]: new Date() } } });
   return { checked, paid, expired: expired + others };
+}
+
+
+/* ================= Licença individual comprada pelo SITE (cliente final, sem login) ================= */
+
+export const LICENSE_SALE_MONTHS = 12; // licença anual
+const MAX_PENDING_PER_MAC = 3;
+const fmtDate = (d) => new Date(d).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+
+/** O que está à venda no site e por quanto. O preço vem da tabela geral (license_prices, partner_id NULL) — nunca do cliente. */
+export async function licenseOffer() {
+  const months = LICENSE_SALE_MONTHS;
+  if (!pixEnabled()) return { enabled: false, months, priceCents: null };
+  const found = (await pricesFor(null)).find((p) => p.months === months);
+  return { enabled: !!found, months, priceCents: found?.priceCents ?? null };
+}
+
+/** Licença individual (sem parceiro) viva neste MAC, se houver. */
+const standaloneOf = (mac, transaction, lock = false) =>
+  Activation.findOne({
+    where: { mac, partnerId: null, status: { [Op.ne]: "revoked" } },
+    // Com trava (dentro do fulfil) não há JOIN: FOR UPDATE não vale no lado opcional de um join. A licença é lida e travada à parte.
+    ...(lock ? { transaction, lock: transaction.LOCK.UPDATE } : { include: [License] }),
+  });
+
+/**
+ * Gera o Pix da licença anual para um MAC. A TV precisa já ter aberto o app (o MAC existe), como no cadastro de lista por link.
+ * Só vende se o MAC NÃO tem licença individual em vigor (vencida = renovação, conta a partir do pagamento).
+ */
+export async function createLicenseCharge({ mac: macInput, email, ip }) {
+  const provider = getProvider();
+  const mac = normalizeMac(macInput);
+  if (!mac) throw new AppError(400, "INVALID_MAC", "MAC inválido. Use os 12 caracteres que aparecem na tela do DeltaTV.");
+  const device = await Device.findOne({ where: { mac }, attributes: ["id"] });
+  if (!device) throw new AppError(404, "DEVICE_NOT_FOUND", "Não encontramos esta TV. Abra o DeltaTV nela e confira o MAC na tela inicial.");
+
+  const current = await standaloneOf(mac);
+  if (current?.License && isLiveLicense(current.License)) {
+    throw new AppError(409, "ALREADY_LICENSED", `Esta TV já tem licença válida até ${fmtDate(current.License.expiresAt)}. Você poderá renovar quando ela vencer.`);
+  }
+
+  const months = LICENSE_SALE_MONTHS;
+  const unitPriceCents = await priceOf(null, months);
+  const now = new Date();
+  const reusable = await PixCharge.findOne({
+    where: {
+      purpose: "license", mac, status: "pending", provider: provider.name, providerRef: { [Op.ne]: null }, payerEmail: email,
+      expiresAt: { [Op.gt]: new Date(now.getTime() + REUSE_MIN_REMAINING_MS) }, amountCents: unitPriceCents,
+    },
+    include: withRefs, order: [["createdAt", "DESC"]],
+  });
+  if (reusable) return reusable; // duplo clique / reabrir a página: mesmo QR
+
+  const pending = await PixCharge.count({ where: { purpose: "license", mac, status: "pending", expiresAt: { [Op.gt]: now } } });
+  if (pending >= MAX_PENDING_PER_MAC) {
+    throw new AppError(429, "TOO_MANY_PENDING", "Já existem Pix aguardando pagamento para esta TV. Pague um deles ou espere expirarem.");
+  }
+
+  const expiresAt = new Date(now.getTime() + env.pixExpirationMinutes * 60_000);
+  const charge = await PixCharge.create({
+    partnerId: null, purpose: "license", months, unitPriceCents, amountCents: unitPriceCents, mac, payerEmail: email,
+    provider: provider.name, status: "pending", expiresAt,
+  });
+  try {
+    const r = await provider.createCharge({
+      id: charge.id, amountCents: unitPriceCents, description: `Licença DeltaTV ${months} meses - ${mac}`, expiresAt,
+      payer: { email, name: email }, notificationUrl: webhookUrlFor(provider.name),
+    });
+    await charge.update({ providerRef: r.providerRef, qrCode: r.qrCode, qrCodeBase64: r.qrCodeBase64, ticketUrl: r.ticketUrl, expiresAt: r.expiresAt ?? expiresAt });
+  } catch (e) {
+    await charge.update({ status: "failed", error: String(e.message).slice(0, 500) }).catch(() => {});
+    throw e;
+  }
+  await audit({
+    actor: { type: "anonymous", id: null, ip }, action: "pix.create", entityType: "pix_charge", entityId: charge.id,
+    metadata: { purpose: "license", amountCents: unitPriceCents, months, mac },
+  });
+  return reload(charge.id);
+}
+
+/** Estado de uma cobrança do site (o id é um UUID aleatório: quem tem o QR tem o id). Confirma no provedor mesmo sem webhook. */
+export async function getLicenseCharge(id) {
+  const charge = await PixCharge.findOne({ where: { id, purpose: "license" }, include: withRefs });
+  if (!charge) throw notFound("Cobrança");
+  return refreshIfPending(charge);
+}
+
+/**
+ * Entrega da licença paga (dentro da transação do fulfil):
+ *  - MAC com licença individual (vencida): renova a MESMA licença a partir de agora (ou do vencimento, se ainda vigente);
+ *  - MAC sem licença: cria a licença anual da plataforma e ativa no MAC (aplica a lista por link que estiver pendente).
+ * Qualquer AppError 4xx aqui manda a cobrança para "review" (dinheiro recebido, entrega impossível: o admin trata).
+ */
+async function fulfilLicenseSale(t, c) {
+  const plan = await ensurePlan(c.months, { transaction: t });
+  const now = new Date();
+  const existing = await standaloneOf(c.mac, t, true);
+
+  if (existing) {
+    if (!existing.licenseId) throw new AppError(409, "INVALID_STATE", "A ativação deste dispositivo está inconsistente.");
+    const lic = await License.findByPk(existing.licenseId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (["blocked", "suspended", "cancelled"].includes(lic.status)) {
+      throw new AppError(409, "LICENSE_UNAVAILABLE", `A licença deste dispositivo está ${lic.status}. Trate manualmente.`);
+    }
+    const previous = lic.expiresAt;
+    const base = lic.expiresAt && lic.expiresAt > now ? lic.expiresAt : now;
+    const expiresAt = addLicenseMonthsUTC(base, c.months);
+    await lic.update({ planId: plan.id, expiresAt, startsAt: lic.startsAt ?? now, status: "active", statusReason: null }, { transaction: t });
+    await Renewal.create({ licenseId: lic.id, planId: plan.id, previousExpiresAt: previous, newExpiresAt: expiresAt, createdBy: null }, { transaction: t });
+    return { licenseId: lic.id, renewed: true };
+  }
+
+  const customer = await Customer.create({ name: c.payerEmail, email: c.payerEmail }, { transaction: t });
+  const code = generateCode("LIC");
+  const license = await License.create({
+    codeHash: hashCode(code), codeLast4: code.slice(-4), planId: plan.id, customerId: customer.id, status: "active",
+    startsAt: now, expiresAt: addLicenseMonthsUTC(now, c.months), maxDevices: 1, ownerPartnerId: null,
+    notes: `Compra pelo site via Pix (${c.id.slice(0, 8)}) para ${c.mac}`,
+  }, { transaction: t });
+  await activateLicenseById({ licenseId: license.id, mac: c.mac, installationId: null, meta: { ip: null, userAgent: "pix-site" }, transaction: t });
+  return { licenseId: license.id, renewed: false };
 }

@@ -192,13 +192,15 @@ export const LicensePrice = def("LicensePrice", "license_prices", {
 });
 
 export const PixCharge = def("PixCharge", "pix_charges", {
-  partnerId: { type: T.UUID, allowNull: false }, purpose: str(10, { allowNull: false }), invoiceId: { type: T.UUID },
+  partnerId: { type: T.UUID }, // NULL = compra de licença pelo site (purpose 'license') purpose: str(10, { allowNull: false }), invoiceId: { type: T.UUID },
   months: { type: T.INTEGER }, quantity: { type: T.INTEGER }, unitPriceCents: { type: T.INTEGER },
   amountCents: { type: T.INTEGER, allowNull: false }, provider: str(30, { allowNull: false }), providerRef: str(120),
   status: str(16, { allowNull: false, defaultValue: "pending" }),
   qrCode: { type: T.TEXT }, qrCodeBase64: { type: T.TEXT }, ticketUrl: { type: T.TEXT },
   expiresAt: { ...ts(), allowNull: false }, paidAt: ts(), paidAmountCents: { type: T.INTEGER }, fulfilledAt: ts(),
   paymentId: { type: T.UUID }, error: str(500), createdBy: { type: T.UUID }, lastCheckedAt: ts(),
+  // Compra pelo site (migration 20261102000001): TV que recebe a licença, e-mail de quem paga e licença criada/renovada.
+  mac: { type: T.CHAR(17) }, payerEmail: str(200), licenseId: { type: T.UUID },
 });
 
 // Clientes do revendedor (migration 20261029000001): agenda privada por MAC (nome, contato, valor, vencimento).

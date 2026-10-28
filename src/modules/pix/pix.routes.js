@@ -74,7 +74,7 @@ adminRouter.get(
   "/charges", requirePermission("billing:read"),
   validate({ query: z.object({
     ...pageQuery, status: z.enum(["pending", "paid", "expired", "cancelled", "failed", "review", "refunded"]).optional(),
-    partnerId: z.string().uuid().optional(), purpose: z.enum(["invoice", "stock"]).optional(),
+    partnerId: z.string().uuid().optional(), purpose: z.enum(["invoice", "stock", "license"]).optional(),
   }) }),
   async (req, res) => res.json(await svc.listCharges(req.valid.query)),
 );
