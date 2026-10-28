@@ -76,4 +76,6 @@ export const pixSiteCreateIpLimiter = limiter(15 * 60_000, 10);
 export const pixSiteCreateMacLimiter = limiter(60 * 60_000, 8, (req) => `pixsite:${String(req.body?.mac ?? "").toUpperCase().replace(/[^0-9A-F]/g, "")}`);
 export const pixSiteReadLimiter = limiter(60_000, 90);
 // Cadastro de clientes do revendedor (criar/editar/renovar/excluir): por usuário.
+// Ver usuário/senha da lista de um cliente: dado sensível, poucas consultas por minuto por usuário.
+export const credentialsViewLimiter = limiter(60_000, 20, (req) => `credview:${req.user?.id ?? req.ip}`);
 export const clientWriteLimiter = limiter(60_000, 60, (req) => `clientwrite:${req.user?.id ?? req.ip}`);

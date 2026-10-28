@@ -3,7 +3,7 @@ import { z } from "zod";
 import { validate } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
-import { clientWriteLimiter } from "../../middleware/security.js";
+import { clientWriteLimiter, credentialsViewLimiter } from "../../middleware/security.js";
 import { loadReseller, assertReseller } from "../devices/reseller-devices.service.js";
 import { FILTERS } from "./client.rules.js";
 import * as svc from "./client.service.js";
@@ -29,6 +29,9 @@ export const clientBody = z.object({
 
 router.get("/", validate({ query: z.object({ ...pageQuery, q: z.string().max(60).optional(), filter: z.enum(FILTERS).optional() }) }), async (req, res) =>
   res.json(await svc.listClients({ partnerId: req.user.partnerId, ...req.valid.query })));
+// POST (e não GET) para o id não ficar em log de acesso nem em cache; resposta nunca é guardada.
+router.post("/credentials", credentialsViewLimiter, validate({ body: z.object({ activationId: z.string().uuid() }) }), async (req, res) =>
+  res.set("Cache-Control", "no-store").json(await svc.credentialsOf({ partnerId: req.user.partnerId, activationId: req.valid.body.activationId, actor: actorOf(req) })));
 router.get("/summary", async (req, res) => res.json(await svc.summary(req.user.partnerId)));
 
 router.post("/", clientWriteLimiter, validate({ body: clientBody }), async (req, res) =>

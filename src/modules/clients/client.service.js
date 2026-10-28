@@ -1,5 +1,6 @@
-import { UniqueConstraintError } from "sequelize";
-import { ResellerClient } from "../../db/models/index.js";
+import { Op, UniqueConstraintError } from "sequelize";
+import { ResellerClient, Activation, PartnerProvider } from "../../db/models/index.js";
+import { decryptSecret } from "../../shared/crypto.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { normalizeMac } from "../../shared/mac.js";
@@ -120,4 +121,27 @@ export async function deleteClient({ partnerId, id, actor }) {
   if (!c) throw notFound("Cliente");
   await c.destroy();
   await audit({ actor, action: "client.delete", entityType: "reseller_client", entityId: id, metadata: { mac: c.mac.trim(), partnerId } });
+}
+
+/**
+ * Usuário e senha da lista que o cliente digitou na TV, para o revendedor atender sem depender da plataforma.
+ * - Só ativações DESTE revendedor e ainda vivas (partnerId vem do token; de outro revendedor => 404).
+ * - Sob demanda, nunca dentro da lista de clientes: cada consulta é auditada (quem, qual TV e quando).
+ * - A auditoria NÃO grava usuário nem senha. Resposta com Cache-Control: no-store (ver rota).
+ */
+export async function credentialsOf({ partnerId, activationId, actor }) {
+  const a = await Activation.findOne({
+    where: { id: activationId, partnerId, status: { [Op.ne]: "revoked" } },
+    include: [{ model: PartnerProvider, attributes: ["name"], required: false }],
+  });
+  if (!a) throw notFound("Ativação");
+  if (!a.credentialsEnc) {
+    throw new AppError(404, "NO_CREDENTIALS", "Esta TV não tem usuário e senha de lista guardados (as credenciais foram removidas).");
+  }
+  let creds;
+  try { creds = JSON.parse(decryptSecret(a.credentialsEnc)); } catch {
+    throw new AppError(500, "CREDENTIALS_UNREADABLE", "Não foi possível ler as credenciais desta TV.");
+  }
+  await audit({ actor, action: "client.credentials.view", entityType: "activation", entityId: a.id, metadata: { mac: a.mac } });
+  return { mac: a.mac, server: a.PartnerProvider?.name ?? null, username: creds.username ?? "", password: creds.password ?? "" };
 }
