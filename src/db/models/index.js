@@ -192,7 +192,10 @@ export const LicensePrice = def("LicensePrice", "license_prices", {
 });
 
 export const PixCharge = def("PixCharge", "pix_charges", {
-  partnerId: { type: T.UUID }, // NULL = compra de licença pelo site (purpose 'license') purpose: str(10, { allowNull: false }), invoiceId: { type: T.UUID },
+  // partnerId NULL = compra de licença pelo site (purpose 'license')
+  partnerId: { type: T.UUID },
+  purpose: str(10, { allowNull: false }),
+  invoiceId: { type: T.UUID },
   months: { type: T.INTEGER }, quantity: { type: T.INTEGER }, unitPriceCents: { type: T.INTEGER },
   amountCents: { type: T.INTEGER, allowNull: false }, provider: str(30, { allowNull: false }), providerRef: str(120),
   status: str(16, { allowNull: false, defaultValue: "pending" }),
