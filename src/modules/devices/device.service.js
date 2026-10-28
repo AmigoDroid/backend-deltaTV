@@ -1,4 +1,4 @@
-import { Op } from "sequelize";
+import { Op, UniqueConstraintError } from "sequelize";
 import { sequelize, Activation, Device, License, Partner, PartnerProvider, Customer, AuditLog } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
@@ -92,6 +92,7 @@ const ACTIONS = {
   block: { from: ["active"], to: "blocked" },
   unblock: { from: ["blocked"], to: "active" },
   revoke: { from: ["active", "blocked"], to: "revoked" },
+  restore: { from: ["revoked"], to: "active" }, // só superadmin (rota exige a permissão "override")
 };
 
 /**
@@ -111,6 +112,10 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
       throw new AppError(409, "INVALID_STATE", `Não é possível executar '${action}' em uma ativação '${a.status}'.`);
     }
     if (action === "block" && !reason) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo do bloqueio.");
+    // Remover apaga as credenciais do provedor: sem elas (e sem lista/licença própria) restaurar devolveria uma ativação que não toca nada.
+    if (action === "restore" && !a.licenseId && !a.credentialsEnc) {
+      throw new AppError(409, "RESTORE_NOT_POSSIBLE", "As credenciais desta lista foram apagadas quando ela foi removida. Configure a lista de novo (Adicionar parceiro).");
+    }
     // O revendedor não joga fora tempo pago: com licença em vigor, a saída é Transferir para outro MAC (o admin da plataforma pode remover).
     if (action === "revoke" && scope.partnerId && a.grantedLicenseId) {
       const granted = await License.findByPk(a.grantedLicenseId, { transaction: t });
@@ -123,8 +128,15 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
     if (action === "block") Object.assign(patch, { statusReason: reason, blockedBy });
     if (action === "unblock") Object.assign(patch, { statusReason: null, blockedBy: null });
     if (action === "revoke") Object.assign(patch, { revokedAt: new Date(), statusReason: reason ?? "Removida pelo administrador", credentialsEnc: null });
+    if (action === "restore") Object.assign(patch, { revokedAt: null, statusReason: null, blockedBy: null });
     const before = a.status;
-    await a.update(patch, { transaction: t });
+    try {
+      await a.update(patch, { transaction: t });
+    } catch (e) {
+      // Índices únicos de ativação viva (MAC+parceiro, MAC avulso, licença concedida): outra ativação já ocupa o lugar.
+      if (e instanceof UniqueConstraintError && action === "restore") throw new AppError(409, "MAC_IN_USE", "Este MAC já tem outra ativação viva no mesmo vínculo. Remova a outra antes de restaurar esta.");
+      throw e;
+    }
     if (action === "revoke") await revokeSessionsOf(a.id, t);
     await audit({
       actor, action: `activation.${action}`, entityType: "activation", entityId: a.id,

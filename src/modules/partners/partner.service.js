@@ -111,21 +111,24 @@ export async function updatePartner(id, input, actor) {
 const TRANSITIONS = {
   suspend: { from: ["active"], to: "suspended", reason: true },
   block: { from: ["active", "suspended"], to: "blocked", reason: true },
-  reactivate: { from: ["suspended", "blocked"], to: "active" },
+  reactivate: { from: ["suspended", "blocked"], forceFrom: ["cancelled"], to: "active" },
   cancel: { from: ["active", "suspended", "blocked"], to: "cancelled", reason: true },
 };
 
 /** Afeta TODOS os dispositivos da parceria (qualquer código usado na ativação) na próxima requisição. */
-export async function changePartnerStatus(id, action, { reason }, actor) {
+export async function changePartnerStatus(id, action, { reason, force = false }, actor) {
   const rule = TRANSITIONS[action];
   const changed = await sequelize.transaction(async (t) => {
     const p = await Partner.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!p) throw notFound("Parceiro");
-    if (!rule.from.includes(p.status)) throw new AppError(409, "INVALID_STATE", `Não é possível '${action}' uma parceria '${p.status}'.`);
+    if (!rule.from.includes(p.status) && !(force && rule.forceFrom?.includes(p.status))) {
+      if (rule.forceFrom?.includes(p.status)) throw new AppError(403, "SUPERADMIN_ONLY", "Somente o superadmin pode reativar uma parceria cancelada.");
+      throw new AppError(409, "INVALID_STATE", `Não é possível '${action}' uma parceria '${p.status}'.`);
+    }
     if (rule.reason && !reason) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo.");
     const previous = p.status;
     await p.update({ status: rule.to, statusReason: action === "reactivate" ? null : reason ?? null }, { transaction: t });
-    await audit({ actor, action: `partner.${action}`, entityType: "partner", entityId: id, metadata: { from: previous, to: rule.to, reason }, transaction: t });
+    await audit({ actor, action: `partner.${action}`, entityType: "partner", entityId: id, metadata: { from: previous, to: rule.to, reason, ...(previous === "cancelled" ? { forced: true } : {}) }, transaction: t });
     return p;
   });
   clearMirrorAuth(); // afeta todos os dispositivos da parceria: o espelho não pode seguir autorizando pelo cache

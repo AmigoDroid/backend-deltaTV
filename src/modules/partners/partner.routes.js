@@ -3,7 +3,7 @@ import { z } from "zod";
 import { validate } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
-import { requirePermission } from "../../middleware/authenticate.js";
+import { requirePermission, can } from "../../middleware/authenticate.js";
 import { generateInvoice } from "../billing/billing.service.js";
 import { listActivations } from "../devices/device.service.js";
 import * as svc from "./partner.service.js";
@@ -65,7 +65,7 @@ router.post("/:id/renew", requirePermission("partners:write"), validate({ params
 });
 for (const action of ["suspend", "block", "reactivate", "cancel"]) {
   router.post(`/:id/${action}`, requirePermission("partners:write"), validate({ params: id, body: reason }), async (req, res) => {
-    await svc.changePartnerStatus(req.valid.params.id, action, req.valid.body, actorOf(req));
+    await svc.changePartnerStatus(req.valid.params.id, action, { ...req.valid.body, force: can(req.user.role, "override") }, actorOf(req));
     res.json(await svc.getPartner(req.valid.params.id));
   });
 }

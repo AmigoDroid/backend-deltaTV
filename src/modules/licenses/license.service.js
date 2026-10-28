@@ -130,21 +130,27 @@ export async function updateLicense(id, input, actor) {
 const TRANSITIONS = {
   suspend: { from: ["active"], to: "suspended" },
   block: { from: ["active", "suspended"], to: "blocked", reason: true },
-  reactivate: { from: ["suspended", "blocked"], to: "active" },
+  // Superadmin (force) também reativa licença CANCELADA.
+  reactivate: { from: ["suspended", "blocked"], forceFrom: ["cancelled"], to: "active" },
   cancel: { from: ["pending", "active", "suspended", "blocked"], to: "cancelled", reason: true },
 };
 
 /** Alterar o status afeta TODOS os dispositivos da licença na próxima requisição (gate no backend). */
-export async function changeLicenseStatus(id, action, { reason }, actor) {
+export async function changeLicenseStatus(id, action, { reason, force = false }, actor) {
   const rule = TRANSITIONS[action];
   const changed = await sequelize.transaction(async (t) => {
     const l = await License.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!l) throw notFound("Licença");
-    if (!rule.from.includes(l.status)) throw new AppError(409, "INVALID_STATE", `Não é possível '${action}' uma licença '${l.status}'.`);
+    if (!rule.from.includes(l.status) && !(force && rule.forceFrom?.includes(l.status))) {
+      if (rule.forceFrom?.includes(l.status)) throw new AppError(403, "SUPERADMIN_ONLY", "Somente o superadmin pode reativar uma licença cancelada.");
+      throw new AppError(409, "INVALID_STATE", `Não é possível '${action}' uma licença '${l.status}'.`);
+    }
     if (rule.reason && !reason) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo.");
     const previous = l.status;
-    await l.update({ status: rule.to, statusReason: action === "reactivate" ? null : reason ?? null }, { transaction: t });
-    await audit({ actor, action: `license.${action}`, entityType: "license", entityId: id, metadata: { from: previous, to: rule.to, reason }, transaction: t });
+    // Licença que nunca iniciou (sem startsAt) volta como "pending"; senão ficaria "active" sem nunca liberar acesso.
+    const to = action === "reactivate" && !l.startsAt ? "pending" : rule.to;
+    await l.update({ status: to, statusReason: action === "reactivate" ? null : reason ?? null }, { transaction: t });
+    await audit({ actor, action: `license.${action}`, entityType: "license", entityId: id, metadata: { from: previous, to, reason, ...(previous === "cancelled" ? { forced: true } : {}) }, transaction: t });
     return l;
   });
   clearMirrorAuth(); // afeta todos os dispositivos da licença

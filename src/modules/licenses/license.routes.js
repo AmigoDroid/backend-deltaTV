@@ -3,7 +3,7 @@ import { z } from "zod";
 import { validate } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
-import { requirePermission } from "../../middleware/authenticate.js";
+import { requirePermission, can } from "../../middleware/authenticate.js";
 import { Plan } from "../../db/models/index.js";
 import * as svc from "./license.service.js";
 import { ensurePlan } from "./plan.service.js";
@@ -51,7 +51,7 @@ router.post(
 
 for (const action of ["suspend", "block", "reactivate", "cancel"]) {
   router.post(`/:id/${action}`, requirePermission("licenses:write"), validate({ params: id, body: reason }), async (req, res) => {
-    await svc.changeLicenseStatus(req.valid.params.id, action, req.valid.body, actorOf(req));
+    await svc.changeLicenseStatus(req.valid.params.id, action, { ...req.valid.body, force: can(req.user.role, "override") }, actorOf(req));
     res.json(await svc.getLicense(req.valid.params.id));
   });
 }

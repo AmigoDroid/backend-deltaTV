@@ -91,8 +91,9 @@ router.patch(
   async (req, res) => res.json(await svc.editActivation(req.valid.params.id, req.valid.body, actorOf(req))),
 );
 
-for (const action of ["block", "unblock", "revoke"]) {
-  router.post(`/activations/:id/${action}`, requirePermission("devices:write"), validate({ params: id, body: z.object({ reason: z.string().trim().min(3).max(500).optional() }) }), async (req, res) => {
+// "restore" (desfazer remoção) só existe para o superadmin: a permissão "override" não está em nenhum outro perfil.
+for (const action of ["block", "unblock", "revoke", "restore"]) {
+  router.post(`/activations/:id/${action}`, requirePermission(action === "restore" ? "override" : "devices:write"), validate({ params: id, body: z.object({ reason: z.string().trim().min(3).max(500).optional() }) }), async (req, res) => {
     await svc.changeActivation(req.valid.params.id, action, { reason: req.valid.body.reason, actor: actorOf(req), blockedBy: "admin" });
     res.json(await svc.getActivation(req.valid.params.id));
   });
