@@ -236,6 +236,9 @@ License.belongsTo(Customer, { foreignKey: "customerId" });
 License.hasMany(Activation, { foreignKey: "licenseId" });
 Activation.belongsTo(License, { foreignKey: "licenseId" });
 Activation.belongsTo(License, { foreignKey: "grantedLicenseId", as: "GrantedLicense" });
+// Ativações cuja licença veio do estoque do revendedor (granted_license_id): sem isto a licença nunca "enxerga" o aparelho.
+License.hasMany(Activation, { foreignKey: "grantedLicenseId", as: "GrantedActivations" });
+License.belongsTo(Partner, { foreignKey: "ownerPartnerId", as: "Owner" });
 License.hasMany(LicenseEvent, { foreignKey: "licenseId" });
 LicenseEvent.belongsTo(License, { foreignKey: "licenseId" });
 Partner.hasMany(Activation, { foreignKey: "partnerId" });

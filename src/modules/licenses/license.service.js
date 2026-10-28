@@ -1,22 +1,33 @@
 import { Op } from "sequelize";
 import {
-  sequelize, License, Plan, Customer, Activation, Payment, Renewal, Device,
+  sequelize, License, Plan, Customer, Activation, Payment, Renewal, Device, Partner,
 } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { generateCode, hashCode } from "../../shared/crypto.js";
 import { addLicenseMonthsUTC } from "../../shared/dates.js";
 import { pageOf, paged } from "../../shared/pagination.js";
-import { effectiveLicenseStatus } from "../access/access.policy.js";
+import { effectiveLicenseStatus, evaluateAccess } from "../access/access.policy.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 
-const DEVICE_COUNT = `(SELECT count(*) FROM activations a WHERE a.license_id = "License".id AND a.status <> 'revoked')`;
+const DEVICE_COUNT = `(SELECT count(*) FROM activations a WHERE (a.license_id = "License".id OR a.granted_license_id = "License".id) AND a.status <> 'revoked')`;
 
 const out = (l) => {
   const j = l.toJSON();
   delete j.codeHash;
   j.effectiveStatus = effectiveLicenseStatus(l);
   j.deviceCount = Number(j.deviceCount ?? 0);
+  // Aparelhos ligados direto (licenseId) + os ativados pelo código do revendedor (grantedLicenseId), numa lista só.
+  if (j.Activations || j.GrantedActivations) {
+    const byId = new Map();
+    for (const a of [...(j.Activations ?? []), ...(j.GrantedActivations ?? [])]) {
+      // Acesso REAL de cada aparelho: o status da ativação sozinho diz "ativo" mesmo com a licença cancelada.
+      const d = evaluateAccess({ activation: a, license: l });
+      byId.set(a.id, { ...a, viaPartner: !!a.partnerId && a.licenseId == null, access: { allowed: d.allowed, code: d.code, message: d.message } });
+    }
+    j.Activations = [...byId.values()].sort((x, y) => new Date(y.activatedAt) - new Date(x.activatedAt));
+    delete j.GrantedActivations;
+  }
   return j;
 };
 
@@ -50,7 +61,9 @@ export async function getLicense(id) {
     attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"]] },
     include: [
       { model: Customer }, { model: Plan },
+      { model: Partner, as: "Owner", attributes: ["id", "name"], required: false },
       { model: Activation, include: [Device] },
+      { model: Activation, as: "GrantedActivations", include: [Device, { model: Partner, attributes: ["id", "name"] }], required: false },
       { model: Renewal, include: [Plan] },
       { model: Payment },
     ],

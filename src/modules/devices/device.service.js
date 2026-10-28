@@ -7,15 +7,16 @@ import { pageOf, paged } from "../../shared/pagination.js";
 import { revokeSessionsOf, checkActivation } from "../access/access.service.js";
 import { dropMirrorAuth } from "../mirror/mirror.cache.js";
 import { describeDelivery } from "../mirror/mode.js";
+import { evaluateAccess } from "../access/access.policy.js";
 import { isLiveLicense, lockedByLicense } from "../stock/stock-license.js";
 import { encryptSecret } from "../../shared/crypto.js";
 import { assertPublicUrl } from "../../shared/ssrf.js";
 import { parseListUrl, canonicalListUrl } from "./playlist-by-url.service.js";
 
 const include = [
-  { model: License, attributes: ["id", "status", "expiresAt", "codeLast4"], include: [{ model: Customer, attributes: ["name", "email"] }] },
-  { model: License, as: "GrantedLicense", attributes: ["id", "status", "startsAt", "expiresAt"], required: false },
-  { model: Partner, attributes: ["id", "name", "slug", "status"] },
+  { model: License, attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4"], include: [{ model: Customer, attributes: ["name", "email"] }] },
+  { model: License, as: "GrantedLicense", attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4"], required: false },
+  { model: Partner, attributes: ["id", "name", "slug", "status", "statusReason", "startsAt", "endsAt", "suspendPolicy", "graceDays"] },
   { model: PartnerProvider, attributes: ["id", "name", "deliveryMode", "status"] },
 ];
 
@@ -35,14 +36,21 @@ export async function listActivations({ q, status, licenseId, partnerId, page, p
   return paged(rows.map((a) => serialize(a, { delivery: !scope.partnerId })), count, { page, pageSize });
 }
 
+// Acesso REAL (licença/parceria), sem consultar o banco de novo. Só não enxerga inadimplência (precisa de fatura): getActivation refaz com ela.
+const accessOf = (a) => {
+  const d = evaluateAccess({ activation: a, license: a.License, grantedLicense: a.GrantedLicense, partner: a.Partner });
+  return { allowed: d.allowed, code: d.code, message: d.message };
+};
+
 const serialize = (a, { delivery = false } = {}) => ({
+  access: accessOf(a),
   id: a.id, deviceId: a.deviceId, mac: a.mac, status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
   activatedAt: a.activatedAt, revokedAt: a.revokedAt, claimPending: a.claimPending,
   licenseId: a.licenseId, partnerId: a.partnerId,
   license: a.License ? { id: a.License.id, status: a.License.status, expiresAt: a.License.expiresAt, codeLast4: a.License.codeLast4, customer: a.License.Customer ? { name: a.License.Customer.name, email: a.License.Customer.email } : null } : null,
   // Licença vendida pelo código do revendedor (estoque): o vencimento é dela. remainingDays = dias inteiros que ainda restam.
   grantedLicense: a.GrantedLicense ? {
-    id: a.GrantedLicense.id, status: a.GrantedLicense.status, startsAt: a.GrantedLicense.startsAt, expiresAt: a.GrantedLicense.expiresAt,
+    id: a.GrantedLicense.id, codeLast4: a.GrantedLicense.codeLast4, status: a.GrantedLicense.status, statusReason: a.GrantedLicense.statusReason, startsAt: a.GrantedLicense.startsAt, expiresAt: a.GrantedLicense.expiresAt,
     remainingDays: a.GrantedLicense.expiresAt ? Math.max(0, Math.ceil((new Date(a.GrantedLicense.expiresAt).getTime() - Date.now()) / 86_400_000)) : 0,
   } : null,
   partner: a.Partner ? { id: a.Partner.id, name: a.Partner.name, slug: a.Partner.slug, status: a.Partner.status } : null,
