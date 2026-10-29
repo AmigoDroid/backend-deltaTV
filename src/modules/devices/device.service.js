@@ -19,6 +19,7 @@ const include = [
   { model: License, as: "GrantedLicense", attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4"], required: false },
   { model: Partner, attributes: ["id", "name", "slug", "status", "statusReason", "startsAt", "endsAt", "suspendPolicy", "graceDays"] },
   { model: PartnerProvider, attributes: ["id", "name", "deliveryMode", "status"] },
+  { model: Device, attributes: ["id", "platform"], required: false }, // tipo do aparelho (roku, android, tizen, webos, web)
 ];
 
 /** `scope.partnerId` restringe tudo ao parceiro (isolamento): nunca vem do cliente, vem do token. */
@@ -45,7 +46,7 @@ const accessOf = (a) => {
 
 const serialize = (a, { delivery = false } = {}) => ({
   access: accessOf(a),
-  id: a.id, deviceId: a.deviceId, mac: a.mac, status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
+  id: a.id, deviceId: a.deviceId, mac: a.mac, platform: a.Device?.platform ?? null, status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
   activatedAt: a.activatedAt, revokedAt: a.revokedAt, claimPending: a.claimPending,
   licenseId: a.licenseId, partnerId: a.partnerId,
   license: a.License ? { id: a.License.id, status: a.License.status, expiresAt: a.License.expiresAt, codeLast4: a.License.codeLast4, customer: a.License.Customer ? { name: a.License.Customer.name, email: a.License.Customer.email } : null } : null,
