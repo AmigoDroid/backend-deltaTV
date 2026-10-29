@@ -143,7 +143,7 @@ export async function mediaStream(ctx, req, res, kind, file) {
     const u = encodeURIComponent(ctx.cred.username);
     const p = encodeURIComponent(ctx.cred.password);
     const e = kind === "live" ? (ext === "ts" ? "ts" : "m3u8") : (ext ?? "mp4");
-    url = `${ctx.cred.baseUrl}/${kind === "live" ? "live/" : `${kind}/`}${u}/${p}/${id}.${e}`;
+    url = `${ctx.cred.baseUrl}/${kind == "live" ? "" : `${kind}/`}${u}/${p}/${id}.${e}`;
   }
   if (ctx.mode === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
