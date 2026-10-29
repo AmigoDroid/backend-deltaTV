@@ -87,7 +87,7 @@ async function stateOf(device) {
   };
 }
 
-/** Valida MAC + installationId de um aparelho de MAC virtual (roku, rokutv, androidtv, samsungtv, lgtv) e devolve a plataforma. */
+/** Valida MAC + installationId de um aparelho de MAC virtual (roku, rokutv, androidtv, samsungtv, lgtv, webtv) e devolve a plataforma. */
 export function normalizeVirtualRegistration(macInput, installationId) {
   const mac = normalizeMac(macInput);
   if (!mac) throw new AppError(400, "INVALID_MAC", "Endereço MAC inválido.");

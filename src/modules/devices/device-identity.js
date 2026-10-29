@@ -68,7 +68,7 @@ export function normalizeIdentity(input) {
 
 /**
  * Aparelhos que se identificam por MAC virtual enviam installationId "<prefixo>-<MAC sem separadores, maiúsculas>".
- * O prefixo diz qual aplicativo é; "roku" é o legado do app Roku e "rokutv" é aceito como sinônimo dele.
+ * O prefixo diz qual aplicativo é; "roku" é o legado do app Roku, "rokutv" é aceito como sinônimo dele e "webtv" é o player web.
  */
 export const VIRTUAL_MAC_PREFIXES = Object.freeze({
   roku: "roku",
@@ -76,6 +76,7 @@ export const VIRTUAL_MAC_PREFIXES = Object.freeze({
   androidtv: "android",
   samsungtv: "tizen",
   lgtv: "webos",
+  webtv: "web", // player web (navegador): installationId "webtv-<MAC>"
 });
 export const VIRTUAL_INSTALLATION_PATTERN = new RegExp(`^(${Object.keys(VIRTUAL_MAC_PREFIXES).join("|")})-([A-F0-9]{12})$`);
 export const VIRTUAL_INSTALLATION_HINT =
