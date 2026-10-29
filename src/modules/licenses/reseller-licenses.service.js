@@ -8,6 +8,7 @@ import { effectiveLicenseStatus, evaluateAccess } from "../access/access.policy.
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { ensurePlan } from "./plan.service.js";
 import { balancesOf, move } from "../stock/stock-ledger.js";
+import { presenceOf } from "../devices/presence.js";
 
 /**
  * Licenças do revendedor (portal): as que ele É DONO (licenses.owner_partner_id = ele), nascidas do estoque dele,
@@ -141,7 +142,7 @@ export async function getOwned({ partnerId, id }) {
       const d = evaluateAccess({ activation: a, license: l });
       return {
         activationId: a.id, mac: a.mac, status: a.status, activatedAt: a.activatedAt, revokedAt: a.revokedAt, statusReason: a.status === "revoked" ? a.statusReason : null,
-        platform: a.Device?.platform ?? null, appVersion: a.Device?.appVersion ?? null, lastSeenAt: a.Device?.lastSeenAt ?? null,
+        platform: a.Device?.platform ?? null, appVersion: a.Device?.appVersion ?? null, ...presenceOf(a.deviceId, a.Device?.lastSeenAt),
         access: { allowed: d.allowed, message: d.message },
         // Só a licença vendida pelo código (ativação de parceria) pode ir para outro MAC (rota /licenses/transfer).
         transferable: a.status === "active" && a.partnerId === partnerId && a.grantedLicenseId === l.id,

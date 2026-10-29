@@ -13,24 +13,29 @@ import { encryptSecret } from "../../shared/crypto.js";
 import { assertPublicUrl } from "../../shared/ssrf.js";
 import { parseListUrl, canonicalListUrl } from "./playlist-by-url.service.js";
 import { selectLiveActivation, removeList } from "./reseller-devices.service.js";
+import { presenceOf, onlineSql } from "./presence.js";
 
 const include = [
   { model: License, attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4"], include: [{ model: Customer, attributes: ["name", "email"] }] },
   { model: License, as: "GrantedLicense", attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4"], required: false },
   { model: Partner, attributes: ["id", "name", "slug", "status", "statusReason", "startsAt", "endsAt", "suspendPolicy", "graceDays"] },
   { model: PartnerProvider, attributes: ["id", "name", "deliveryMode", "status"] },
-  { model: Device, attributes: ["id", "platform"], required: false }, // tipo do aparelho (roku, android, tizen, webos, web)
+  { model: Device, attributes: ["id", "platform", "lastSeenAt"], required: false }, // tipo do aparelho (roku, android, tizen, webos, web) + presença
 ];
 
 /** `scope.partnerId` restringe tudo ao parceiro (isolamento): nunca vem do cliente, vem do token. */
-export async function listActivations({ q, status, licenseId, partnerId, page, pageSize }, scope = {}) {
+export async function listActivations({ q, status, licenseId, partnerId, online, page, pageSize }, scope = {}) {
   const where = {};
   if (status) where.status = status;
   if (licenseId) where.licenseId = licenseId;
   const effectivePartner = scope.partnerId ?? partnerId;
   if (effectivePartner) where.partnerId = effectivePartner;
   // Busca parcial por MAC, com ou sem ":" ("aabb" acha AA:BB:...). Texto sem nenhum caractere hexadecimal não acha nada.
-  if (q) where[Op.and] = [sequelize.literal(macSearchSql("Activation", q, (v) => sequelize.escape(v)))];
+  const and = [];
+  if (q) and.push(sequelize.literal(macSearchSql("Activation", q, (v) => sequelize.escape(v))));
+  // Filtro de presença (lê devices.last_seen_at; defasagem máxima = PRESENCE_FLUSH_SECONDS).
+  if (online === "true" || online === "false") and.push(sequelize.literal(onlineSql("Device", online === "true")));
+  if (and.length) where[Op.and] = and;
   const { rows, count } = await Activation.findAndCountAll({
     where, include, order: [["activatedAt", "DESC"]], ...pageOf({ page, pageSize }), distinct: true,
   });
@@ -46,7 +51,7 @@ const accessOf = (a) => {
 
 const serialize = (a, { delivery = false } = {}) => ({
   access: accessOf(a),
-  id: a.id, deviceId: a.deviceId, mac: a.mac, platform: a.Device?.platform ?? null, status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
+  id: a.id, deviceId: a.deviceId, mac: a.mac, platform: a.Device?.platform ?? null, ...presenceOf(a.deviceId, a.Device?.lastSeenAt), status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
   activatedAt: a.activatedAt, revokedAt: a.revokedAt, claimPending: a.claimPending,
   licenseId: a.licenseId, partnerId: a.partnerId,
   license: a.License ? { id: a.License.id, status: a.License.status, expiresAt: a.License.expiresAt, codeLast4: a.License.codeLast4, customer: a.License.Customer ? { name: a.License.Customer.name, email: a.License.Customer.email } : null } : null,
@@ -87,7 +92,7 @@ export async function deviceHistory(mac) {
     },
     order: [["createdAt", "DESC"]], limit: 200,
   });
-  return { device: { id: device.id, mac: device.mac, lastSeenAt: device.lastSeenAt }, activations: activations.map((a) => serialize(a, { delivery: true })), events };
+  return { device: { id: device.id, mac: device.mac, ...presenceOf(device.id, device.lastSeenAt) }, activations: activations.map((a) => serialize(a, { delivery: true })), events };
 }
 
 const ACTIONS = {

@@ -9,6 +9,8 @@ import * as svc from "./device.service.js";
 import * as registration from "./registration.service.js";
 import * as unlinked from "./unlinked.service.js";
 import { configurationSchema as configuration } from "./device-config.schema.js";
+import { countOnline } from "./presence.js";
+import { env } from "../../config/env.js";
 
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
@@ -76,9 +78,13 @@ router.delete(
   },
 );
 
+// Contagem leve de aparelhos online agora (o painel consulta a cada ~20 s).
+router.get("/presence", requirePermission("devices:read"), async (_req, res) =>
+  res.set("Cache-Control", "no-store").json({ online: await countOnline(), windowSeconds: env.presenceWindowSeconds }));
+
 router.get(
   "/", requirePermission("devices:read"),
-  validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), status: z.enum(["active", "blocked", "revoked"]).optional(), licenseId: z.string().uuid().optional(), partnerId: z.string().uuid().optional() }) }),
+  validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(), status: z.enum(["active", "blocked", "revoked"]).optional(), licenseId: z.string().uuid().optional(), partnerId: z.string().uuid().optional() }) }),
   async (req, res) => res.json(await svc.listActivations(req.valid.query)),
 );
 router.get("/history", requirePermission("devices:read"), validate({ query: z.object({ mac: z.string().min(11).max(20) }) }), async (req, res) => res.json(await svc.deviceHistory(req.valid.query.mac)));

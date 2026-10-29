@@ -2,6 +2,7 @@ import { DeviceSession } from "../../db/models/index.js";
 import { verifyJwt } from "../../shared/crypto.js";
 import { AppError } from "../../shared/errors.js";
 import { checkActivation, denialError } from "./access.service.js";
+import { touchDevice } from "../devices/presence.js";
 
 /**
  * Gate de acesso do dispositivo (autorização no BACKEND, a cada requisição).
@@ -20,6 +21,8 @@ export const requireDevice = (typ = "device", { enforce = true, graceSeconds = 0
     throw new AppError(401, "SESSION_REVOKED", "Sessão encerrada.");
   }
   const { activation, decision } = await checkActivation(payload.aid);
+  // Sinal de vida (só memória): vale mesmo que o acesso esteja negado — o aparelho está falando com o servidor.
+  touchDevice(activation?.deviceId);
   if (enforce && !decision.allowed) throw denialError(decision);
   req.device = { activation, decision, session };
   next();

@@ -11,6 +11,7 @@ import { selectActivation } from "./device-lists.js";
 import { applyStockToDevice } from "../stock/stock.service.js";
 import { transferGrantedLicense } from "../stock/license-transfer.service.js";
 import { isLiveLicense, lockedByLicense } from "../stock/stock-license.js";
+import { presenceOf } from "./presence.js";
 
 /**
  * Painel do revendedor: consulta e edição de dispositivo POR MAC.
@@ -113,7 +114,7 @@ export async function lookupByMac({ partner, actor, mac: macInput }) {
   const state = await registration.registeredDeviceById(device.id);
   return {
     ...state,
-    platform: device.platform, appVersion: device.appVersion, installationChangedAt: device.installationChangedAt, firstRegisteredAt: device.firstRegisteredAt, lastSeenAt: device.lastSeenAt,
+    platform: device.platform, appVersion: device.appVersion, installationChangedAt: device.installationChangedAt, firstRegisteredAt: device.firstRegisteredAt, ...presenceOf(device.id, device.lastSeenAt),
     lastChange: await lastChangeOf(device, activations.map((a) => a.id)),
   };
 }

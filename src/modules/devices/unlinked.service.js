@@ -6,6 +6,7 @@ import { macSearchSql, normalizeMac } from "../../shared/mac.js";
 import { pageOf, paged } from "../../shared/pagination.js";
 import { legacyRokuInstallationId } from "./device-identity.js";
 import { configureDeviceByAdmin } from "./registration.service.js";
+import { presenceOf } from "./presence.js";
 
 /**
  * Dispositivos SEM VÍNCULO.
@@ -33,7 +34,7 @@ const serialize = (device, lastRevoked, waiting) => ({
   platform: device.platform,
   installationId: device.lastInstallationId,
   firstSeenAt: device.firstRegisteredAt ?? device.createdAt,
-  lastSeenAt: device.lastSeenAt,
+  ...presenceOf(device.id, device.lastSeenAt), // { online, lastSeenAt }
   // A TV está com um pareamento aberto agora (exibindo o QR / aguardando configuração).
   waiting,
   // Já teve lista e ela foi removida (pelo admin, revendedor ou pelo próprio aparelho).

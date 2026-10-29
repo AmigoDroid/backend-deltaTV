@@ -7,6 +7,7 @@ import { xtreamCredentialsOf } from "../xtream/xtream.service.js";
 import { deliveryModeOf } from "./mode.js";
 
 import { cachedMirrorAuth } from "./mirror.cache.js";
+import { touchDevice } from "../devices/presence.js";
 
 /** Consulta de verdade no banco: token "mirror" válido, sessão não revogada, licença/parceria liberada. */
 async function loadAuth(token) {
@@ -22,6 +23,7 @@ async function loadAuth(token) {
     activationId: payload.aid,
     value: {
       token,
+      deviceId: activation.deviceId, // presença: cada request autorizado conta como sinal de vida
       mode: deliveryModeOf(activation),
       cred: await xtreamCredentialsOf(activation),
       publicBase: env.publicBaseUrl,
@@ -43,5 +45,7 @@ async function loadAuth(token) {
  */
 export async function authorizeMirror(token) {
   verifyJwt(token, "mirror");
-  return cachedMirrorAuth(token, () => loadAuth(token), env.mirrorAuthCacheSeconds * 1000);
+  const ctx = await cachedMirrorAuth(token, () => loadAuth(token), env.mirrorAuthCacheSeconds * 1000);
+  touchDevice(ctx.deviceId);
+  return ctx;
 }

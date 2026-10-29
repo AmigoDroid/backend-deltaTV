@@ -142,6 +142,11 @@ export const env = Object.freeze({
     return !isProd && process.env.ALLOW_PRIVATE_SOURCES === "true";
   },
   // Sessões simultâneas por ativação (recuperação por MAC abre espaço removendo as mais antigas) e duração do acesso por chave.
+  // Presença online/offline (modules/devices/presence.js). Janela > intervalo do heartbeat + flush, para tolerar 1 batida perdida.
+  presenceWindowSeconds: Math.max(30, int("PRESENCE_WINDOW_SECONDS", 90)),
+  presenceFlushSeconds: Math.min(60, Math.max(5, int("PRESENCE_FLUSH_SECONDS", 15))),
+  // Intervalo que o app deve usar entre heartbeats (devolvido na resposta, então pode mudar sem atualizar o app).
+  presenceHeartbeatSeconds: Math.min(60, Math.max(10, int("PRESENCE_HEARTBEAT_SECONDS", 30))),
   maxSessionsPerActivation: int("MAX_SESSIONS_PER_ACTIVATION", 3),
   deviceScopedSessionMinutes: int("DEVICE_SCOPED_SESSION_MINUTES", 30),
   // E-mail de saída (SMTP). Sem SMTP_HOST + MAIL_FROM o envio fica desligado e o painel avisa. A senha só existe aqui (.env).

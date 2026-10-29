@@ -81,3 +81,8 @@ export const credentialsViewLimiter = limiter(60_000, 20, (req) => `credview:${r
 // Enviar e-mail em massa / teste: poucas vezes por minuto por usuário.
 export const mailSendLimiter = limiter(60_000, 6, (req) => `mailsend:${req.user?.id ?? req.ip}`);
 export const clientWriteLimiter = limiter(60_000, 60, (req) => `clientwrite:${req.user?.id ?? req.ip}`);
+// Heartbeat de presença: poucas chamadas por TV (a cada ~30 s). Chave = token (várias TVs atrás do mesmo NAT não competem).
+export const heartbeatLimiter = limiter(60_000, 20, (req) => {
+  const bearer = (req.get("authorization") || "").slice(-64);
+  return `hb:${bearer || req.ip}`;
+});

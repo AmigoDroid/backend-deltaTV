@@ -14,6 +14,7 @@ import pairingRoutes from "./modules/devices/pairing.routes.js";
 import deviceAccessRoutes from "./modules/devices/device-access.routes.js";
 import playRoutes from "./modules/sources/delivery.routes.js";
 import mirrorRoutes from "./modules/mirror/mirror.routes.js";
+import heartbeatRoutes from "./modules/devices/presence.routes.js";
 
 export function createApp() {
   const app = express();
@@ -39,6 +40,8 @@ export function createApp() {
   // requisições contínuas e várias TVs compartilham o mesmo IP. Cada uma tem o seu limitador por credencial.
   app.use("/api/v1/play", mirrorLimiter, playRoutes);
   app.use(mirrorRoutes);
+  // Heartbeat de presença: também antes do limitador global (várias TVs no mesmo IP); tem o seu limitador por token.
+  app.use("/api/v1/client/heartbeat", heartbeatRoutes);
 
   app.use(apiLimiter);
 
