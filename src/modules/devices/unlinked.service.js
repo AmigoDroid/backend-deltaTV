@@ -11,13 +11,18 @@ import { configureDeviceByAdmin } from "./registration.service.js";
  * Dispositivos SEM VÍNCULO.
  *
  * O app, ao abrir, chama POST /client/register (registration.service.registerDevice): o servidor cria o Device e, como ele
- * ainda não tem ativação, ele passa a aparecer aqui. "Sem vínculo" = nenhuma ativação viva (ativa ou bloqueada) — vale tanto
- * para o aparelho novo quanto para o que teve a lista removida (ativação revogada). O administrador então informa código,
+ * ainda não tem ativação, ele passa a aparecer aqui. "Sem vínculo" = nenhuma ativação viva (ativa ou bloqueada) COM LISTA — vale
+ * para o aparelho novo, para o que teve a lista removida (ativação revogada) e para o que tem só a licença ativada, sem lista
+ * própria nem parceiro/provedor (nada para tocar). Lista = ativação de parceria ou lista própria (URL) na licença.
+ * Ativação bloqueada com lista continua "vinculada" (o bloqueio é decisão do painel). O administrador então informa código,
  * usuário e senha do provedor; a validação e a ativação reaproveitam configureDeviceByAdmin (mesmas regras do restante).
  */
 
 // "Device" é o alias que o Sequelize dá à tabela nas consultas deste model.
-export const NOT_LINKED_SQL = `NOT EXISTS (SELECT 1 FROM activations a WHERE a.device_id = "Device".id AND a.status <> 'revoked')`;
+// "Tem lista" = ativação de parceria (qualquer uma, inclusive de cadastro antigo sem provedor definido: não some do painel de dispositivos)
+// ou licença com lista própria. Só a licença SEM lista própria e sem parceria passa a contar como sem vínculo.
+export const HAS_LIST_SQL = `(a.partner_id IS NOT NULL OR (a.license_id IS NOT NULL AND a.playlist_url_enc IS NOT NULL))`;
+export const NOT_LINKED_SQL = `NOT EXISTS (SELECT 1 FROM activations a WHERE a.device_id = "Device".id AND a.status <> 'revoked' AND ${HAS_LIST_SQL})`;
 const notLinked = () => sequelize.literal(NOT_LINKED_SQL);
 
 export const countUnlinkedDevices = () => Device.count({ where: { [Op.and]: [notLinked()] } });
@@ -72,8 +77,12 @@ export async function listUnlinkedDevices({ q, page, pageSize }) {
 }
 
 async function assertUnlinked(device) {
-  const live = await Activation.count({ where: { deviceId: device.id, status: { [Op.ne]: "revoked" } } });
-  if (live > 0) {
+  // Só conta como vinculado quem tem lista; licença sem lista ainda pode receber parceiro pelo painel.
+  const [[{ n }]] = await sequelize.query(
+    `SELECT count(*)::int AS n FROM activations a WHERE a.device_id = :id AND a.status <> 'revoked' AND ${HAS_LIST_SQL}`,
+    { replacements: { id: device.id } },
+  );
+  if (n > 0) {
     throw new AppError(409, "DEVICE_ALREADY_LINKED", "Este dispositivo já está vinculado a uma lista. Para atualizar essa lista ou adicionar outro parceiro ao mesmo MAC, use “Adicionar parceiro” na tela de Dispositivos.");
   }
 }
