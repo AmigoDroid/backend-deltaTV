@@ -19,7 +19,10 @@ import { MIRROR_PASS } from "./mode.js";
 export function redirectTo(res, target) {
   const url = parseHttpUrl(target);
   const host = url.hostname.replace(/^\[|\]$/g, "");
-  if (!env.allowPrivateSources && (host === "localhost" || (net.isIP(host) && isPrivateAddress(host)))) {
+  if (
+    !env.allowPrivateSources &&
+    (host === "localhost" || (net.isIP(host) && isPrivateAddress(host)))
+  ) {
     throw new AppError(502, "ORIGIN_NOT_ALLOWED", "Origem não permitida.");
   }
   res.statusCode = 302;
@@ -32,10 +35,15 @@ const accountOf = (cred) => ({
   base: cred.baseUrl,
   username: cred.username,
   password: cred.password,
-  key: crypto.createHash("sha256").update(`${cred.baseUrl}\0${cred.username}\0${cred.password}`).digest("hex").slice(0, 32),
+  key: crypto
+    .createHash("sha256")
+    .update(`${cred.baseUrl}\0${cred.username}\0${cred.password}`)
+    .digest("hex")
+    .slice(0, 32),
 });
 
-const hlsWrapFor = (ctx) => (abs) => `/hls/${encodeURIComponent(ctx.token)}/${encryptSecret(abs)}`;
+const hlsWrapFor = (ctx) => (abs) =>
+  `/hls/${encodeURIComponent(ctx.token)}/${encryptSecret(abs)}`;
 
 /** Troca, na resposta de autenticação do painel, os dados reais pelos do espelho. */
 export function rewriteAuthJson(buf, ctx) {
@@ -59,10 +67,14 @@ export function rewriteAuthJson(buf, ctx) {
 
 /** GET /player_api.php — API do painel (auth, categorias, listas, detalhes). */
 export async function playerApi(ctx, req, res, query = {}) {
-  const qs = new URLSearchParams({ username: ctx.cred.username, password: ctx.cred.password });
+  const qs = new URLSearchParams({
+    username: ctx.cred.username,
+    password: ctx.cred.password,
+  });
   for (const [k, v] of Object.entries(query)) {
     if (k === "username" || k === "password") continue;
-    if (typeof v === "string" && k.length <= 50 && v.length <= 200) qs.set(k, v);
+    if (typeof v === "string" && k.length <= 50 && v.length <= 200)
+      qs.set(k, v);
   }
   const url = `${ctx.cred.baseUrl}/player_api.php?${qs}`;
   if (ctx.mode === "redirect") return redirectTo(res, url);
@@ -79,8 +91,13 @@ export async function playerApi(ctx, req, res, query = {}) {
 
 /** GET /get.php — playlist M3U do painel, com as URLs de mídia apontando para o espelho. */
 export async function getPhp(ctx, req, res, query = {}) {
-  const qs = new URLSearchParams({ username: ctx.cred.username, password: ctx.cred.password });
-  for (const k of ["type", "output"]) if (typeof query[k] === "string" && query[k].length <= 30) qs.set(k, query[k]);
+  const qs = new URLSearchParams({
+    username: ctx.cred.username,
+    password: ctx.cred.password,
+  });
+  for (const k of ["type", "output"])
+    if (typeof query[k] === "string" && query[k].length <= 30)
+      qs.set(k, query[k]);
   const url = `${ctx.cred.baseUrl}/get.php?${qs}`;
   if (ctx.mode === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
@@ -99,7 +116,10 @@ export async function getPhp(ctx, req, res, query = {}) {
 
 /** GET /xmltv.php — guia de programação (EPG). */
 export async function xmltv(ctx, req, res) {
-  const qs = new URLSearchParams({ username: ctx.cred.username, password: ctx.cred.password });
+  const qs = new URLSearchParams({
+    username: ctx.cred.username,
+    password: ctx.cred.password,
+  });
   const url = `${ctx.cred.baseUrl}/xmltv.php?${qs}`;
   if (ctx.mode === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
@@ -109,7 +129,8 @@ export async function xmltv(ctx, req, res) {
 /** GET /live|movie|series/:u/:p/:id.ext  (e /:u/:p/:id para canais ao vivo). */
 export async function mediaStream(ctx, req, res, kind, file) {
   const m = String(file).match(/^(\d{1,12})(?:\.([A-Za-z0-9]{2,5}))?$/);
-  if (!m || !["live", "movie", "series"].includes(kind)) throw new AppError(404, "NOT_FOUND", "Item não encontrado.");
+  if (!m || !["live", "movie", "series"].includes(kind))
+    throw new AppError(404, "NOT_FOUND", "Item não encontrado.");
   const id = m[1];
   let ext = m[2]?.toLowerCase();
   if (kind === "live" && !ext) ext = "ts";
@@ -122,12 +143,17 @@ export async function mediaStream(ctx, req, res, kind, file) {
     const u = encodeURIComponent(ctx.cred.username);
     const p = encodeURIComponent(ctx.cred.password);
     const e = kind === "live" ? (ext === "ts" ? "ts" : "m3u8") : (ext ?? "mp4");
-    url = `${ctx.cred.baseUrl}/${kind === "live" ? "" : `${kind}/`}${u}/${p}/${id}.${e}`;
+    url = `${ctx.cred.baseUrl}/${kind === "live" ? "live/" : `${kind}/`}${u}/${p}/${id}.${e}`;
   }
   if (ctx.mode === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
-  return relay(req, res, url, { stream: true, sessionKey: kind === "live" ? ctx.token : undefined, hlsWrap: hlsWrapFor(ctx), recheck: ctx.recheck });
+  return relay(req, res, url, {
+    stream: true,
+    sessionKey: kind === "live" ? ctx.token : undefined,
+    hlsWrap: hlsWrapFor(ctx),
+    recheck: ctx.recheck,
+  });
 }
 
 /** GET /hls/:token/:blob — segmentos e sub-playlists HLS (o alvo vem cifrado na URL gerada por nós, nunca do cliente). */
@@ -140,5 +166,8 @@ export async function hlsPart(ctx, req, res, blob) {
   }
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
-  return relay(req, res, target, { hlsWrap: hlsWrapFor(ctx), recheck: ctx.recheck });
+  return relay(req, res, target, {
+    hlsWrap: hlsWrapFor(ctx),
+    recheck: ctx.recheck,
+  });
 }
