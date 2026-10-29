@@ -12,6 +12,7 @@ import { isLiveLicense, lockedByLicense } from "../stock/stock-license.js";
 import { encryptSecret } from "../../shared/crypto.js";
 import { assertPublicUrl } from "../../shared/ssrf.js";
 import { parseListUrl, canonicalListUrl } from "./playlist-by-url.service.js";
+import { selectLiveActivation, removeList } from "./reseller-devices.service.js";
 
 const include = [
   { model: License, attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4"], include: [{ model: Customer, attributes: ["name", "email"] }] },
@@ -194,4 +195,15 @@ export async function editActivation(id, input, actor) {
   });
   dropMirrorAuth(row.id); // vale já para o espelho (depois do commit)
   return getActivation(row.id);
+}
+
+/**
+ * Remove UMA lista de um dispositivo pelo painel (sem chave da TV). Mesma regra do acesso por chave:
+ * com mais de uma lista no MAC, `activationId` é obrigatório. Não há trava de licença vendida: quem chega aqui é a equipe do painel.
+ */
+export async function removeListByAdmin(deviceId, { activationId, reason }, actor) {
+  const device = await Device.findByPk(deviceId);
+  if (!device) throw notFound("Dispositivo");
+  const activation = await selectLiveActivation(device.id, activationId);
+  return removeList({ device, activation, mac: device.mac, actor, reason });
 }

@@ -34,6 +34,14 @@ router.post(
   )),
 );
 
+// Remove UMA lista do MAC pelo painel, sem precisar da chave da TV. Com várias listas, `activationId` é obrigatório.
+router.post(
+  "/registrations/:id/remove-list",
+  requirePermission("devices:write"),
+  validate({ params: id, body: z.object({ reason: z.string().trim().min(3).max(500).optional(), activationId: z.string().uuid().optional() }) }),
+  async (req, res) => res.json(await svc.removeListByAdmin(req.valid.params.id, req.valid.body, actorOf(req))),
+);
+
 /* ---------- Dispositivos sem vínculo + cadastro direto pelo painel ---------- */
 // Código curto da parceria + usuário/senha do provedor. Mesmas regras do app (client.routes) e de configurationSchema.
 const credentials = z.object({
