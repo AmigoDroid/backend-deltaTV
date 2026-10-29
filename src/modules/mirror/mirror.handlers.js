@@ -135,17 +135,8 @@ export async function mediaStream(ctx, req, res, kind, file) {
   let ext = m[2]?.toLowerCase();
   if (kind === "live" && !ext) ext = "ts";
 
-  let url;
-  try {
-    // O painel informa onde os streams realmente ficam (server_info); pode ser outro host que o da API.
-    url = await playUrlFor(accountOf(ctx.cred), { kind, id, ext });
-  } catch {
-    const u = encodeURIComponent(ctx.cred.username);
-    const p = encodeURIComponent(ctx.cred.password);
-    const e = kind === "live" ? (ext === "m3u8" ? "m3u8" : "ts") : (ext ?? "mp4");
-
-    url = `${ctx.cred.baseUrl}/${kind}/${u}/${p}/${id}.${e}`;
-  }
+  // Origem = baseUrl cadastrada: <baseUrl>/{live|movie|series}/<usuário>/<senha>/<id>.<ext>
+  const url = playUrlFor(accountOf(ctx.cred), { kind, id, ext });
   if (ctx.mode === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");

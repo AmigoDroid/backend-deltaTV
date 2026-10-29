@@ -189,5 +189,5 @@ export async function resolvePlayable({ account, id, hint }) {
   const m = typeof id === "string" ? id.match(ID_RE) : null;
   if (!m || m[1] === "s") return null;
   const kind = { l: "live", m: "movie", e: "series" }[m[1]];
-  return { kind, origin: await playUrlFor(account, { kind, id: m[2], ext: hint }) };
+  return { kind, origin: playUrlFor(account, { kind, id: m[2], ext: hint }) };
 }

@@ -212,13 +212,17 @@ export async function streamOriginOf(account) {
 
 const EXT_OK = /^[A-Za-z0-9]{2,5}$/;
 
-/** URL de reprodução (com credenciais — só para uso do servidor). */
-export async function playUrlFor(account, { kind, id, ext }) {
-  const origin = await streamOriginOf(account);
+/**
+ * URL de reprodução (com credenciais — só para uso do servidor).
+ * Formato único: <baseUrl>/{live|movie|series}/<usuário>/<senha>/<id>.<ext>
+ * Usa SEMPRE a baseUrl cadastrada (account.base). NÃO usar o server_info do painel aqui: ele costuma
+ * apontar para outro host/porta (ou porta errada) e a origem responde 404.
+ */
+export function playUrlFor(account, { kind, id, ext }) {
+  const origin = String(account.base).replace(/\/+$/, "");
   const u = encodeURIComponent(account.username);
   const p = encodeURIComponent(account.password);
   const e = EXT_OK.test(ext ?? "") ? ext.toLowerCase() : null;
-  // Formato único: <origem>/{live|movie|series}/<usuário>/<senha>/<id>.<ext> (ao vivo sempre com o segmento /live/).
   if (kind === "live") return `${origin}/live/${u}/${p}/${id}.${e === "m3u8" ? "m3u8" : "ts"}`;
   if (kind === "movie") return `${origin}/movie/${u}/${p}/${id}.${e ?? "mp4"}`;
   return `${origin}/series/${u}/${p}/${id}.${e ?? "mp4"}`;
