@@ -69,6 +69,18 @@ export async function countOnline() {
   return rows[0]?.n ?? 0;
 }
 
+/** Online agora entre os aparelhos com ativação ativa deste parceiro (isolamento: partnerId vem do token, nunca do cliente). */
+export async function countOnlineForPartner(partnerId) {
+  const [rows] = await sequelize.query(
+    `SELECT count(DISTINCT d.id)::int AS n
+       FROM devices d JOIN activations a ON a.device_id = d.id
+      WHERE a.partner_id = :partnerId AND a.status = 'active'
+        AND d.last_seen_at >= now() - (:w * interval '1 second')`,
+    { replacements: { partnerId, w: env.presenceWindowSeconds } },
+  );
+  return rows[0]?.n ?? 0;
+}
+
 function prune(now = Date.now()) {
   const limit = now - windowMs() * 2;
   for (const [id, t] of seen) if (t < limit && !dirty.has(id)) seen.delete(id);

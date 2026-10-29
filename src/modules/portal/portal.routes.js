@@ -19,6 +19,8 @@ import { isPendingSignup } from "../partners/reseller-signup.service.js";
 import clientsRoutes from "../clients/client.routes.js";
 import { partnerRouter as pixRoutes } from "../pix/pix.routes.js";
 import { configurationSchema } from "../devices/device-config.schema.js";
+import { countOnlineForPartner } from "../devices/presence.js";
+import { env } from "../../config/env.js";
 
 /**
  * Portal do parceiro (/api/v1/partner). ISOLAMENTO: o partnerId vem EXCLUSIVAMENTE do token do usuário
@@ -44,7 +46,10 @@ router.get("/me", async (req, res) => {
   });
 });
 
-router.get("/devices", validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), status: z.enum(["active", "blocked", "revoked"]).optional() }) }), async (req, res) =>
+// Contagem leve de aparelhos online (só deste parceiro). Declarada ANTES de /devices/:id.
+router.get("/devices/presence", async (req, res) =>
+  res.set("Cache-Control", "no-store").json({ online: await countOnlineForPartner(req.user.partnerId), windowSeconds: env.presenceWindowSeconds }));
+router.get("/devices", validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(), status: z.enum(["active", "blocked", "revoked"]).optional() }) }), async (req, res) =>
   res.json(await devices.listActivations(req.valid.query, scope(req))));
 router.get("/devices/:id", validate({ params: id }), async (req, res) => res.json(await devices.getActivation(req.valid.params.id, scope(req))));
 for (const action of ["block", "unblock", "revoke"]) {
