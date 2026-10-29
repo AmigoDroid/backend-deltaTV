@@ -218,7 +218,8 @@ export async function playUrlFor(account, { kind, id, ext }) {
   const u = encodeURIComponent(account.username);
   const p = encodeURIComponent(account.password);
   const e = EXT_OK.test(ext ?? "") ? ext.toLowerCase() : null;
-  if (kind === "live") return `${origin}/${u}/${p}/${id}.${e === "ts" ? "ts" : "m3u8"}`;
+  // Formato único: <origem>/{live|movie|series}/<usuário>/<senha>/<id>.<ext> (ao vivo sempre com o segmento /live/).
+  if (kind === "live") return `${origin}/live/${u}/${p}/${id}.${e === "m3u8" ? "m3u8" : "ts"}`;
   if (kind === "movie") return `${origin}/movie/${u}/${p}/${id}.${e ?? "mp4"}`;
   return `${origin}/series/${u}/${p}/${id}.${e ?? "mp4"}`;
 }
