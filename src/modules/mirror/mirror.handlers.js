@@ -9,6 +9,9 @@ import { playUrlFor } from "../xtream/xtream.client.js";
 import { m3uMirrorRewriter } from "./m3u-rewrite.js";
 import { MIRROR_PASS } from "./mode.js";
 
+// Modo do tipo pedido (api|live|movie|series). Sem `modes` (ctx antigo em cache) cai no modo único.
+const modeFor = (ctx, kind) => ctx.modes?.[kind] ?? ctx.mode;
+
 /**
  * Rota espelho Xtream: o app fala com ESTE servidor como se fosse o painel.
  * Cada handler recebe `ctx` já autenticado (token válido, sessão ativa, licença/parceria liberada):
@@ -77,7 +80,7 @@ export async function playerApi(ctx, req, res, query = {}) {
       qs.set(k, v);
   }
   const url = `${ctx.cred.baseUrl}/player_api.php?${qs}`;
-  if (ctx.mode === "redirect") return redirectTo(res, url);
+  if (modeFor(ctx, "api") === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
   // Só a resposta de autenticação (sem "action") é pequena e reescrita; as listas grandes passam em fluxo.
   return relay(req, res, url, {
@@ -99,7 +102,7 @@ export async function getPhp(ctx, req, res, query = {}) {
     if (typeof query[k] === "string" && query[k].length <= 30)
       qs.set(k, query[k]);
   const url = `${ctx.cred.baseUrl}/get.php?${qs}`;
-  if (ctx.mode === "redirect") return redirectTo(res, url);
+  if (modeFor(ctx, "api") === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
   return relay(req, res, url, {
     through: () =>
@@ -121,7 +124,7 @@ export async function xmltv(ctx, req, res) {
     password: ctx.cred.password,
   });
   const url = `${ctx.cred.baseUrl}/xmltv.php?${qs}`;
-  if (ctx.mode === "redirect") return redirectTo(res, url);
+  if (modeFor(ctx, "api") === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
   return relay(req, res, url, { recheck: ctx.recheck });
 }
@@ -137,7 +140,7 @@ export async function mediaStream(ctx, req, res, kind, file) {
 
   // Origem = baseUrl cadastrada: <baseUrl>/{live|movie|series}/<usuário>/<senha>/<id>.<ext>
   const url = playUrlFor(accountOf(ctx.cred), { kind, id, ext });
-  if (ctx.mode === "redirect") return redirectTo(res, url);
+  if (modeFor(ctx, kind) === "redirect") return redirectTo(res, url);
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
   return relay(req, res, url, {

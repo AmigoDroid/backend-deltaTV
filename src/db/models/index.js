@@ -94,6 +94,16 @@ export const Activation = def("Activation", "activations", {
   grantedLicenseId: { type: T.UUID },
   // Modo de entrega definido pelo superadmin para ESTA ativação (migration 20261101000001). NULL = automático (ver mirror/mode.js).
   deliveryMode: str(20),
+  // Modo de entrega POR TIPO ({api, live, movie, series} -> proxy|redirect), migration 20261105000001. NULL = automático.
+  deliveryModes: { type: T.JSONB },
+});
+
+// Acesso ao Player Web (migration 20261105000001): código AB123456 -> dispositivo web com ativação e licença próprias.
+export const WebAccess = def("WebAccess", "web_accesses", {
+  partnerId: { type: T.UUID }, deviceId: { type: T.UUID, allowNull: false },
+  codeHash: { type: T.CHAR(64), allowNull: false }, codeEnc: { type: T.TEXT, allowNull: false },
+  label: str(160), status: str(20, { allowNull: false, defaultValue: "active" }), statusReason: str(500),
+  createdBy: { type: T.UUID }, lastLoginAt: ts(),
 });
 
 export const DevicePairingToken = def("DevicePairingToken", "device_pairing_tokens", {
@@ -273,6 +283,10 @@ PartnerProvider.hasMany(PartnerCode, { foreignKey: "providerId" });
 PartnerCode.belongsTo(PartnerProvider, { foreignKey: "providerId", as: "provider" });
 Device.hasMany(Activation, { foreignKey: "deviceId" });
 Activation.belongsTo(Device, { foreignKey: "deviceId" });
+WebAccess.belongsTo(Device, { foreignKey: "deviceId" });
+Device.hasOne(WebAccess, { foreignKey: "deviceId" });
+WebAccess.belongsTo(Partner, { foreignKey: "partnerId" });
+Partner.hasMany(WebAccess, { foreignKey: "partnerId" });
 Device.hasMany(DevicePairingToken, { foreignKey: "deviceId" });
 DevicePairingToken.belongsTo(Device, { foreignKey: "deviceId" });
 Activation.hasMany(DeviceSession, { foreignKey: "activationId" });

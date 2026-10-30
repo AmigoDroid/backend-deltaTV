@@ -27,6 +27,7 @@ import * as svc from "./activation.service.js";
 import * as deviceConfig from "../devices/registration.service.js";
 import { addListByUrl } from "../devices/playlist-by-url.service.js";
 import * as pix from "../pix/pix.service.js";
+import { clientRouter as webClientRoutes } from "../web/web.routes.js";
 import { sameInstallation, VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT } from "../devices/device-identity.js";
 
 /** API pública para os aplicativos/frontends clientes (prefixo /api/v1/client). */
@@ -111,6 +112,9 @@ const activationResponse = (r) => ({
     expiresIn: r.session.expiresIn,
   },
 });
+
+// Player Web: login pelo código AB123456 gerado pelo revendedor (POST /api/v1/client/web/login).
+router.use("/web", webClientRoutes);
 
 router.post(
   "/activate/license",

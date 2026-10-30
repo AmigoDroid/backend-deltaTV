@@ -60,6 +60,9 @@ export const deviceKeyIssueLimiter = limiter(60 * 60_000, 10, (req) => `dkeyissu
 // Cadastro de lista por link (site público): cada tentativa pode consultar o provedor, então limita por IP e por MAC.
 export const listUrlIpLimiter = limiter(15 * 60_000, 20);
 export const listUrlMacLimiter = limiter(60 * 60_000, 15, (req) => `listurl:${String(req.body?.mac ?? "").toUpperCase().replace(/[^0-9A-F]/g, "")}`);
+// Login do Player Web por código (AB123456): por IP e por código+IP. O espaço de códigos é grande (~5,8e8) e o HMAC fica no servidor.
+export const webLoginIpLimiter = limiter(15 * 60_000, 30);
+export const webLoginCodeLimiter = limiter(15 * 60_000, 8, (req) => `weblogin:${String(req.body?.code ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "")}:${req.ip}`);
 export const pairingResolveLimiter = limiter(60_000, 30);
 // Consulta/edição de dispositivo por MAC no painel do revendedor: por usuário (não por IP), contra varredura de MACs.
 export const macLookupLimiter = limiter(60_000, 30, (req) => `maclookup:${req.user?.id ?? req.ip}`);

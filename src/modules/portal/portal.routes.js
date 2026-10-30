@@ -21,6 +21,7 @@ import { partnerRouter as pixRoutes } from "../pix/pix.routes.js";
 import { partnerRouter as creditRoutes } from "../credits/credit.routes.js";
 import { configurationSchema } from "../devices/device-config.schema.js";
 import { countOnlineForPartner } from "../devices/presence.js";
+import { partnerRouter as webAccessRoutes } from "../web/web.routes.js";
 import { env } from "../../config/env.js";
 
 /**
@@ -32,6 +33,7 @@ router.use(authenticate, requirePartnerRole);
 router.use("/pix", pixRoutes);
 router.use("/credits", creditRoutes);
 router.use("/clients", clientsRoutes);
+router.use("/web-access", webAccessRoutes);
 const scope = (req) => ({ partnerId: req.user.partnerId });
 const id = z.object({ id: z.string().uuid() });
 

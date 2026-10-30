@@ -157,6 +157,29 @@ export async function removeListByMac({ partner, actor, mac: macInput, reason, a
   return removeList({ device, activation, mac, actor, reason });
 }
 
+/**
+ * Ativação de um MAC cuja lista o revendedor quer COPIAR para um acesso web. Só o DONO da lista pode (código de parceria dele
+ * ou licença do estoque dele): a política de edição por MAC deixa qualquer revendedor ativo mexer num MAC, mas copiar a lista
+ * daria acesso ao conteúdo de outra pessoa. Usuário/senha nunca chegam ao revendedor: a cópia é feita no servidor.
+ */
+export async function activationForCopy({ partner, actor, mac: macInput, activationId }) {
+  const { device } = await resolveEditableDevice({ partner, actor, macInput });
+  const activation = await selectLiveActivation(device.id, activationId);
+  if (!activation) throw new AppError(404, "NO_ACTIVE_LIST", "Este dispositivo não tem lista vinculada.");
+  let owner = activation.partnerId === partner.id;
+  if (!owner) {
+    const ids = [activation.grantedLicenseId, activation.licenseId].filter(Boolean);
+    const lics = ids.length ? await License.findAll({ where: { id: { [Op.in]: ids } }, attributes: ["id", "ownerPartnerId"] }) : [];
+    owner = lics.some((l) => l.ownerPartnerId === partner.id);
+  }
+  if (!owner) {
+    await audit({ actor, action: "web_access.copy.denied", entityType: "device", entityId: device.id, result: "denied", metadata: { mac: device.mac } });
+    throw new AppError(403, "NOT_LIST_OWNER", "Você só pode gerar acesso web a partir de listas e licenças que são suas.");
+  }
+  await audit({ actor, action: "web_access.copy", entityType: "device", entityId: device.id, metadata: { mac: device.mac, activationId: activation.id } });
+  return activation;
+}
+
 /** Núcleo reutilizado também pelo acesso por chave (sessão limitada ao dispositivo). `activation` = ativação viva ou null. */
 export async function removeList({ device, activation, mac, actor, reason }) {
   if (!activation) return { removed: false, code: "NO_ACTIVE_LIST", message: "Este dispositivo não tem lista vinculada." };

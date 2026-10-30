@@ -5,7 +5,7 @@ import { decryptSecret } from "../../shared/crypto.js";
 import { parseHttpUrl, safeGet } from "../../shared/ssrf.js";
 import { env } from "../../config/env.js";
 import { mirrorTokenFor } from "../access/access.service.js";
-import { deliveryModeOf, MIRROR_PASS } from "../mirror/mode.js";
+import { deliveryModeOf, deliveryModesOf, needsMirror, MIRROR_PASS } from "../mirror/mode.js";
 
 /**
  * Conexão Xtream Codes (player_api.php) do dispositivo.
@@ -165,12 +165,15 @@ export async function xtreamConfigFor(activation, { sessionId } = {}) {
       ? `A conta no provedor está ${probe.status}. Contate seu fornecedor.`
       : "Usuário ou senha recusados pelo provedor. Contate seu fornecedor.");
   }
-  const mode = deliveryModeOf(activation);
+  // Modo por tipo: se QUALQUER tipo for proxy, o app fala com o espelho (as URLs de mídia saem dele e o servidor decide,
+  // tipo a tipo, entre retransmitir e responder 302). Só quando tudo é redirect o app recebe as credenciais reais.
+  const modes = deliveryModesOf(activation);
+  const mode = needsMirror(modes) ? "proxy" : deliveryModeOf(activation);
   const account = probe.ok ? probe.account : null; // "unreachable": a TV pode alcançar o painel mesmo que o servidor não consiga
   const mirror = sessionId
     ? { baseUrl: env.publicBaseUrl, username: mirrorTokenFor(activation.id, sessionId), password: MIRROR_PASS }
     : null;
 
-  if (mode === "proxy" && mirror) return { ...mirror, userAgent: XTREAM_UA, account, mode, mirror: true };
-  return { ...cred, userAgent: XTREAM_UA, account, mode, mirror };
+  if (mode === "proxy" && mirror) return { ...mirror, userAgent: XTREAM_UA, account, mode, modes, mirror: true };
+  return { ...cred, userAgent: XTREAM_UA, account, mode, modes, mirror };
 }

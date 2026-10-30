@@ -4,7 +4,7 @@ import { AppError } from "../../shared/errors.js";
 import { verifyJwt } from "../../shared/crypto.js";
 import { checkActivation, denialError } from "../access/access.service.js";
 import { xtreamCredentialsOf } from "../xtream/xtream.service.js";
-import { deliveryModeOf } from "./mode.js";
+import { deliveryModeOf, deliveryModesOf } from "./mode.js";
 
 import { cachedMirrorAuth } from "./mirror.cache.js";
 import { touchDevice } from "../devices/presence.js";
@@ -25,6 +25,7 @@ async function loadAuth(token) {
       token,
       deviceId: activation.deviceId, // presença: cada request autorizado conta como sinal de vida
       mode: deliveryModeOf(activation),
+      modes: deliveryModesOf(activation), // por tipo: api, live, movie, series
       cred: await xtreamCredentialsOf(activation),
       publicBase: env.publicBaseUrl,
       // Revogação/bloqueio durante a transmissão: o relay consulta de tempos em tempos (direto no banco, sem cache)
