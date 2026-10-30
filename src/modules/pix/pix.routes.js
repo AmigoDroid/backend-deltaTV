@@ -58,6 +58,16 @@ partnerRouter.post(
   },
 );
 
+// Recarga de créditos: o cliente só diz QUANTOS créditos; o valor (créditos × câmbio do admin) é calculado no servidor.
+partnerRouter.post(
+  "/credits", pixCreateLimiter, requireReseller,
+  validate({ body: z.object({ credits: z.number().int().min(1).max(svc.MAX_CREDIT_RECHARGE) }) }),
+  async (req, res) => {
+    const charge = await svc.createCreditCharge({ partner: req.reseller.partner, user: req.user, actor: actorOf(req), ...req.valid.body });
+    res.status(201).json(svc.chargeView(charge));
+  },
+);
+
 partnerRouter.get("/charges", pixReadLimiter, validate({ query: z.object({ ...pageQuery }) }), async (req, res) =>
   res.json(await svc.listChargesFor({ partnerId: req.user.partnerId, ...req.valid.query })));
 // Polling da tela do QR Code: consulta o provedor no máximo a cada poucos segundos (ver CHECK_INTERVAL_MS).
@@ -74,7 +84,7 @@ adminRouter.get(
   "/charges", requirePermission("billing:read"),
   validate({ query: z.object({
     ...pageQuery, status: z.enum(["pending", "paid", "expired", "cancelled", "failed", "review", "refunded"]).optional(),
-    partnerId: z.string().uuid().optional(), purpose: z.enum(["invoice", "stock", "license"]).optional(),
+    partnerId: z.string().uuid().optional(), purpose: z.enum(["invoice", "stock", "license", "credit"]).optional(),
   }) }),
   async (req, res) => res.json(await svc.listCharges(req.valid.query)),
 );

@@ -191,6 +191,19 @@ export const LicensePrice = def("LicensePrice", "license_prices", {
   priceCents: { type: T.INTEGER, allowNull: false }, active: { type: T.BOOLEAN, allowNull: false, defaultValue: true },
 });
 
+// Crédito pré-pago do revendedor (migration 20261104000001). O saldo fica em credit_wallets (SQL atômico em credits/credit-ledger.js).
+export const CreditLedger = def("CreditLedger", "credit_ledger", {
+  partnerId: { type: T.UUID, allowNull: false }, kind: str(16, { allowNull: false }),
+  delta: { type: T.BIGINT, allowNull: false }, balanceAfter: { type: T.BIGINT, allowNull: false },
+  rateCents: { type: T.INTEGER }, months: { type: T.INTEGER }, quantity: { type: T.INTEGER }, unitPriceCredits: { type: T.INTEGER },
+  chargeId: { type: T.UUID }, note: str(300), actorUserId: { type: T.UUID }, actorName: str(160),
+}, { updatedAt: false });
+export const CreditRate = def("CreditRate", "credit_rates", { partnerId: { type: T.UUID }, rateCents: { type: T.INTEGER, allowNull: false } });
+export const CreditPrice = def("CreditPrice", "credit_prices", {
+  partnerId: { type: T.UUID }, months: { type: T.INTEGER, allowNull: false }, priceCredits: { type: T.INTEGER, allowNull: false },
+  active: { type: T.BOOLEAN, allowNull: false, defaultValue: true },
+});
+
 export const PixCharge = def("PixCharge", "pix_charges", {
   // partnerId NULL = compra de licença pelo site (purpose 'license')
   partnerId: { type: T.UUID },
@@ -277,6 +290,9 @@ PixCharge.belongsTo(Partner, { foreignKey: "partnerId" });
 Invoice.hasMany(PixCharge, { foreignKey: "invoiceId" });
 PixCharge.belongsTo(Invoice, { foreignKey: "invoiceId" });
 LicensePrice.belongsTo(Partner, { foreignKey: "partnerId" });
+CreditLedger.belongsTo(Partner, { foreignKey: "partnerId" });
+CreditRate.belongsTo(Partner, { foreignKey: "partnerId" });
+CreditPrice.belongsTo(Partner, { foreignKey: "partnerId" });
 License.hasMany(Renewal, { foreignKey: "licenseId" });
 Renewal.belongsTo(License, { foreignKey: "licenseId" });
 Renewal.belongsTo(Plan, { foreignKey: "planId" });

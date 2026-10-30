@@ -15,6 +15,8 @@ import { generateCode, hashCode } from "../../shared/crypto.js";
 import { addLicenseMonthsUTC } from "../../shared/dates.js";
 import { activateLicenseById } from "../activations/activation.service.js";
 import { isLiveLicense } from "../stock/stock-license.js";
+import { creditMove } from "../credits/credit-ledger.js";
+import { rateFor, MAX_CREDIT_RECHARGE } from "../credits/credit.service.js";
 
 /**
  * Cobranças Pix.
@@ -39,7 +41,8 @@ export const MAX_STOCK_QUANTITY = 1000;
 const MAX_CHARGE_CENTS = 10_000_000; // R$ 100.000,00 por Pix
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export { pixEnabled };
+export { pixEnabled, MAX_CREDIT_RECHARGE };
+const MIN_CREDIT_CHARGE_CENTS = 100; // R$ 1,00
 
 /* ---------- Apresentação ---------- */
 
@@ -153,6 +156,29 @@ export async function createStockCharge({ partner, user, actor, months, quantity
   });
 }
 
+/**
+ * Recarga de créditos (saldo pré-pago para comprar licenças). O câmbio vem da tabela do admin, nunca do cliente:
+ * o front só diz QUANTOS créditos quer; o valor em R$ é créditos × câmbio, calculado aqui.
+ */
+export async function createCreditCharge({ partner, user, actor, credits }) {
+  const provider = getProvider();
+  assertCanPay(partner);
+  if (!STOCK_KINDS.includes(partner.kind)) throw new AppError(422, "NOT_A_RESELLER", "Só revendedores têm carteira de créditos.");
+  if (!Number.isInteger(credits) || credits < 1 || credits > MAX_CREDIT_RECHARGE) {
+    throw new AppError(422, "INVALID_QUANTITY", `Informe de 1 a ${MAX_CREDIT_RECHARGE} créditos.`);
+  }
+  const rateCents = await rateFor(partner.id);
+  if (!rateCents) throw new AppError(422, "CREDIT_NOT_AVAILABLE", "A recarga de créditos não está disponível no momento. Fale com a plataforma.");
+  const amountCents = rateCents * credits;
+  if (amountCents < MIN_CREDIT_CHARGE_CENTS) throw new AppError(422, "AMOUNT_TOO_LOW", "Valor abaixo do mínimo de R$ 1,00 por Pix. Recarregue mais créditos.");
+  if (amountCents > MAX_CHARGE_CENTS) throw new AppError(422, "AMOUNT_TOO_HIGH", "Valor acima do limite por Pix. Faça em mais de uma recarga.");
+  return openCharge({
+    provider, partner, user, actor, description: `${credits} crédito(s) - ${partner.name}`,
+    fields: { purpose: "credit", quantity: credits, unitPriceCents: rateCents, amountCents },
+    reuseWhere: { purpose: "credit", quantity: credits, unitPriceCents: rateCents },
+  });
+}
+
 /* ---------- Estado e entrega ---------- */
 
 // O provedor da cobrança precisa ser o que está configurado agora (trocar PIX_PROVIDER não pode confundir cobranças antigas).
@@ -199,6 +225,20 @@ async function fulfil(chargeId, info, actor) {
       } else if (c.purpose === "license") {
         const sold = await fulfilLicenseSale(t, c);
         await c.update({ licenseId: sold.licenseId }, { transaction: t });
+      } else if (c.purpose === "credit") {
+        const partner = await Partner.findByPk(c.partnerId, { transaction: t });
+        if (!partner || !STOCK_KINDS.includes(partner.kind) || ["cancelled", "blocked"].includes(partner.status)) {
+          throw new AppError(409, "INVALID_STATE", "O cadastro não pode receber créditos no estado atual.");
+        }
+        // credit_ledger tem índice único por cobrança: um mesmo Pix nunca credita duas vezes.
+        const balance = await creditMove(t, {
+          partnerId: c.partnerId, delta: c.quantity, kind: "topup", rateCents: c.unitPriceCents, chargeId: c.id,
+          note: `Recarga via Pix (${c.id.slice(0, 8)})`, actor: { id: null, name: "Pix" },
+        });
+        await audit({
+          actor, action: "credit.topup", entityType: "partner", entityId: c.partnerId,
+          metadata: { source: "pix", chargeId: c.id, credits: c.quantity, rateCents: c.unitPriceCents, balance }, transaction: t,
+        });
       } else {
         const partner = await Partner.findByPk(c.partnerId, { transaction: t });
         if (!partner || !STOCK_KINDS.includes(partner.kind) || ["cancelled", "blocked"].includes(partner.status)) {
@@ -253,7 +293,7 @@ async function applyProviderState(chargeId, info, actor = SYSTEM) {
     await PixCharge.update({ status: new Date(charge.expiresAt) <= new Date() ? "expired" : "cancelled" }, { where: { id: chargeId, status: "pending" } });
   } else if (info.status === "refunded" && ["paid", "review"].includes(charge.status)) {
     await PixCharge.update(
-      { status: "refunded", error: "Pix devolvido no provedor. O estoque/fatura NÃO foram revertidos automaticamente: ajuste manualmente, se necessário." },
+      { status: "refunded", error: "Pix devolvido no provedor. O estoque/fatura/crédito NÃO foram revertidos automaticamente: ajuste manualmente, se necessário." },
       { where: { id: chargeId, status: { [Op.in]: ["paid", "review"] } } },
     );
     await audit({ actor, action: "pix.refunded", entityType: "pix_charge", entityId: chargeId, result: "failure", metadata: { amountCents: charge.amountCents } });
