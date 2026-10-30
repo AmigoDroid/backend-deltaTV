@@ -140,7 +140,18 @@ export async function mediaStream(ctx, req, res, kind, file) {
 
   // Origem = baseUrl cadastrada: <baseUrl>/{live|movie|series}/<usuário>/<senha>/<id>.<ext>
   const url = playUrlFor(accountOf(ctx.cred), { kind, id, ext });
-  if (modeFor(ctx, kind) === "redirect") return redirectTo(res, url);
+  if (modeFor(ctx, kind) === "redirect") {
+    // filme/série: o Nginx retransmite (leve); o Node só autoriza
+    if (kind !== "live" && env.accelOrigin) {
+      parseHttpUrl(url); // mantém a validação SSRF
+      res.statusCode = 200;
+      res.setHeader("X-Origin-Url", url);
+      res.setHeader("X-Accel-Redirect", "/_origin/");
+      res.setHeader("Cache-Control", "no-store");
+      return res.end();
+    }
+    return redirectTo(res, url);
+  }
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
   return relay(req, res, url, {

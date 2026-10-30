@@ -117,6 +117,8 @@ export const env = Object.freeze({
   hlsTokenGraceSeconds: int("HLS_TOKEN_GRACE_SECONDS", 21600),
   // Retransmissão (modo proxy): máximo de streams longos simultâneos neste processo (0 = sem limite).
   proxyMaxConcurrent: int("PROXY_MAX_CONCURRENT", 20),
+  // Filme/série em "redirect": o Nginx retransmite (X-Accel-Redirect) em vez de mandar o navegador à origem http.
+  accelOrigin: e.ACCEL_ORIGIN === "1",
   // Rota espelho Xtream (/player_api.php, /live, /movie, /series): validade da credencial entregue ao app.
   // Autorização da rota espelho em memória (modo proxy/redirect, credenciais, sessão e licença): 0 = consulta o banco a cada request.
   // Revogação/bloqueio valem em até este tempo (e na hora, neste processo, quando a sessão é revogada pelo próprio servidor).
