@@ -34,6 +34,24 @@ export function redirectTo(res, target) {
   res.end();
 }
 
+/** Entrega via Nginx (X-Accel-Redirect): mesma checagem de destino do redirect, mas o corpo sai do Nginx. */
+export function accelTo(res, target) {
+  const url = parseHttpUrl(target);
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (
+    !env.allowPrivateSources &&
+    (host === "localhost" || (net.isIP(host) && isPrivateAddress(host)))
+  ) {
+    throw new AppError(502, "ORIGIN_NOT_ALLOWED", "Origem não permitida.");
+  }
+  res.statusCode = 200;
+  res.setHeader("X-Origin-Url", url.href);
+  res.setHeader("X-Accel-Redirect", "/_origin/");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.end();
+}
+
 const accountOf = (cred) => ({
   base: cred.baseUrl,
   username: cred.username,
@@ -141,15 +159,9 @@ export async function mediaStream(ctx, req, res, kind, file) {
   // Origem = baseUrl cadastrada: <baseUrl>/{live|movie|series}/<usuário>/<senha>/<id>.<ext>
   const url = playUrlFor(accountOf(ctx.cred), { kind, id, ext });
   if (modeFor(ctx, kind) === "redirect") {
-    // filme/série: o Nginx retransmite (leve); o Node só autoriza
-    if (kind !== "live" && env.accelOrigin) {
-      parseHttpUrl(url); // mantém a validação SSRF
-      res.statusCode = 200;
-      res.setHeader("X-Origin-Url", url);
-      res.setHeader("X-Accel-Redirect", "/_origin/");
-      res.setHeader("Cache-Control", "no-store");
-      return res.end();
-    }
+    // Filme/série: a origem é http e o player é https (conteúdo misto). O Node só autoriza; o Nginx retransmite
+    // (location interno /_origin/ em nginx/api-deltatv.conf), então o navegador nunca vê a URL da origem.
+    if (kind !== "live" && env.accelOrigin) return accelTo(res, url);
     return redirectTo(res, url);
   }
   res.setHeader("Cache-Control", "no-store");
