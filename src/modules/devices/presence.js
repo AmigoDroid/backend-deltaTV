@@ -60,13 +60,32 @@ export function onlineSql(alias = "Device", online = true) {
   return online ? `${col} >= ${cutoff}` : `(${col} IS NULL OR ${col} < ${cutoff})`;
 }
 
-/** Quantos aparelhos estão online agora (leitura do banco; leva em conta o flush mais recente). */
+/**
+ * Quantos aparelhos estão online agora. Usa a MESMA regra das listas (presenceOf): maior entre o banco e a memória
+ * deste processo. Antes só lia o banco e, enquanto o flush não gravava (ou se falhasse), o painel mostrava 0/atrasado
+ * mesmo com a lista marcando os aparelhos como online.
+ */
 export async function countOnline() {
+  const w = env.presenceWindowSeconds;
   const [rows] = await sequelize.query(
     `SELECT count(*)::int AS n FROM devices WHERE last_seen_at >= now() - (:w * interval '1 second')`,
-    { replacements: { w: env.presenceWindowSeconds } },
+    { replacements: { w } },
   );
-  return rows[0]?.n ?? 0;
+  let total = rows[0]?.n ?? 0;
+
+  // Sinais recentes ainda não gravados (ou cujo banco está mais velho): soma os que o banco ainda não conta como online.
+  const cutoff = Date.now() - windowMs();
+  // Só os "sujos": os já gravados o banco já conta, então a consulta extra fica pequena.
+  const pending = [...dirty].filter((id) => (seen.get(id) ?? 0) >= cutoff);
+  for (let i = 0; i < pending.length; i += BATCH) {
+    const [extra] = await sequelize.query(
+      `SELECT count(*)::int AS n FROM devices
+        WHERE id IN (:ids) AND (last_seen_at IS NULL OR last_seen_at < now() - (:w * interval '1 second'))`,
+      { replacements: { ids: pending.slice(i, i + BATCH), w } },
+    );
+    total += extra[0]?.n ?? 0;
+  }
+  return total;
 }
 
 /** Online agora entre os aparelhos com ativação ativa deste parceiro (isolamento: partnerId vem do token, nunca do cliente). */
