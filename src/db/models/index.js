@@ -106,6 +106,14 @@ export const WebAccess = def("WebAccess", "web_accesses", {
   createdBy: { type: T.UUID }, lastLoginAt: ts(),
 });
 
+// Downloads de aplicativos para os revendedores (migration 20261106000001): nome, versão, link e código numérico do Downloader.
+export const AppDownload = def("AppDownload", "app_downloads", {
+  name: str(120, { allowNull: false }), version: str(40), downloadUrl: { type: T.TEXT, allowNull: false },
+  downloaderCode: str(20), createdBy: { type: T.UUID },
+  // 'app' = aplicativo (versão e código do Downloader); 'link' = link comum (migration 20261106000002).
+  kind: str(10, { allowNull: false, defaultValue: "app" }),
+});
+
 export const DevicePairingToken = def("DevicePairingToken", "device_pairing_tokens", {
   deviceId: { type: T.UUID, allowNull: false },
   tokenHash: { type: T.CHAR(64), allowNull: false, unique: true },

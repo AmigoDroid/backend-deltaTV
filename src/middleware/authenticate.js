@@ -9,10 +9,11 @@ const PERMISSIONS = {
     "devices:read", "devices:write", "sources:read", "sources:write", "audit:read", "dashboard:read",
     "clients:read", "clients:write", "partner-users:manage", // fichas de clientes das revendas e usuários do portal (role partner)
     "web:read", "web:write", // acessos do Player Web (códigos AB123456) de todos os revendedores
+    "downloads:read", "downloads:write", // links de download dos apps que os revendedores consultam
   ],
   support: [
     "licenses:read", "partners:read", "billing:read", "devices:read", "devices:write",
-    "sources:read", "dashboard:read", "clients:read", "web:read",
+    "sources:read", "dashboard:read", "clients:read", "web:read", "downloads:read",
   ],
   partner: [], // parceiros só acessam /api/v1/partner (escopo próprio)
 };

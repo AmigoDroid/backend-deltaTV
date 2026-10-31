@@ -13,6 +13,7 @@ import users from "./users/users.routes.js";
 import clients from "./clients/client.admin.routes.js";
 import mail from "./mail/mail.routes.js";
 import { adminRouter as webAccess } from "./web/web.routes.js";
+import { adminRouter as appDownloads } from "./downloads/download.routes.js";
 
 // Tudo em /api/v1/admin exige autenticação; cada rota exige a permissão correspondente.
 const router = Router();
@@ -30,4 +31,5 @@ router.use("/pix", pix);
 router.use("/credits", credits);
 router.use("/mail", mail);
 router.use("/web-access", webAccess);
+router.use("/app-downloads", appDownloads);
 export default router;
