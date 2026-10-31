@@ -15,6 +15,7 @@ import deviceAccessRoutes from "./modules/devices/device-access.routes.js";
 import playRoutes from "./modules/sources/delivery.routes.js";
 import mirrorRoutes from "./modules/mirror/mirror.routes.js";
 import heartbeatRoutes from "./modules/devices/presence.routes.js";
+import { publicRouter as appDownloadFiles } from "./modules/downloads/download.routes.js";
 
 export function createApp() {
   const app = express();
@@ -42,6 +43,9 @@ export function createApp() {
   app.use(mirrorRoutes);
   // Heartbeat de presença: também antes do limitador global (várias TVs no mesmo IP); tem o seu limitador por token.
   app.use("/api/v1/client/heartbeat", heartbeatRoutes);
+
+  // Arquivos (APK) hospedados na VPS: público, sem login; as TVs/aparelhos dos clientes baixam daqui.
+  app.use("/dl", appDownloadFiles);
 
   app.use(apiLimiter);
 

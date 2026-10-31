@@ -112,6 +112,8 @@ export const AppDownload = def("AppDownload", "app_downloads", {
   downloaderCode: str(20), createdBy: { type: T.UUID },
   // 'app' = aplicativo (versão e código do Downloader); 'link' = link comum (migration 20261106000002).
   kind: str(10, { allowNull: false, defaultValue: "app" }),
+  // APK hospedado na própria VPS (migration 20261106000003): nome em disco e tamanho. NULL = link externo.
+  fileName: str(40), fileSize: { type: T.BIGINT },
 });
 
 export const DevicePairingToken = def("DevicePairingToken", "device_pairing_tokens", {

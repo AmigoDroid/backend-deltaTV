@@ -1,11 +1,13 @@
 import { Router } from "express";
 import { z } from "zod";
+import { AppError } from "../../shared/errors.js";
 import { validate } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
 import { requirePermission } from "../../middleware/authenticate.js";
 import * as reseller from "../devices/reseller-devices.service.js";
 import * as svc from "./download.service.js";
+import * as storage from "./download.storage.js";
 
 /**
  * Downloads de aplicativos — duas portas para o mesmo serviço:
@@ -29,8 +31,9 @@ const fields = {
   downloadUrl: urlField,
   downloaderCode: optional(z.string().trim().regex(/^\d{1,20}$/, "O código do Downloader deve ter apenas números.")),
 };
-const createBody = z.object({ ...fields, kind: fields.kind.default("app") });
-const patchBody = z.object(fields).partial().refine((b) => Object.keys(b).length > 0, "Nada para alterar.");
+const fileId = z.string().regex(/^[a-f0-9]{24}$/).nullable().optional(); // id devolvido por /upload; null = volta a usar link externo
+const createBody = z.object({ ...fields, kind: fields.kind.default("app"), fileId });
+const patchBody = z.object({ ...fields, fileId }).partial().refine((b) => Object.keys(b).length > 0, "Nada para alterar.");
 
 /* ---------------------------------------------------------------- revendedor (somente leitura) */
 export const partnerRouter = Router();
@@ -46,6 +49,21 @@ partnerRouter.get("/", validate({ query: listQuery }), async (req, res) => res.j
 export const adminRouter = Router();
 adminRouter.use(noStore);
 adminRouter.get("/", requirePermission("downloads:read"), validate({ query: listQuery }), async (req, res) => res.json(await svc.listDownloads(req.valid.query)));
+// Envio do APK para a VPS: corpo cru (application/octet-stream), nome na query (?filename=app.apk). Sem multipart/dependência nova.
+const uploadQuery = z.object({ filename: z.string().trim().min(1).max(200).regex(/\.apk$/i, "Envie um arquivo .apk.") });
+adminRouter.post("/upload", requirePermission("downloads:write"), validate({ query: uploadQuery }), async (req, res) => {
+  if (!req.is("application/octet-stream")) throw new AppError(415, "UNSUPPORTED_MEDIA_TYPE", "Envie o arquivo como application/octet-stream.");
+  try {
+    res.status(201).json(await svc.uploadFile(req, req.valid.query.filename, actorOf(req)));
+  } catch (e) {
+    res.set("Connection", "close"); // recusou no meio do envio: não espera o resto do arquivo
+    throw e;
+  }
+});
+adminRouter.delete("/upload/:fileId", requirePermission("downloads:write"), validate({ params: z.object({ fileId: z.string().regex(/^[a-f0-9]{24}$/) }) }), async (req, res) => {
+  await svc.discardUpload(req.valid.params.fileId);
+  res.status(204).end();
+});
 adminRouter.post("/", requirePermission("downloads:write"), validate({ body: createBody }), async (req, res) =>
   res.status(201).json(await svc.createDownload(req.valid.body, actorOf(req))));
 adminRouter.patch("/:id", requirePermission("downloads:write"), validate({ params: id, body: patchBody }), async (req, res) =>
@@ -54,3 +72,7 @@ adminRouter.delete("/:id", requirePermission("downloads:write"), validate({ para
   await svc.deleteDownload(req.valid.params.id, actorOf(req));
   res.status(204).end();
 });
+
+/* ---------------------------------------------------------------- público: GET /dl/:id/:nome.apk (a TV do cliente não faz login) */
+export const publicRouter = Router();
+publicRouter.get(["/:id", "/:id/:name"], storage.serve);
