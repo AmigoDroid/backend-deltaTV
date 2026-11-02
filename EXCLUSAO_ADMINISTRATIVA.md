@@ -3,11 +3,13 @@
 ## Exclusiva para superadmin
 
 - `GET /api/v1/admin/partners/:id/deletion-preview`
-- `DELETE /api/v1/admin/partners/:id` — body: `{"confirmSlug":"slug-exato","deleteClients":false,"deleteDevices":false,"reason":"motivo detalhado"}`
+- `DELETE /api/v1/admin/partners/:id` — body novo: `{"confirmation":"Nome comercial ou slug","deleteClients":false,"deleteDevices":false,"reason":"motivo detalhado"}`. Por compatibilidade a API também aceita `confirmSlug` no lugar de `confirmation` (formato antigo).
 - `GET /api/v1/admin/devices/activations/:id/deletion-preview`
 - `DELETE /api/v1/admin/devices/activations/:id` — body: `{"confirmMac":"AA:BB:CC:DD:EE:FF","reason":"motivo"}`
 - `GET /api/v1/admin/devices/registrations/:id/deletion-preview`
 - `DELETE /api/v1/admin/devices/registrations/:id` — body com `confirmMac`.
+
+**Confirmação corrigida:** o modal aceita o nome comercial completo ou o identificador (`slug`) da própria parceria. O motivo continua obrigatório (mínimo 8 caracteres). Erros de banco/API aparecem dentro do modal, sem fechar a janela. Se a exclusão não confirmar, nada deve ser considerado apagado.
 
 **Importante:** Ao excluir uma revenda ou parceiro, o cadastro é **arquivado** (`partners.status='deleted'`), e não fisicamente apagado. Ele não aparece mais na listagem operacional. As contas e códigos são desabilitados; o monitor deixa de sondar os servidores desativados. Isso preserva pagamentos, faturas, saldos, relatórios financeiros e auditoria, que usam chaves estrangeiras restritivas.
 

@@ -12,6 +12,7 @@ import { clearContractAccessCache } from "./access/access.service.js";
 import { clearResolutionCache } from "./provider-monitor/resolve.service.js";
 import { forgetDevice } from "./devices/presence.js";
 import { disconnectPartner, broadcastChange } from "../realtime/socket.js";
+import { matchesPartnerDeletionConfirmation } from "./partner-deletion-confirmation.js";
 
 const checkSuper = (actor) => {
   if (actor?.role !== "superadmin") throw new AppError(403, "SUPERADMIN_ONLY", "Somente o superadmin pode executar essa exclusão.");
@@ -48,12 +49,12 @@ export async function partnerDeletionPreview(id, actor) {
     retainedFinancialHistory: true, deleteIsArchive: true };
 }
 
-export async function deletePartnerAsSuper(id, { confirmSlug, deleteClients = false, deleteDevices = false, reason }, actor) {
+export async function deletePartnerAsSuper(id, { confirmation, confirmSlug, deleteClients = false, deleteDevices = false, reason }, actor) {
   checkSuper(actor);
   const result = await sequelize.transaction(async (transaction) => {
     const partner = await Partner.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!partner) throw notFound("Revenda ou parceiro");
-    if (partner.slug !== confirmSlug) throw new AppError(422, "CONFIRMATION_MISMATCH", "Confirme o identificador exato da revenda ou parceiro.");
+    if (!matchesPartnerDeletionConfirmation(confirmation ?? confirmSlug, partner)) throw new AppError(422, "CONFIRMATION_MISMATCH", "Confirme o nome ou identificador da revenda ou parceiro mostrado no formulário.");
     if (partner.status === "deleted") throw new AppError(409, "ALREADY_DELETED", "Esta parceria já foi excluída da operação.");
     if (!reason?.trim() || reason.trim().length < 8) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo da exclusão (mínimo de 8 caracteres).");
     // Todas as sessões de usuários são revogadas dentro da transação, inclusive refresh tokens.
