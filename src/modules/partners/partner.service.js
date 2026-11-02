@@ -1,6 +1,7 @@
 import { isPartnerConnected } from "../../realtime/socket.js";
 import { Op, UniqueConstraintError } from "sequelize";
-import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, Invoice, AdminUser } from "../../db/models/index.js";
+import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, Invoice, AdminUser, ContentPartnerTerms } from "../../db/models/index.js";
+import { clearContractAccessCache } from "../access/access.service.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { hashPassword } from "../../shared/crypto.js";
@@ -95,6 +96,15 @@ export async function updatePartner(id, input, actor) {
   const updated = await sequelize.transaction(async (t) => {
     const p = await Partner.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!p) throw notFound("Parceiro");
+    const contract=await ContentPartnerTerms.findByPk(id,{transaction:t});
+    if(contract?.mode && contract.mode!=="legacy"){
+      const expected=contract.mode.startsWith("fixed_")?"fixed":"none";
+      if(input.billingModel!==undefined && input.billingModel!==expected ||
+        expected==="fixed" && input.monthlyFeeCents!==undefined && input.monthlyFeeCents!==contract.fixedFeeCents ||
+        input.kind==="reseller"){
+        throw new AppError(409,"CONTENT_CONTRACT_ACTIVE","Altere primeiro as condições no separador Contrato de conteúdo para manter as regras e a cobrança sincronizadas.");
+      }
+    }
     const merged = { billingModel: p.billingModel, tiers: p.tiers, ...input };
     checkCommercial(merged);
     if (merged.tiers) input.tiers = merged.tiers;
@@ -303,7 +313,7 @@ export async function updateCode(partnerId, codeId, input, actor) {
 
 // Revogar um código impede NOVAS ativações; dispositivos já ativados permanecem vinculados à parceria.
 export async function revokeCode(partnerId, codeId, actor) {
-  return sequelize.transaction(async (t) => {
+  const result=await sequelize.transaction(async (t) => {
     await Partner.findByPk(partnerId, { transaction: t, lock: t.LOCK.UPDATE }); // mesma ordem de locks da ativação
     const c = await PartnerCode.findOne({ where: { id: codeId, partnerId }, transaction: t, lock: t.LOCK.UPDATE });
     if (!c) throw notFound("Código");
@@ -311,4 +321,6 @@ export async function revokeCode(partnerId, codeId, actor) {
     await audit({ actor, action: "partner.code.revoke", entityType: "partner", entityId: partnerId, metadata: { codeId }, transaction: t });
     return c;
   });
+  clearContractAccessCache();
+  return result;
 }

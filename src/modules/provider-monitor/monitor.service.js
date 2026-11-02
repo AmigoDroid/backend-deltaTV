@@ -1,7 +1,7 @@
 import http from "node:http";
 import https from "node:https";
 import { Op } from "sequelize";
-import { Partner, PartnerCode, PartnerProvider, ProviderHealth, CodeFailover, CodeServerPool } from "../../db/models/index.js";
+import { Partner, PartnerCode, PartnerProvider, ProviderHealth, CodeFailover, CodeServerPool, ContentPartnerTerms } from "../../db/models/index.js";
 import { assertPublicUrl, safeLookup } from "../../shared/ssrf.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { clearResolutionCache } from "./resolve.service.js";
@@ -138,7 +138,15 @@ export async function overview(partnerId) {
   const states=providers.length?await ProviderHealth.findAll({where:{providerId:{[Op.in]:providers.map(p=>p.id)}},raw:true}):[];
   const byId=new Map(states.map(s=>[s.providerId,s]));
   const totalCodes=await PartnerCode.count({where:{partnerId}});
-  return {providers:providers.map(p=>({id:p.id,name:p.name,baseUrl:p.baseUrl,priority:p.priority,status:p.status,
+  const terms=await ContentPartnerTerms.findByPk(partnerId,{attributes:["autoPriority"],raw:true});
+  const automated=terms?.autoPriority!==false;
+  const effectiveOrder=[...providers].sort((a,b)=>{
+    const healthRank=p=>byId.get(p.id)?.state==="healthy"?0:byId.get(p.id)?.state==="down"?2:1;
+    return healthRank(a)-healthRank(b) || (automated?(byId.get(a.id)?.latencyMs??1e9)-(byId.get(b.id)?.latencyMs??1e9)||a.priority-b.priority
+      :a.priority-b.priority||(byId.get(a.id)?.latencyMs??1e9)-(byId.get(b.id)?.latencyMs??1e9));
+  });
+  const ranks=new Map(effectiveOrder.map((p,i)=>[p.id,i+1]));
+  return {autoPriority:automated,providers:providers.map(p=>({id:p.id,name:p.name,baseUrl:p.baseUrl,priority:p.priority,effectivePriority:ranks.get(p.id),status:p.status,
     health:byId.get(p.id)?{state:byId.get(p.id).state,latencyMs:byId.get(p.id).latencyMs,lastCheckedAt:byId.get(p.id).lastCheckedAt,
       lastGoodAt:byId.get(p.id).lastGoodAt,lastError:byId.get(p.id).lastError}:null})),
     totalCodes, codes:[],

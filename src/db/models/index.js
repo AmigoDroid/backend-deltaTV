@@ -83,6 +83,19 @@ export const PartnerCode = def("PartnerCode", "partner_codes", {
   licenseMonths: { type: T.INTEGER },
 });
 
+export const ContentPartnerTerms = sequelize.define("ContentPartnerTerms", {
+  partnerId: {type:T.UUID,primaryKey:true},mode: str(24,{allowNull:false,defaultValue:"legacy"}),
+  fixedFeeCents:int(0),activationLimit:{type:T.INTEGER},
+  licensePolicy:str(20,{allowNull:false,defaultValue:"standard"}),
+  creditsPerActivation:int(1),autoPriority:{type:T.BOOLEAN,allowNull:false,defaultValue:true},
+},{tableName:"content_partner_terms"});
+export const ContentCodeBalance = sequelize.define("ContentCodeBalance", {
+  codeId:{type:T.UUID,primaryKey:true},allocated:int(0),spent:int(0),
+},{tableName:"content_code_balances"});
+export const ContentActivationCharge = def("ContentActivationCharge", "content_activation_charges", {
+  activationId:{type:T.UUID,allowNull:false},codeId:{type:T.UUID,allowNull:false},credits:int(1),
+},{updatedAt:false});
+
 export const PartnerProvider = def("PartnerProvider", "partner_providers", {
   partnerId: { type: T.UUID, allowNull: false }, name: str(120, { allowNull: false }),
   baseUrl: str(500, { allowNull: false }), playlistTemplate: str(500, { allowNull: false }),

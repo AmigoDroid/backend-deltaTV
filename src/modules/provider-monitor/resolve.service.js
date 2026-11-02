@@ -1,6 +1,6 @@
 import { selectHealthy } from "./ranking.js";
 import { createHash } from "node:crypto";
-import { PartnerCode, ProviderHealth } from "../../db/models/index.js";
+import { PartnerCode, ProviderHealth, ContentPartnerTerms } from "../../db/models/index.js";
 import { safeGet } from "../../shared/ssrf.js";
 import { serversForCode } from "./code-pool.service.js";
 
@@ -9,12 +9,19 @@ import { serversForCode } from "./code-pool.service.js";
 const enabled = () => process.env.PROVIDER_MONITOR_ENABLED === "true" && process.env.PROVIDER_SMART_RESOLVER !== "false";
 const PIN_MS = 120_000, HEALTH_MS = 20_000, VERIFY_OK_MS = 600_000, VERIFY_BAD_MS = 30_000;
 const MAX_PINS = 5000, MAX_CHECKS = 3500, MAX_HEALTH = 1000, MAX_SIMULTANEOUS = 6;
-const pins = new Map(), validations = new Map(), healthCache = new Map();
+const pins = new Map(), validations = new Map(), healthCache = new Map(), termsCache=new Map();
+async function autoPriority(partnerId){
+ const old=termsCache.get(partnerId);if(old&&Date.now()-old.at<30_000)return old.auto;
+ const terms=await ContentPartnerTerms.findByPk(partnerId,{attributes:["autoPriority"],raw:true});
+ const auto=terms?.autoPriority!==false;
+ put(termsCache,partnerId,{auto,at:Date.now()},300);
+ return auto;
+}
 const inFlight = new Map();
 let verifying = 0;
 const put = (m,k,v,limit) => {m.delete(k);m.set(k,v);if(m.size>limit)m.delete(m.keys().next().value);};
 const keyOf = (p,username,password) => createHash("sha256").update(`${p.id}\0${p.baseUrl}\0${username}\0${password}`).digest("hex");
-export function clearResolutionCache() {pins.clear(); validations.clear(); healthCache.clear();}
+export function clearResolutionCache() {pins.clear(); validations.clear(); healthCache.clear(); termsCache.clear();}
 
 async function statesOf(servers) {
   const ids = servers.map(s=>s.id);
@@ -66,13 +73,16 @@ export async function resolveForActivation(activation, original, credentials) {
     const fallback={provider:servers.some(s=>s.id===original?.id)?original:null,verified:false};
     const states=await statesOf(servers);
     const now=Date.now();
+    const automatic=await autoPriority(code.partnerId);
     const ranked=servers.filter(s=>s.status==="active" && states.get(s.id)?.state==="healthy"
       && now-new Date(states.get(s.id).lastCheckedAt).getTime()<180_000)
-      .sort((a,b)=>(states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999) || a.priority-b.priority);
+      .sort((a,b)=>automatic?(states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999) || a.priority-b.priority
+        :a.priority-b.priority || (states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999));
     if(!ranked.length)return fallback;
     const pinned=pins.get(activation.id);
     // Para evitar flapping, só troca por ganho significativo (>=50 ms e >=15%).
-    const selected=selectHealthy(ranked.map(s=>({...s,latencyMs:states.get(s.id)?.latencyMs??99999})),pinned,now);
+    const scored=ranked.map(s=>({...s,latencyMs:states.get(s.id)?.latencyMs??99999}));
+    const selected=automatic?selectHealthy(scored,pinned,now):(pinned?.until>now && scored.find(s=>s.id===pinned.providerId) || scored[0]);
     if(selected.id===original?.id){put(pins,activation.id,{providerId:selected.id,until:now+PIN_MS},MAX_PINS);return {provider:selected,verified:false};}
     // A URL alternativa DEVE aceitar o usuário/senha desta ativação. Se não, não há mudança.
     const compatible=await verifyAlternative(selected,credentials.username,credentials.password);

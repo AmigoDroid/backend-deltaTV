@@ -1,5 +1,5 @@
 import { Op } from "sequelize";
-import { sequelize, Activation, License, Partner, PartnerProvider, DeviceSession } from "../../db/models/index.js";
+import { sequelize, Activation, License, Partner, PartnerProvider, DeviceSession, ContentPartnerTerms, PartnerCode } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
 import { signJwt, randomToken, sha256 } from "../../shared/crypto.js";
@@ -8,6 +8,26 @@ import { sessionsToRevoke } from "./session-cap.js";
 import { dropMirrorAuth } from "../mirror/mirror.cache.js";
 import { sameInstallation } from "../devices/device-identity.js";
 
+// Cache pequeno, com expiração curta. A TV consulta acesso frequentemente; não queremos SELECT
+// adicional a cada segmento ou refresh. Admin invalida ao alterar política (ver serviço de contratos).
+const policyCache=new Map(), codeCache=new Map();
+function lruPut(map,key,value,max=1200){map.delete(key);map.set(key,{value,at:Date.now()});if(map.size>max)map.delete(map.keys().next().value);}
+export function clearContractAccessCache(){policyCache.clear();codeCache.clear();}
+async function partnerPolicy(partnerId,transaction){
+ if(!transaction){const cached=policyCache.get(partnerId);if(cached&&Date.now()-cached.at<15_000)return cached.value;}
+ const row=await ContentPartnerTerms.findByPk(partnerId,{attributes:["licensePolicy"],transaction});
+ const policy=row?.licensePolicy||"standard";
+ if(!transaction)lruPut(policyCache,partnerId,policy);
+ return policy;
+}
+async function codeStillActive(id,transaction,now){
+ if(!id)return false;
+ if(!transaction){const cached=codeCache.get(id);if(cached&&Date.now()-cached.at<15_000)return cached.value===true;}
+ const code=await PartnerCode.findByPk(id,{attributes:["status","expiresAt"],transaction});
+ const good=code?.status==="active" && (!code.expiresAt||new Date(code.expiresAt)>now);
+ if(!transaction)lruPut(codeCache,id,good);
+ return good;
+}
 // Fatura vencida mais antiga ainda não quitada (data em UTC) — base da política de inadimplência.
 export async function overdueSinceFor(partnerId, transaction) {
   const [rows] = await sequelize.query(
@@ -27,9 +47,20 @@ export async function checkActivation(activationId, { now = new Date(), transact
   if (!activation) return { activation: null, decision: evaluateAccess({ activation: null }) };
   // Com licença concedida pelo estoque do revendedor, o prazo é o da licença: a inadimplência do portal não é consultada.
   const overdueSince = activation.partnerId && !activation.GrantedLicense ? await overdueSinceFor(activation.partnerId, transaction) : null;
-  const decision = evaluateAccess({
+  let decision = evaluateAccess({
     activation, license: activation.License, grantedLicense: activation.GrantedLicense, partner: activation.Partner, now, overdueSince,
   });
+  // partner_only: acesso depende da parceria e de o código continuar ativo.
+  // Não interfere em outras ativações nem apaga licenças independentes.
+  if(decision.allowed && activation.partnerId && await partnerPolicy(activation.partnerId,transaction)==="partner_only"){
+    if(!await codeStillActive(activation.partnerCodeId,transaction,now)){
+      decision={allowed:false,code:"PARTNER_CODE_REVOKED",message:"Vínculo com a parceria encerrado.",reason:null,expiresAt:null};
+    }else if(activation.GrantedLicense){
+      const dependent=evaluateAccess({activation,partner:activation.Partner,now,
+        overdueSince:await overdueSinceFor(activation.partnerId,transaction)});
+      if(!dependent.allowed)decision=dependent;
+    }
+  }
   return { activation, decision };
 }
 

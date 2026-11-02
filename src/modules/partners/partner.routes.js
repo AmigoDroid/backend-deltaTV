@@ -12,6 +12,7 @@ import * as providers from "../providers/provider.service.js";
 import * as stock from "../stock/stock.service.js";
 import { DEFAULT_TEMPLATE } from "../providers/playlist-url.js";
 import { codeCheckLimiter } from "../../middleware/security.js";
+import * as commerce from "../content-commerce/commerce.service.js";
 
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
@@ -57,6 +58,19 @@ router.post("/", requirePermission("partners:write"), validate({ body: createBod
 });
 router.get("/codes/check", requirePermission("partners:read"), codeCheckLimiter, validate({ query: z.object({ code: z.string().max(40) }) }), async (req, res) => res.json(await svc.checkCode(req.valid.query.code)));
 router.get("/:id", requirePermission("partners:read"), validate({ params: id }), async (req, res) => res.json(await svc.getPartner(req.valid.params.id)));
+// Condições comerciais exclusivas do parceiro de conteúdo. Nunca permitir que o parceiro altere o próprio contrato.
+router.get("/:id/commercial",requirePermission("partners:read"),validate({params:id}),async(req,res)=>res.set("Cache-Control","no-store").json(await commerce.dashboard(req.valid.params.id)));
+router.put("/:id/commercial",requirePermission("billing:write"),validate({params:id,body:z.object({
+  mode:z.enum(["legacy","credits","fixed_unlimited","fixed_limited"]),
+  fixedFeeCents:z.number().int().min(0).max(100000000),
+  activationLimit:z.number().int().min(0).max(10000000).nullable(),
+  licensePolicy:z.enum(["standard","partner_only"]),
+  creditsPerActivation:z.number().int().min(1).max(100),
+  autoPriority:z.boolean(),
+})}),async(req,res)=>res.json(await commerce.saveTerms(req.valid.params.id,req.valid.body,actorOf(req))));
+router.post("/:id/commercial/credits",requirePermission("billing:write"),validate({params:id,body:z.object({delta:z.number().int().min(-1000000).max(1000000).refine(n=>n!==0),note:z.string().trim().min(3).max(300)})}),
+  async(req,res)=>res.json(await commerce.adminAdjust(req.valid.params.id,req.valid.body,actorOf(req))));
+
 // O admin também corrige identificador (slug) e vigência; o endpoint /renew continua existindo para o caso comum.
 const identity = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$/, "Use letras minúsculas, números e hífens").optional(),

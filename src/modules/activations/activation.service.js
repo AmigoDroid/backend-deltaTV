@@ -14,6 +14,7 @@ import { probeCredentials } from "../providers/provider.service.js";
 import { sameInstallation } from "../devices/device-identity.js";
 import { serversForCode, isCodeServerAllowed, rankedServersForCode } from "../provider-monitor/code-pool.service.js";
 import { applyPendingPlaylist } from "../devices/playlist-by-url.service.js";
+import { authorizeActivation, termsFor } from "../content-commerce/commerce.service.js";
 import { STOCK_KINDS } from "../stock/stock-ledger.js";
 import { sellFromStock } from "../stock/stock-license.js";
 
@@ -149,6 +150,7 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
     // Um MAC pode ter VÁRIOS parceiros: a ativação procurada é a deste MAC COM ESTE parceiro. As ativações dos
     // outros parceiros no mesmo MAC não são tocadas (antes, ativar outro parceiro substituía a ativação existente).
     let activation = await Activation.findOne({ where: { mac, partnerId: partner.id, status: live }, ...lock });
+    const previousCodeId = activation?.partnerCodeId ?? null;
     let reused = false;
     if (activation) {
       installationCheck(activation, installationId);
@@ -162,6 +164,12 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
     // Código de REVENDEDOR atrelado a uma licença do estoque dele: ativar o dispositivo gasta 1 licença daquela duração e a
     // aplica a este cliente (o prazo conta desde agora). Reativar com o mesmo parceiro NÃO gasta outra enquanto a
     // licença do cliente estiver em vigor; só quando ela já venceu (aí é uma renovação, contada a partir de agora).
+    // Troca entre códigos também respeita o limite: a vaga do código antigo não vale no novo.
+    if (code.maxActivations !== null && (!activation || activation.partnerCodeId !== code.id)) {
+      const usedByCode = await Activation.count({where:{partnerCodeId:code.id,status:live},transaction:t});
+      if(usedByCode >= code.maxActivations)throw new AppError(409,"CODE_LIMIT_REACHED","Limite de ativações deste código atingido.");
+    }
+
     const months = code.licenseMonths && STOCK_KINDS.includes(partner.kind) ? code.licenseMonths : null;
     const granted = activation?.grantedLicenseId ? await License.findByPk(activation.grantedLicenseId, lock) : null;
     const sell = !!months && (!granted || (granted.status === "active" && !!granted.expiresAt && granted.expiresAt <= new Date()));
@@ -174,12 +182,9 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
 
     if (!activation) {
       const used = await Activation.count({ where: { partnerId: partner.id, status: live }, transaction: t });
-      if (partner.deviceLimit !== null && used >= partner.deviceLimit) {
+      const contract=await termsFor(partner.id,t);
+      if (contract.mode==="legacy" && partner.deviceLimit !== null && used >= partner.deviceLimit) {
         throw new AppError(409, "DEVICE_LIMIT_REACHED", "Limite de dispositivos atingido.");
-      }
-      if (code.maxActivations !== null) {
-        const usedByCode = await Activation.count({ where: { partnerCodeId: code.id, status: live }, transaction: t });
-        if (usedByCode >= code.maxActivations) throw new AppError(409, "CODE_LIMIT_REACHED", "Limite de ativações deste código atingido.");
       }
       await siblingsInstallationCheck(mac, installationId, t);
       const [device] = await Device.findOrCreate({ where: { mac }, defaults: { mac }, transaction: t });
@@ -206,6 +211,9 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
         { transaction: t },
       );
     }
+
+    // Contrato de conteúdo e saldo do código: atômicos com a ativação; falha desfaz todo o vínculo.
+    await authorizeActivation(t,{partner,code,activation,isNew:!reused,previousCodeId});
 
     let expiresAt = decision.expiresAt;
     let soldLicenseId = null;

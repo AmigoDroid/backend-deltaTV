@@ -1,5 +1,5 @@
 import { Op } from "sequelize";
-import { sequelize, PartnerCode, PartnerProvider, CodeServerPool, ProviderHealth } from "../../db/models/index.js";
+import { sequelize, PartnerCode, PartnerProvider, CodeServerPool, ProviderHealth, ContentPartnerTerms } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
@@ -67,11 +67,15 @@ export async function rankedServersForCode(code) {
   if (!servers.length) return [];
   const states=await ProviderHealth.findAll({where:{providerId:{[Op.in]:servers.map(s=>s.id)}},raw:true});
   const byId=new Map(states.map(h=>[h.providerId,h]));
+  const settings=await ContentPartnerTerms.findByPk(code.partnerId,{attributes:["autoPriority"]});
+  const auto=settings?.autoPriority!==false;
   const active=servers.map(s=>({...s,health:byId.get(s.id)}));
-  // Servidores comprovadamente saudáveis primeiro, ordenados por latência; desconhecidos não vencem saudáveis.
+  // Prioridade efetiva dinâmica, computada em memória; nunca grava no banco a cada sondagem.
+  // Saúde tem precedência. Dentro do mesmo estado, escolha entre preferência manual ou menor latência.
   return active.sort((a,b)=>{
     const rank=s=>s.health?.state==="healthy"?0:s.health?.state==="down"?2:1;
-    return rank(a)-rank(b) || (a.health?.latencyMs??1e9)-(b.health?.latencyMs??1e9) || a.priority-b.priority;
+    return rank(a)-rank(b) || (auto ? (a.health?.latencyMs??1e9)-(b.health?.latencyMs??1e9) || a.priority-b.priority
+      : a.priority-b.priority || (a.health?.latencyMs??1e9)-(b.health?.latencyMs??1e9));
   });
 }
 
