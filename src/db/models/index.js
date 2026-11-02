@@ -111,6 +111,7 @@ export const ContentPartnerTerms = sequelize.define("ContentPartnerTerms", {
   fixedFeeCents:int(0),activationLimit:{type:T.INTEGER},
   licensePolicy:str(20,{allowNull:false,defaultValue:"standard"}),
   creditsPerActivation:int(1),autoPriority:{type:T.BOOLEAN,allowNull:false,defaultValue:true},
+  allowWebIssuance:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
 },{tableName:"content_partner_terms"});
 export const ContentCodeBalance = sequelize.define("ContentCodeBalance", {
   codeId:{type:T.UUID,primaryKey:true},allocated:int(0),spent:int(0),
@@ -171,7 +172,6 @@ export const Activation = def("Activation", "activations", {
   deliveryMode: str(20),
   // Modo de entrega POR TIPO ({api, live, movie, series} -> proxy|redirect), migration 20261105000001. NULL = automático.
   deliveryModes: { type: T.JSONB },
-  allowWebIssuance: {type:T.BOOLEAN,allowNull:false,defaultValue:false},
 });
 
 // Acesso ao Player Web (migration 20261105000001): código AB123456 -> dispositivo web com ativação e licença próprias.
