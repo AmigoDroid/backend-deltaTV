@@ -4,11 +4,13 @@
  * URL normaliza esquema, host e porta padrão, mas nunca confunde HTTP com HTTPS
  * ou portas distintas. A proteção SSRF continua sendo feita pelo probe real.
  */
+import { xtreamApiUrl } from "./url-utils.js";
+
 export function probeTargetKey(raw) {
   try {
     const base = new URL(String(raw).trim());
     if (base.protocol !== "http:" && base.protocol !== "https:") throw new Error("unsupported protocol");
-    return new URL("/player_api.php", base).href;
+    return xtreamApiUrl(base).href;
   } catch {
     // Endereços inválidos nunca devem colidir com URLs válidas.
     return `invalid:${String(raw).trim()}`;

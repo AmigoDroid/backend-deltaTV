@@ -1,6 +1,7 @@
 import http from "node:http";
 import https from "node:https";
-import { Op } from "sequelize";
+import { Op, QueryTypes } from "sequelize";
+import { sequelize } from "../../db/sequelize.js";
 import { Partner, PartnerCode, PartnerProvider, ProviderHealth, CodeFailover, CodeServerPool, ProviderHealthEvent } from "../../db/models/index.js";
 import { assertPublicUrl, safeLookup } from "../../shared/ssrf.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
@@ -10,26 +11,28 @@ import { env } from "../../config/env.js";
 import { broadcastChange } from "../../realtime/socket.js";
 import {getServicePlan} from "../service-plans/plan.service.js";
 import { invalidatePartnerServerAlerts } from "./visibility.service.js";
-import { createSharedProbe, isNewProbeSample } from "./probe-dedup.js";
+import { createSharedProbe, isNewProbeSample, probeTargetKey } from "./probe-dedup.js";
+import { xtreamApiUrl } from "./url-utils.js";
+import { healthTransition } from "./health-policy.js";
 
 const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
 const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",60,30,3600);
-const TIMEOUT = int("PROVIDER_MONITOR_TIMEOUT_MS",3000,800,5000);
 const SLOW = int("PROVIDER_MONITOR_SLOW_MS",2500,300,5000);
+const TIMEOUT = Math.max(SLOW + 1000, int("PROVIDER_MONITOR_TIMEOUT_MS",4000,800,10000));
 const CONCURRENCY = int("PROVIDER_MONITOR_CONCURRENCY",4,1,8);
 const MAX_PER_CYCLE = int("PROVIDER_MONITOR_MAX_PER_CYCLE",60,5,250);
 // Reaproveita sondagens de URLs idênticas entre parcerias, inclusive em lotes adjacentes.
 // Expira em até um intervalo: a saúde continua sendo realmente reavaliada.
 const PROBE_TTL_MS = int("PROVIDER_MONITOR_DEDUP_TTL_MS",Math.min(INTERVAL*1000,120_000),1000,120_000);
-let timer, running=false, cursor=0, alertRunning=false, cycles=0, lastCleanup=0;
+let timer, running=false, alertRunning=false, cycles=0, lastCleanup=0, alertCursor=null;
 
 /** HEAD/GET de baixo custo, sem seguir redirect, sem guardar o corpo e com proteção SSRF. */
 export async function probeServer(raw) {
   let url;
   try{url=await assertPublicUrl(raw);}catch(e){
-    return {good:false,latencyMs:TIMEOUT,error:`DNS ou destino indisponível: ${String(e.message).slice(0,100)}`};
+    return {good:false,slow:false,latencyMs:TIMEOUT,error:`DNS ou destino indisponível: ${String(e.message).slice(0,100)}`};
   }
-  const target=new URL("/player_api.php",url);
+  const target=xtreamApiUrl(url);
   const started=Date.now();
   return new Promise(resolve=>{
     const transport=target.protocol==="https:"?https:http;
@@ -37,12 +40,13 @@ export async function probeServer(raw) {
       headers:{"User-Agent":"DeltaTV-Monitor/2.0",Accept:"application/json",Connection:"close"}},res=>{
       const ms=Date.now()-started;
       // 401/403 pode ser WAF; indica que o host respondeu, mas não autentica conta do cliente.
-      const good = ms<=SLOW && res.statusCode>=200 && res.statusCode<500 && res.statusCode!==429;
+      const good = res.statusCode>=200 && res.statusCode<500 && res.statusCode!==429;
+      const slow = good && ms > SLOW;
       res.destroy();
-      resolve({good,latencyMs:ms,error:good?null:(ms>SLOW?"Resposta lenta":`HTTP ${res.statusCode}`)});
+      resolve({good,slow,latencyMs:ms,error:good?(slow?"Resposta lenta":null):`HTTP ${res.statusCode}`});
     });
     req.on("timeout",()=>req.destroy(new Error("Timeout")));
-    req.on("error",e=>resolve({good:false,latencyMs:Date.now()-started,error:String(e.message).slice(0,160)}));
+    req.on("error",e=>resolve({good:false,slow:false,latencyMs:Date.now()-started,error:String(e.message).slice(0,160)}));
     req.end();
   });
 }
@@ -56,9 +60,7 @@ async function updateOne(provider) {
     // Se o lote atual reaproveitou uma medição já aplicada a este provedor, não
     // avance os contadores nem gere um evento de queda/recuperação fictício.
     if (!isNewProbeSample(h.lastCheckedAt, r.sampledAt)) return {stateChanged:false,notify:false};
-    const failures=r.good?0:Math.min(100,(h.failures||0)+1);
-    const successes=r.good?Math.min(100,(h.successes||0)+1):0;
-    const state=failures>=2?"down":successes>=2?"healthy":r.good?"checking":"suspect";
+    const { failures, successes, state } = healthTransition(h, r);
     const oldLatency = h.latencyMs;
     const stateChanged = state !== h.state;
     const latencyChanged = r.good && oldLatency != null &&
@@ -84,15 +86,16 @@ export async function monitorOnce() {
   if(running)return;
   running=true;
   try {
-    const total=await PartnerProvider.count({where:{status:"active"}});
-    if(!total)return;
-    if(cursor>=total)cursor=0;
-    let providers=await PartnerProvider.findAll({where:{status:"active"},attributes:["id","baseUrl","partnerId"],order:[["id","ASC"]],offset:cursor,limit:MAX_PER_CYCLE,raw:true});
-    cursor=(cursor+providers.length)%total;
-    if(providers.length<MAX_PER_CYCLE && cursor===0 && total>providers.length){
-      const more=await PartnerProvider.findAll({where:{status:"active"},attributes:["id","baseUrl","partnerId"],order:[["id","ASC"]],limit:MAX_PER_CYCLE-providers.length,raw:true});
-      providers=providers.concat(more);cursor=more.length;
-    }
+    // Mais antigos primeiro (NULL antes dos demais): garante justiça sem OFFSET crescente
+    // e prioriza servidores recém-cadastrados. A deduplicação HTTP continua compartilhada.
+    const providers = await sequelize.query(`
+      SELECT pp.id, pp.base_url AS "baseUrl", pp.partner_id AS "partnerId"
+      FROM partner_providers pp
+      LEFT JOIN provider_health h ON h.provider_id = pp.id
+      WHERE pp.status='active'
+      ORDER BY h.last_checked_at ASC NULLS FIRST, pp.id ASC
+      LIMIT :limit`, { replacements: { limit: MAX_PER_CYCLE }, type: QueryTypes.SELECT });
+    if (!providers.length) return;
     const changedPartnerIds = new Set();
     let changedState = false;
     await workers(providers,async p=>{
@@ -130,15 +133,23 @@ export async function monitorOnce() {
 
 // Notifica somente incidentes confirmados, por código, e apenas quando TODAS suas URLs estão DOWN.
 async function alertOutages() {
-  const codes=await PartnerCode.findAll({where:{status:"active"},attributes:["id","partnerId","code","providerId"],raw:true});
-  if(!codes.length)return;
+  // Cursor com lote fixo: independe do número total de códigos cadastrados.
+  const where = { status: "active", ...(alertCursor ? { id: { [Op.gt]: alertCursor } } : {}) };
+  let codes = await PartnerCode.findAll({where, attributes:["id","partnerId","code","providerId"],order:[["id","ASC"]],limit:200,raw:true});
+  if (!codes.length && alertCursor) {
+    alertCursor = null;
+    codes = await PartnerCode.findAll({where:{status:"active"},attributes:["id","partnerId","code","providerId"],order:[["id","ASC"]],limit:200,raw:true});
+  }
+  if (!codes.length) return;
+  alertCursor = codes[codes.length - 1].id;
   const links=await CodeServerPool.findAll({where:{codeId:{[Op.in]:codes.map(c=>c.id)}},attributes:["codeId","providerId"],raw:true});
   const pools=new Map();for(const l of links){if(!pools.has(l.codeId))pools.set(l.codeId,[]);pools.get(l.codeId).push(l.providerId);}
-  const activeProviders=await PartnerProvider.findAll({where:{status:"active"},attributes:["id"],raw:true});
+  const providerIds = [...new Set(codes.flatMap(c => [...(pools.get(c.id) || []), c.providerId].filter(Boolean)))];
+  const activeProviders=await PartnerProvider.findAll({where:{status:"active",id:{[Op.in]:providerIds}},attributes:["id"],raw:true});
   const activeIds=new Set(activeProviders.map(p=>p.id));
-  const states=await ProviderHealth.findAll({attributes:["providerId","state","lastCheckedAt"],raw:true});
+  const states=await ProviderHealth.findAll({where:{providerId:{[Op.in]:providerIds}},attributes:["providerId","state","lastCheckedAt"],raw:true});
   const health=new Map(states.map(s=>[s.providerId,s]));
-  const known=await CodeFailover.findAll({attributes:["id","codeId","outageNotifiedAt"],raw:false});
+  const known=await CodeFailover.findAll({where:{codeId:{[Op.in]:codes.map(c=>c.id)}},attributes:["id","codeId","outageNotifiedAt"],raw:false});
   const byCode=new Map(known.map(s=>[s.codeId,s]));
   const now=Date.now(), activeCutoff=Math.max(180_000,INTERVAL*3000);
   let emails=0;
@@ -149,7 +160,7 @@ async function alertOutages() {
       const h=health.get(id);
       return h?.state==="down" && h.lastCheckedAt && now-new Date(h.lastCheckedAt).getTime()<activeCutoff;
     });
-    const recovered=ids.some(id=>health.get(id)?.state==="healthy");
+    const recovered=ids.some(id=>["healthy", "slow"].includes(health.get(id)?.state));
     let state=byCode.get(code.id);
     if(!unavailable && (!recovered || !state?.outageNotifiedAt))continue;
     if(recovered && state?.outageNotifiedAt){await state.update({outageNotifiedAt:null});continue;}
@@ -185,7 +196,7 @@ export async function overview(partnerId) {
   const servicePlan=await getServicePlan(partnerId);
   const automated=servicePlan.features.autoPriority;
   const effectiveOrder=[...providers].sort((a,b)=>{
-    const healthRank=p=>byId.get(p.id)?.state==="healthy"?0:byId.get(p.id)?.state==="down"?2:1;
+    const healthRank=p=>byId.get(p.id)?.state==="healthy"?0:byId.get(p.id)?.state==="slow"?1:byId.get(p.id)?.state==="down"?3:2;
     return healthRank(a)-healthRank(b) || (automated?(byId.get(a.id)?.latencyMs??1e9)-(byId.get(b.id)?.latencyMs??1e9)||a.priority-b.priority
       :a.priority-b.priority||(byId.get(a.id)?.latencyMs??1e9)-(byId.get(b.id)?.latencyMs??1e9));
   });

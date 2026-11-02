@@ -9,6 +9,7 @@ import { actorOf, audit } from "../../shared/audit.js";
 import { hashPassword } from "../../shared/crypto.js";
 import { can } from "../../middleware/authenticate.js";
 import { revokeAllSessions } from "../auth/auth.service.js";
+import { disconnectAdminUser } from "../../realtime/socket.js";
 
 /**
  * Gestão de usuários.
@@ -97,7 +98,7 @@ router.patch(
 
     const sensitive = !!password || changes.status === "disabled" || role !== u.role || partnerId !== u.partnerId || (changes.email && changes.email !== u.email);
     await u.update({ ...changes, ...(password ? { passwordHash: await hashPassword(password) } : {}) });
-    if (sensitive) await revokeAllSessions(u.id);
+    if (sensitive) { await revokeAllSessions(u.id); disconnectAdminUser(u.id); }
     await audit({ actor: actorOf(req), action: "user.update", entityType: "admin_user", entityId: u.id, metadata: { ...rest, partnerId, passwordChanged: !!password } });
     res.json(await present(u));
   },

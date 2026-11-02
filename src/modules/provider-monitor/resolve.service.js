@@ -1,4 +1,6 @@
 import { selectHealthy } from "./ranking.js";
+import { xtreamApiUrl } from "./url-utils.js";
+import { freshnessWindowSeconds } from "./visibility.service.js";
 import { createHash } from "node:crypto";
 import { PartnerCode, ProviderHealth } from "../../db/models/index.js";
 import { safeGet } from "../../shared/ssrf.js";
@@ -38,7 +40,10 @@ async function verifyAlternative(server, username, password) {
   const pending=(async()=>{
     let res;
     try {
-      const url=`${new URL(server.baseUrl).origin}/player_api.php?username=${encodeURIComponent(username)}&password=${encodeURIComponent(password)}`;
+      const api = xtreamApiUrl(server.baseUrl);
+      api.searchParams.set("username", username);
+      api.searchParams.set("password", password);
+      const url = api.toString();
       // Não seguir redirects: credenciais não devem ser encaminhadas para outro domínio.
       res=await safeGet(url,{maxRedirects:0,timeoutMs:1800,headers:{"user-agent":"DeltaTV-Resolver/1.0",accept:"application/json"}});
       if(res.statusCode!==200)return false;
@@ -69,16 +74,20 @@ export async function resolveForActivation(activation, original, credentials) {
     const fallback={provider:servers.some(s=>s.id===original?.id)?original:null,verified:false};
     const states=await statesOf(servers);
     const now=Date.now();
+    const freshMs = (await freshnessWindowSeconds()) * 1000;
     const automatic=plan.features.autoPriority;
-    const ranked=servers.filter(s=>s.status==="active" && states.get(s.id)?.state==="healthy"
-      && now-new Date(states.get(s.id).lastCheckedAt).getTime()<180_000)
-      .sort((a,b)=>automatic?(states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999) || a.priority-b.priority
-        :a.priority-b.priority || (states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999));
+    const ranked=servers.filter(s=>s.status==="active" && ["healthy", "slow"].includes(states.get(s.id)?.state)
+      && now-new Date(states.get(s.id).lastCheckedAt).getTime()<freshMs)
+      .sort((a,b)=>(states.get(a.id).state === "slow")-(states.get(b.id).state === "slow") || (automatic?(states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999) || a.priority-b.priority
+        :a.priority-b.priority || (states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999)));
     if(!ranked.length)return fallback;
     const pinned=pins.get(activation.id);
     // Para evitar flapping, só troca por ganho significativo (>=50 ms e >=15%).
     const scored=ranked.map(s=>({...s,latencyMs:states.get(s.id)?.latencyMs??99999}));
-    const selected=automatic?selectHealthy(scored,pinned,now):(pinned?.until>now && scored.find(s=>s.id===pinned.providerId) || scored[0]);
+    const selected = pinned && states.get(pinned.providerId)?.state === "slow" &&
+      scored[0]?.id !== pinned.providerId && states.get(scored[0]?.id)?.state === "healthy"
+      ? scored[0] : (automatic ? selectHealthy(scored,pinned,now)
+        : (pinned?.until > now && scored.find(s => s.id === pinned.providerId) || scored[0]));
     if(selected.id===original?.id){put(pins,activation.id,{providerId:selected.id,until:now+PIN_MS},MAX_PINS);return {provider:selected,verified:false};}
     // A URL alternativa DEVE aceitar o usuário/senha desta ativação. Se não, não há mudança.
     const compatible=await verifyAlternative(selected,credentials.username,credentials.password);

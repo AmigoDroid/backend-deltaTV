@@ -92,7 +92,8 @@ export const env = Object.freeze({
   nodeEnv,
   isProd,
   port: int("PORT", 3000),
-  trustProxy: e.TRUST_PROXY === "true" ? true : int("TRUST_PROXY", 0),
+  trustProxy: e.TRUST_PROXY === "loopback" ? "loopback"
+    : e.TRUST_PROXY === "true" ? true : int("TRUST_PROXY", 0),
   corsOrigins: (e.CORS_ORIGINS || "http://localhost:5173,http://localhost:5174,http://localhost:5175")
     .split(",")
     .map((s) => s.trim())

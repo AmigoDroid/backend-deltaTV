@@ -1,5 +1,6 @@
 import express from "express";
 import { broadcastChange } from "./realtime/socket.js";
+import { invalidateDashboardCache } from "./modules/dashboard/dashboard.routes.js";
 import helmet from "helmet";
 import cors from "cors";
 import { env } from "./config/env.js";
@@ -56,7 +57,16 @@ export function createApp() {
     if (!/^\/api\/v1\/(admin|partner)\//.test(req.path)) return next();
     res.on("finish", () => {
       if (res.statusCode >= 200 && res.statusCode < 300 && req.user) {
-        broadcastChange({ partnerId: req.user.role === "partner" ? req.user.partnerId : null });
+        const isPartner = req.user.role === "partner";
+        const segments = req.path.split("/").filter(Boolean);
+        const area = segments[3] || "data";  // /api/v1/admin/devices => devices
+        const topic = area === "app-downloads" ? "downloads" : area;
+        // Em operações administrativas, apenas administradores recebem atualização global.
+        // Parceiros só recebem eventos associados ao seu próprio cadastro.
+        const modifiedPartner = !isPartner && area === "partners" &&
+          /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(segments[4] || "") ? segments[4] : null;
+        invalidateDashboardCache();
+        broadcastChange({ partnerId: isPartner ? req.user.partnerId : modifiedPartner, topic });
       }
     });
     next();

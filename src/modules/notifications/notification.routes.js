@@ -7,7 +7,7 @@ import { Partner, PartnerNotification, NotificationCampaign } from "../../db/mod
 import { authenticate, requirePartnerRole } from "../../middleware/authenticate.js";
 import { validate } from "../../shared/validate.js";
 import { AppError } from "../../shared/errors.js";
-import { broadcastPartnerNotification } from "../../realtime/socket.js";
+import { broadcastPartnerNotification, broadcastNotificationRefresh } from "../../realtime/socket.js";
 
 export const adminNotificationRoutes = Router();
 adminNotificationRoutes.use(authenticate);
@@ -27,25 +27,39 @@ adminNotificationRoutes.get("/recipient-search", validate({ query: z.object({ q:
 });
 adminNotificationRoutes.post("/send", validate({ body: sendSchema }), async (req, res) => {
   const { audience, partnerIds, title, message, severity } = req.valid.body;
-  if (audience === "selected" && !partnerIds.length) throw new AppError(400, "NO_RECIPIENTS", "Selecione pelo menos uma revenda.");
-  const targets = await Partner.findAll({
-    attributes: ["id"],
-    where: audience === "all" ? { kind: { [Op.in]: ["reseller", "both"] } } : { id: { [Op.in]: [...new Set(partnerIds)] }, kind: { [Op.in]: ["reseller", "both"] } },
-  });
-  if (audience === "selected" && targets.length !== new Set(partnerIds).size)
+  const selected = [...new Set(partnerIds)];
+  if (audience === "selected" && selected.length === 0)
+    throw new AppError(400, "NO_RECIPIENTS", "Selecione pelo menos uma revenda.");
+  const scope = { kind: { [Op.in]: ["reseller", "both"] } };
+  if (audience === "selected") scope.id = { [Op.in]: selected };
+  const total = await Partner.count({ where: scope });
+  if (audience === "selected" && total !== selected.length)
     throw new AppError(400, "INVALID_RECIPIENTS", "Uma ou mais revendas não existem ou não são revendedoras.");
-  if (!targets.length) throw new AppError(400, "NO_RECIPIENTS", "Nenhuma revenda encontrada.");
-  // Grava todas as mensagens antes de notificar. Não anuncia sucesso parcial.
+  if (!total) throw new AppError(400, "NO_RECIPIENTS", "Nenhuma revenda encontrada.");
+
   const campaignId = randomUUID();
-  const rows = await sequelize.transaction(async transaction => {
+  // Uma transação atômica, mas sem carregar todos os destinatários de uma vez.
+  // Cada lote mantém no máximo 250 modelos na memória do Node.
+  let inserted = 0;
+  await sequelize.transaction(async transaction => {
     await NotificationCampaign.create({ id: campaignId, senderId: req.user.id, title, message, severity }, { transaction });
-    return PartnerNotification.bulkCreate(
-      targets.map(p => ({ partnerId: p.id, campaignId, senderId: req.user.id, batchId: campaignId })),
-      { transaction, returning: true },
-    );
+    let cursor = null;
+    while (true) {
+      const where = { ...scope, ...(cursor ? { id: audience === "selected"
+        ? { [Op.in]: selected, [Op.gt]: cursor } : { [Op.gt]: cursor } } : {}) };
+      const batch = await Partner.findAll({ where, attributes: ["id"], order: [["id", "ASC"]], limit: 250, transaction, raw: true });
+      if (!batch.length) break;
+      await PartnerNotification.bulkCreate(
+        batch.map(p => ({ partnerId: p.id, campaignId, senderId: req.user.id, batchId: campaignId })),
+        { transaction, returning: false },
+      );
+      inserted += batch.length;
+      cursor = batch[batch.length - 1].id;
+    }
   });
-  for (const row of rows) broadcastPartnerNotification(row.partnerId, row.id);
-  res.status(201).json({ campaignId, sent: rows.length });
+  // Notificações WS apenas após commit, nunca antes de a mensagem existir no banco.
+  broadcastNotificationRefresh(audience === "all" ? null : selected);
+  res.status(201).json({ campaignId, sent: inserted });
 });
 // Um comunicado por envio. Cada entrega com seu read_at é um filho.
 adminNotificationRoutes.get("/campaigns", validate({ query: z.object({ page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(50).default(20) }) }), async (req, res) => {

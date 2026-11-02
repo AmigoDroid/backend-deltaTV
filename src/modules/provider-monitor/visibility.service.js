@@ -12,7 +12,7 @@ const SLOW_MS = Math.max(300, Math.min(5000, Number(process.env.PROVIDER_MONITOR
 // Uma única contagem global por minuto, compartilhada por todas as sessões de revenda.
 // Assim a janela de validade acompanha o número real de servidores monitorados, sem uma COUNT por usuário.
 let activeCountCache = { until: 0, value: null, pending: null };
-async function freshnessWindowSeconds() {
+export async function freshnessWindowSeconds() {
   if (!enabled()) return 180;
   const now = Date.now();
   if (activeCountCache.value !== null && activeCountCache.until > now) {
@@ -37,6 +37,7 @@ const healthState = `CASE
   WHEN :monitorEnabled = false THEN 'unknown'
   WHEN ph.last_checked_at IS NULL OR ph.last_checked_at < :freshAfter THEN 'unknown'
   WHEN ph.state = 'healthy' THEN 'healthy'
+  WHEN ph.state = 'slow' THEN 'slow'
   WHEN ph.state = 'down' THEN 'down'
   WHEN ph.state IN ('checking', 'suspect') THEN 'suspect'
   ELSE 'unknown'
@@ -73,13 +74,13 @@ export async function listServerHealth({ partnerId = null, q = "", status = "", 
   const statusFilter = status ? "WHERE health_status = :status" : "";
   const [rows, aggregates] = await Promise.all([
     sequelize.query(`${base} SELECT *, health_status AS "healthStatus" FROM servers ${statusFilter}
-      ORDER BY CASE health_status WHEN 'down' THEN 0 WHEN 'suspect' THEN 1 WHEN 'unknown' THEN 2 WHEN 'healthy' THEN 3 ELSE 4 END,
+      ORDER BY CASE health_status WHEN 'down' THEN 0 WHEN 'suspect' THEN 1 WHEN 'slow' THEN 2 WHEN 'unknown' THEN 3 WHEN 'healthy' THEN 4 ELSE 4 END,
         "partnerName" ASC NULLS LAST, name ASC, id ASC LIMIT :limit OFFSET :offset`,
     { replacements, type: QueryTypes.SELECT }),
     sequelize.query(`${base} SELECT health_status, count(*)::integer AS total FROM servers GROUP BY health_status`,
       { replacements, type: QueryTypes.SELECT }),
   ]);
-  const summary = { total: 0, healthy: 0, suspect: 0, down: 0, unknown: 0, disabled: 0 };
+  const summary = { total: 0, healthy: 0, slow: 0, suspect: 0, down: 0, unknown: 0, disabled: 0 };
   for (const r of aggregates) {
     if (Object.hasOwn(summary, r.health_status)) summary[r.health_status] = Number(r.total);
     summary.total += Number(r.total);
@@ -134,7 +135,7 @@ async function fetchPartnerServerAlerts(partnerId) {
     JOIN provider_health ph ON ph.provider_id = pp.id
     WHERE pp.partner_id = :partnerId AND pp.status = 'active'
       AND ph.last_checked_at >= :freshAfter
-      AND (ph.state IN ('down', 'suspect') OR ph.latency_ms >= :slowMs)
+      AND (ph.state IN ('down', 'suspect', 'slow') OR ph.latency_ms >= :slowMs)
   )
   SELECT *, count(*) OVER ()::integer AS total,
     count(*) FILTER (WHERE kind = 'slow') OVER ()::integer AS slow,

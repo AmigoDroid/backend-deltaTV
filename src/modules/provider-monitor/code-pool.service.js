@@ -83,7 +83,7 @@ export async function rankedServersForCode(code) {
   // Prioridade efetiva dinâmica, computada em memória; nunca grava no banco a cada sondagem.
   // Saúde tem precedência. Dentro do mesmo estado, escolha entre preferência manual ou menor latência.
   return active.sort((a,b)=>{
-    const rank=s=>s.health?.state==="healthy"?0:s.health?.state==="down"?2:1;
+    const rank=s=>s.health?.state==="healthy"?0:s.health?.state==="slow"?1:s.health?.state==="down"?3:2;
     return rank(a)-rank(b) || (auto ? (a.health?.latencyMs??1e9)-(b.health?.latencyMs??1e9) || a.priority-b.priority
       : a.priority-b.priority || (a.health?.latencyMs??1e9)-(b.health?.latencyMs??1e9));
   });

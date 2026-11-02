@@ -99,7 +99,22 @@ export async function countOnlineForPartner(partnerId) {
         AND d.last_seen_at >= now() - (:w * interval '1 second')`,
     { replacements: { partnerId, w: env.presenceWindowSeconds } },
   );
-  return rows[0]?.n ?? 0;
+  let count = rows[0]?.n ?? 0;
+  const cutoff = Date.now() - windowMs();
+  const pending = [...dirty].filter(id => (seen.get(id) ?? 0) >= cutoff);
+  // Mesma fonte do contador global; não contar IDs já vistos no banco.
+  for (let i = 0; i < pending.length; i += BATCH) {
+    const [extra] = await sequelize.query(`
+      SELECT count(DISTINCT d.id)::int AS n
+      FROM devices d JOIN activations a ON a.device_id = d.id
+      WHERE a.partner_id = :partnerId AND a.status = 'active'
+        AND d.id IN (:ids)
+        AND (d.last_seen_at IS NULL OR d.last_seen_at < now() - (:w * interval '1 second'))`,
+      { replacements: { partnerId, ids: pending.slice(i, i + BATCH), w: env.presenceWindowSeconds } },
+    );
+    count += extra[0]?.n ?? 0;
+  }
+  return count;
 }
 
 function prune(now = Date.now()) {

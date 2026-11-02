@@ -1,3 +1,4 @@
+import { disconnectAdminUser } from "../../realtime/socket.js";
 import { recordLogin } from "./login-history.service.js";
 import { Op } from "sequelize";
 import { sequelize, AdminUser, AuthSession, Partner } from "../../db/models/index.js";
@@ -103,5 +104,6 @@ export async function logout(refreshToken) {
 export async function revokeAllSessions(userId, transaction) {
   await AdminUser.increment("tokenVersion", { where: { id: userId }, transaction });
   await AuthSession.update({ revokedAt: new Date() }, { where: { adminUserId: userId, revokedAt: null }, transaction });
+  if (!transaction) disconnectAdminUser(userId); // transações devem fechar sockets após commit
 }
 

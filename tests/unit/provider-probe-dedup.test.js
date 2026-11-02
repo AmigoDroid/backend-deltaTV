@@ -4,7 +4,8 @@ import { createSharedProbe, probeTargetKey, isNewProbeSample } from "../../src/m
 
 test("URLs equivalentes têm a mesma chave; protocolo e porta diferente não", () => {
   assert.equal(probeTargetKey("HTTP://ExEmPlo.com:80/"), probeTargetKey("http://exemplo.com"));
-  assert.equal(probeTargetKey("https://Exemplo.com:443/qualquer/caminho"), probeTargetKey("https://exemplo.com"));
+  assert.notEqual(probeTargetKey("https://Exemplo.com:443/qualquer/caminho"), probeTargetKey("https://exemplo.com"));
+  assert.equal(probeTargetKey("https://Exemplo.com:443/qualquer/caminho/"), probeTargetKey("https://exemplo.com/qualquer/caminho"));
   assert.notEqual(probeTargetKey("http://exemplo.com"), probeTargetKey("https://exemplo.com"));
   assert.notEqual(probeTargetKey("http://exemplo.com:8080"), probeTargetKey("http://exemplo.com"));
   assert.notEqual(probeTargetKey("http://exemplo.com"), probeTargetKey("http://outro.com"));

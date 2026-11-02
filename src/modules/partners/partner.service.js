@@ -42,8 +42,9 @@ const out = (p) => {
   return withPresence(j);
 };
 
-export async function listPartners({ q, status, page, pageSize }) {
+export async function listPartners({ q, status, kind, page, pageSize }) {
   const where = { status: { [Op.ne]: "deleted" } };
+  if (kind === "content" || kind === "reseller") where.kind = { [Op.in]: [kind, "both"] };
   if (status === "expired") Object.assign(where, { status: "active", endsAt: { [Op.lte]: new Date() } });
   else if (status === "pending") Object.assign(where, { status: "suspended", statusReason: SIGNUP_PENDING_REASON }); // cadastros públicos aguardando aprovação
   else if (status) where.status = status;

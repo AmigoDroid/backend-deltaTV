@@ -52,7 +52,7 @@ router.get("/presence/live", requirePermission("partners:read"), (_req, res) => 
 
 router.get(
   "/", requirePermission("partners:read"),
-  validate({ query: z.object({ ...pageQuery, q: z.string().max(100).optional(), status: z.enum(["pending", "active", "expired", "suspended", "blocked", "cancelled"]).optional() }) }),
+  validate({ query: z.object({ ...pageQuery, q: z.string().max(100).optional(), status: z.enum(["pending", "active", "expired", "suspended", "blocked", "cancelled"]).optional(), kind: z.enum(["content", "reseller"]).optional() }) }),
   async (req, res) => res.json(await svc.listPartners(req.valid.query)),
 );
 router.post("/", requirePermission("partners:write"), validate({ body: createBody }), async (req, res) => {

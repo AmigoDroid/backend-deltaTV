@@ -10,7 +10,7 @@ dotenv.config();
 
 await sequelize.authenticate();
 const app = createApp();
-const server = app.listen(env.port, "0.0.0.0", () => {
+const server = app.listen(env.port, process.env.API_BIND_HOST || (env.isProd ? "127.0.0.1" : "0.0.0.0"), () => {
   console.log(
     `API de licenciamento em http://localhost:${env.port} (${env.nodeEnv})`,
   );

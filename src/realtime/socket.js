@@ -8,7 +8,27 @@ const peers = new Set();
 let wss;
 const now = () => Date.now();
 const emit = (socket, data) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data)); };
-const allowed = (peer, partnerId) => peer.user.role !== "partner" || (partnerId && String(peer.user.partnerId) === String(partnerId));
+import { canReceiveChange, sameSessionClaims } from "./routing-policy.js";
+const allowed = (peer, partnerId) => canReceiveChange(peer.user, partnerId);
+// Sessões HTTP revogadas são encerradas também no canal em tempo real.
+export function disconnectAdminUser(userId) {
+  for (const peer of [...peers]) if (String(peer.user.id) === String(userId)) peer.socket.close(1008, "Session revoked");
+}
+// Revalidação agrupada, sem uma consulta ao banco por cliente ou por evento.
+async function verifyActivePeers() {
+  const active = [...peers].filter(p => p.socket.readyState === WebSocket.OPEN);
+  const ids = [...new Set(active.map(p => p.user.id))];
+  for (let start = 0; start < ids.length; start += 500) {
+    const chunk = ids.slice(start, start + 500);
+    const accounts = await AdminUser.findAll({ where: { id: chunk }, attributes: ["id", "role", "partnerId", "status", "tokenVersion"], raw: true });
+    const byId = new Map(accounts.map(a => [String(a.id), a]));
+    for (const peer of active) {
+      if (!chunk.includes(peer.user.id)) continue;
+      const a = byId.get(String(peer.user.id));
+      if (!sameSessionClaims(a, peer)) peer.socket.close(1008, "Permissions changed");
+    }
+  }
+}
 const presence = (partnerId) => {
   for (const peer of peers) if (peer.user.role === "partner" && peer.user.partnerId === partnerId) return true;
   return false;
@@ -23,6 +43,15 @@ export function livePartnerIds() {
 }
 export function isPartnerConnected(id) { return Boolean(id) && presence(id); }
 export function onlinePartnerCount() { return livePartnerIds().length; }
+// Só dispara invalidação, sem transportar mensagens privadas pelo WebSocket.
+// No envio geral evita uma emissão por linha do PostgreSQL.
+export function broadcastNotificationRefresh(partnerIds = null) {
+  const target = partnerIds == null ? null : new Set(partnerIds.map(String));
+  for (const peer of peers) {
+    if (peer.user.role === "partner" && (target === null || target.has(String(peer.user.partnerId))))
+      emit(peer.socket, { type: "notification" });
+  }
+}
 export function broadcastPartnerNotification(partnerId, notificationId) {
   for (const peer of peers) {
     if (peer.user.role === "partner" && String(peer.user.partnerId) === String(partnerId))
@@ -92,7 +121,7 @@ export function attachRealtime(server) {
           const user = await AdminUser.findByPk(claims.sub);
           if (!user || user.status !== "active" || user.tokenVersion !== claims.tv || !["partner", "admin", "superadmin", "support"].includes(user.role) || (user.role === "partner" && !user.partnerId)) throw Error("Invalid account");
           if (socket.readyState !== WebSocket.OPEN) return;
-          peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, exp: claims.exp, alive: true, systemMetricsSubscribed: false };
+          peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, tokenVersion: user.tokenVersion, exp: claims.exp, alive: true, systemMetricsSubscribed: false };
           peers.add(peer); clearTimeout(timeout);
           emit(socket, { type: "ready", role: user.role, ...(user.role !== "partner" ? { onlinePartnerIds: livePartnerIds(), onlinePartnerCount: onlinePartnerCount() } : {}) });
           if (user.role === "partner") { lastTouch = now(); void touch(peer.user); broadcastPresence(user.partnerId); }
@@ -131,5 +160,9 @@ export function attachRealtime(server) {
     }
   }, 30000);
   timer.unref();
-  return () => { clearInterval(timer); clearInterval(metricsTimer); for (const peer of [...peers]) peer.socket.close(1001); wss.close(); };
+  const revocationTimer = setInterval(() => {
+    void verifyActivePeers().catch(err => console.warn("[ws-auth] Falha de revalidação:", err.message));
+  }, 60000);
+  revocationTimer.unref();
+  return () => { clearInterval(revocationTimer); clearInterval(timer); clearInterval(metricsTimer); for (const peer of [...peers]) peer.socket.close(1001); wss.close(); };
 }
