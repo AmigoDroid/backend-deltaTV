@@ -13,7 +13,8 @@ import { encryptSecret } from "../../shared/crypto.js";
 import { assertPublicUrl } from "../../shared/ssrf.js";
 import { parseListUrl, canonicalListUrl } from "./playlist-by-url.service.js";
 import { selectLiveActivation, removeList } from "./reseller-devices.service.js";
-import { presenceOf, onlineSql } from "./presence.js";
+import { presenceOf, flushPresence } from "./presence.js";
+import { env } from "../../config/env.js";
 
 const include = [
   { model: License, attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4"], include: [{ model: Customer, attributes: ["name", "email"] }] },
@@ -33,8 +34,19 @@ export async function listActivations({ q, status, licenseId, partnerId, online,
   // Busca parcial por MAC, com ou sem ":" ("aabb" acha AA:BB:...). Texto sem nenhum caractere hexadecimal não acha nada.
   const and = [];
   if (q) and.push(sequelize.literal(macSearchSql("Activation", q, (v) => sequelize.escape(v))));
-  // Filtro de presença (lê devices.last_seen_at; defasagem máxima = PRESENCE_FLUSH_SECONDS).
-  if (online === "true" || online === "false") and.push(sequelize.literal(onlineSql("Device", online === "true")));
+  // O filtro precisa usar a mesma presença dos cartões (memória + banco).
+  // Antes de consultar, persiste os sinais recentes desta instância. Sem isso, a lista
+  // pode mostrar um dispositivo Online enquanto o filtro SQL ainda o considera Offline.
+  if (online === "true" || online === "false") {
+    await flushPresence();
+    // EXISTS correlacionado funciona também quando Sequelize aplica LIMIT em uma
+    // subconsulta. Uma condição direta em "Device" falha nesse caso porque o JOIN
+    // de Device pode ficar apenas na consulta externa da paginação.
+    const live = `EXISTS (SELECT 1 FROM devices AS presence_device
+      WHERE presence_device.id = "Activation"."device_id"
+        AND presence_device.last_seen_at >= now() - (${Math.trunc(env.presenceWindowSeconds)} * interval '1 second'))`;
+    and.push(sequelize.literal(online === "true" ? live : `NOT (${live})`));
+  }
   if (and.length) where[Op.and] = and;
   const { rows, count } = await Activation.findAndCountAll({
     where, include, order: [["activatedAt", "DESC"]], ...pageOf({ page, pageSize }), distinct: true,
