@@ -57,10 +57,17 @@ export function errorHandler(err, req, res, _next) {
       `[${req.id}] VALIDATION_ERROR ${req.method} ${req.originalUrl.split("?")[0]} -> ${details.map((d) => `${d.path || "(corpo)"}: ${d.message}`).join("; ")}`,
     );
   }
-  if (status >= 500)
-    console.error(
-      `[${req.id}] ${err?.name ?? "Error"} (${err?.code ?? "no-code"})`,
-    );
+  if (status >= 500) {
+    // Only PostgreSQL diagnostic identifiers: never log SQL or parameter values
+    // (which can contain end-user credentials).
+    const pg = err?.parent ?? err?.original;
+    const pgCode = typeof pg?.code === "string" ? pg.code : null;
+    const pgTable = typeof pg?.table === "string" ? pg.table : null;
+    const pgColumn = typeof pg?.column === "string" ? pg.column : null;
+    const pgInfo = [pgCode && `pgCode=${pgCode}`, pgTable && `table=${pgTable}`, pgColumn && `column=${pgColumn}`]
+      .filter(Boolean).join(" ");
+    console.error(`[${req.id}] ${err?.name ?? "Error"} (${err?.code ?? "no-code"})${pgInfo ? ` ${pgInfo}` : ""}`);
+  }
   if (res.headersSent) return res.destroy();
   return res.status(status).json({
     code,

@@ -88,6 +88,14 @@ router.get("/downloads", validate({ query: z.object({ ...pageQuery, q: z.string(
 
 // Partner sees ALL Player Web accesses emitted from its codes, regardless of reseller.
 // Issuance is performed by resellers; NO mandatory account-to-account affiliation.
+// The content owner is ALWAYS taken from the authenticated JWT, never from query/body.
+const webAccessListQuery = z.object({
+  ...pageQuery,
+  q: z.string().trim().max(60).optional(),
+  status: z.enum(["active", "blocked", "revoked"]).optional(),
+});
+router.get("/web-access", validate({ query: webAccessListQuery }), async (req, res) =>
+  res.json(await web.listWebAccesses(req.valid.query, { contentOwnerPartnerId: req.user.partnerId })));
 router.get("/web-access/:id/credentials", credentialsViewLimiter,validate({params:id}),async(req,res)=>
   res.set("Cache-Control","no-store").json(await web.revealWebSourceCredentials(req.valid.params.id,
     {ownerPartnerId:req.user.partnerId,actor:actorOf(req)})));
