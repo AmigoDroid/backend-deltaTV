@@ -7,6 +7,7 @@ import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { clearResolutionCache } from "./resolve.service.js";
 import { sendMail } from "../mail/mail.transport.js";
 import { env } from "../../config/env.js";
+import { broadcastChange } from "../../realtime/socket.js";
 
 const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
 const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",60,30,3600);
@@ -47,10 +48,13 @@ async function updateOne(provider) {
     const failures=r.good?0:Math.min(100,(h.failures||0)+1);
     const successes=r.good?Math.min(100,(h.successes||0)+1):0;
     const state=failures>=2?"down":successes>=2?"healthy":r.good?"checking":"suspect";
-    const changed=state!==h.state;
+    const oldLatency = h.latencyMs;
+    const stateChanged = state !== h.state;
+    const latencyChanged = r.good && oldLatency != null &&
+      Math.abs(r.latencyMs - oldLatency) >= Math.max(250, oldLatency * 0.4);
     await h.update({state,latencyMs:r.latencyMs,lastCheckedAt:new Date(),lastGoodAt:r.good?new Date():h.lastGoodAt,failures,successes,lastError:r.error});
-    return changed;
-  }catch(e){ console.warn("[provider-monitor] sondagem",provider.id,e.message);return false; }
+    return { stateChanged, notify: stateChanged || latencyChanged };
+  }catch(e){ console.warn("[provider-monitor] sondagem",provider.id,e.message);return { stateChanged:false, notify:false }; }
 }
 async function workers(items,fn,n) {
   let next=0;
@@ -67,15 +71,24 @@ export async function monitorOnce() {
     const total=await PartnerProvider.count({where:{status:"active"}});
     if(!total)return;
     if(cursor>=total)cursor=0;
-    let providers=await PartnerProvider.findAll({where:{status:"active"},attributes:["id","baseUrl"],order:[["id","ASC"]],offset:cursor,limit:MAX_PER_CYCLE,raw:true});
+    let providers=await PartnerProvider.findAll({where:{status:"active"},attributes:["id","baseUrl","partnerId"],order:[["id","ASC"]],offset:cursor,limit:MAX_PER_CYCLE,raw:true});
     cursor=(cursor+providers.length)%total;
     if(providers.length<MAX_PER_CYCLE && cursor===0 && total>providers.length){
-      const more=await PartnerProvider.findAll({where:{status:"active"},attributes:["id","baseUrl"],order:[["id","ASC"]],limit:MAX_PER_CYCLE-providers.length,raw:true});
+      const more=await PartnerProvider.findAll({where:{status:"active"},attributes:["id","baseUrl","partnerId"],order:[["id","ASC"]],limit:MAX_PER_CYCLE-providers.length,raw:true});
       providers=providers.concat(more);cursor=more.length;
     }
-    let changed=false;
-    await workers(providers,async p=>{if(await updateOne(p))changed=true;},CONCURRENCY);
-    if(changed){clearMirrorAuth();clearResolutionCache();}
+    const changedPartnerIds = new Set();
+    let changedState = false;
+    await workers(providers,async p=>{
+      const result = await updateOne(p);
+      if (result.stateChanged) changedState = true;
+      if (result.notify) changedPartnerIds.add(p.partnerId);
+    },CONCURRENCY);
+    // Revalidar caches de roteamento só quando muda a disponibilidade.
+    // Uma oscilação de latência não precisa invalidar as sessões existentes.
+    if (changedState) { clearMirrorAuth();clearResolutionCache(); }
+    // Um único aviso por parceria e rodada, nunca um por TV nem por usuário.
+    for (const partnerId of changedPartnerIds) broadcastChange({ partnerId, topic: "server-health" });
     // E-mail e milhares de códigos NÃO bloqueiam o loop de sondagem.
     if(++cycles % 3 === 0 && !alertRunning) {
       alertRunning=true;

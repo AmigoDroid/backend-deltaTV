@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { resellerServerMonitor } from "../provider-monitor/visibility.routes.js";
 import { partnerNotificationRoutes } from "../notifications/notification.routes.js";
 import { z } from "zod";
 import { sequelize, Partner } from "../../db/models/index.js";
@@ -33,6 +34,7 @@ import { env } from "../../config/env.js";
 const router = Router();
 router.use(authenticate, requirePartnerRole);
 router.use("/notifications", partnerNotificationRoutes);
+router.use("/server-monitor", resellerServerMonitor);
 router.use("/pix", pixRoutes);
 router.use("/credits", creditRoutes);
 router.use("/clients", clientsRoutes);

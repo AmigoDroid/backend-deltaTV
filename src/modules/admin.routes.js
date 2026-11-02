@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { adminServerMonitor } from "./provider-monitor/visibility.routes.js";
 import { adminNotificationRoutes } from "./notifications/notification.routes.js";
 import { authenticate } from "../middleware/authenticate.js";
 import licenses from "./licenses/license.routes.js";
@@ -22,6 +23,7 @@ router.use(authenticate);
 router.use("/notifications", adminNotificationRoutes);
 router.use("/licenses", licenses);
 router.use("/partners", partners);
+router.use("/server-monitor", adminServerMonitor);
 router.use("/devices", devices);
 router.use("/billing", billing);
 router.use("/sources", sources);
