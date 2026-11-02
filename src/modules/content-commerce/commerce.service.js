@@ -9,7 +9,7 @@ import { audit } from "../../shared/audit.js";
 import {shouldCharge,remainingLicenses} from "./contract.rules.js";
 import { pageOf, paged } from "../../shared/pagination.js";
 
-export const DEFAULT_TERMS={mode:"legacy",fixedFeeCents:0,activationLimit:null,licensePolicy:"standard",creditsPerActivation:1,autoPriority:true};
+export const DEFAULT_TERMS={mode:"legacy",fixedFeeCents:0,activationLimit:null,licensePolicy:"standard",creditsPerActivation:1,autoPriority:true,allowWebIssuance:false};
 const contentKind=(p)=>p && ["content","both"].includes(p.kind);
 const termsOf=(row)=>row?row.toJSON():{...DEFAULT_TERMS};
 const allowedMode=new Set(["legacy","credits","fixed_unlimited","fixed_limited"]);

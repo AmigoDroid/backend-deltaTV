@@ -284,7 +284,7 @@ export async function updateCode(partnerId, codeId, input, actor) {
     const c = await PartnerCode.findOne({ where: { id: codeId, partnerId }, transaction: t, lock: t.LOCK.UPDATE });
     if (!partner || !c) throw notFound("Código");
     const patch = {};
-    for (const k of ["label", "maxActivations", "expiresAt"]) if (input[k] !== undefined) patch[k] = input[k];
+    for (const k of ["label", "maxActivations", "expiresAt", "allowWebIssuance"]) if (input[k] !== undefined) patch[k] = input[k];
     if (input.providerId !== undefined) {
       patch.providerId = await resolveProviderId(partnerId, input.providerId, t);
       // Alteração manual do destino principal tem precedência sobre o pool anterior.

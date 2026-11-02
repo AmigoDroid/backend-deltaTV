@@ -53,7 +53,7 @@ r.get("/codes",validate({query:z.object({q:z.string().trim().max(80).optional(),
   const page=req.valid.query.page;
   const q=(req.valid.query.q||"").replace(/[\\%_]/g,"\\$&");
   const where={partnerId:req.user.partnerId,...(q?{[Op.or]:[{code:{[Op.iLike]:`%${q}%`}},{label:{[Op.iLike]:`%${q}%`}}]}:{})};
-  const {rows,count}=await PartnerCode.findAndCountAll({where,attributes:["id","code","label","status","providerId","maxActivations"],order:[["createdAt","DESC"]],limit:25,offset:(page-1)*25});
+  const {rows,count}=await PartnerCode.findAndCountAll({where,attributes:["id","code","label","status","providerId","maxActivations","allowWebIssuance"],order:[["createdAt","DESC"]],limit:25,offset:(page-1)*25});
   const pools=await listCodeServerIds(rows.map(c=>c.id));
   const balances=await commerce.balancesForCodes(rows.map(c=>c.id));
   const activationUsage=rows.length?await (async()=>{
@@ -71,5 +71,5 @@ r.post("/codes/:id/revoke",validate({params:z.object({id:z.string().uuid()})}),a
 r.put("/codes/:id/servers",validate({params:z.object({id:z.string().uuid()}),
   body:z.object({serverIds:z.array(z.string().uuid()).min(1)})}),
   async(req,res)=>res.json(await setCodeServers(req.user.partnerId,req.valid.params.id,req.valid.body.serverIds,actorOf(req))));
-r.patch("/codes/:id",validate({params:z.object({id:z.string().uuid()}),body:z.object({providerId:z.string().uuid().optional(),label:z.string().trim().max(120).optional(),maxActivations:z.number().int().min(1).nullable().optional(),expiresAt:z.coerce.date().nullable().optional()}).refine(b=>Object.keys(b).length>0)}),async(req,res)=>{const result=await partners.updateCode(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req));invalidateServerPools(req.valid.params.id);res.json(result)});
+r.patch("/codes/:id",validate({params:z.object({id:z.string().uuid()}),body:z.object({providerId:z.string().uuid().optional(),label:z.string().trim().max(120).optional(),maxActivations:z.number().int().min(1).nullable().optional(),allowWebIssuance:z.boolean().optional(),expiresAt:z.coerce.date().nullable().optional()}).refine(b=>Object.keys(b).length>0)}),async(req,res)=>{const result=await partners.updateCode(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req));invalidateServerPools(req.valid.params.id);res.json(result)});
 export default r;

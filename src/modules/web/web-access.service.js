@@ -1,6 +1,6 @@
 import { Op, UniqueConstraintError } from "sequelize";
 import {
-  sequelize, Device, Activation, License, Partner, PartnerCode, PartnerProvider, WebAccess, Renewal, LicenseEvent,
+  sequelize, Device, Activation, License, Partner, PartnerCode, PartnerProvider, WebAccess, Renewal, LicenseEvent, AdminUser,
 } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
@@ -12,7 +12,11 @@ import { checkActivation, denialError, enforceSessionCap, issueSession, revokeSe
 import { dropMirrorAuth, clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { deliveryModesOf } from "../mirror/mode.js";
 import { ensurePlan } from "../licenses/plan.service.js";
-import { activateLicenseById } from "../activations/activation.service.js";
+import { activateLicenseById, preparePartnerActivation, activatePrepared } from "../activations/activation.service.js";
+import { termsFor } from "../content-commerce/commerce.service.js";
+import { STOCK_KINDS } from "../stock/stock-ledger.js";
+import { normalizeShortCode } from "../partners/short-code.js";
+import { webIssuePolicy } from "./issuance-policy.js";
 import { applyStockToDevice } from "../stock/stock.service.js";
 import { isLiveLicense } from "../stock/stock-license.js";
 import * as registration from "../devices/registration.service.js";
@@ -41,6 +45,9 @@ const defaultModes = () => webDefaultModes(process.env.WEB_DELIVERY_DEFAULTS);
 const includeFor = [
   { model: Device, attributes: ["id", "mac", "lastSeenAt"] },
   { model: Partner, attributes: ["id", "name"] },
+  { model: Partner, as:"contentOwner", attributes:["id","name","kind"] },
+  { model: PartnerCode, as:"sourceCode", attributes:["id","code","label"] },
+  { model: AdminUser, as:"issuerUser", attributes:["id","name","email"] },
 ];
 
 async function liveActivationOf(deviceId, transaction) {
@@ -71,6 +78,11 @@ async function serialize(wa) {
     status: wa.status,
     statusReason: wa.statusReason ?? null,
     partner: wa.Partner ? { id: wa.Partner.id, name: wa.Partner.name } : null,
+    issuedBy: wa.Partner ? {id:wa.Partner.id,name:wa.Partner.name} : null,
+    contentOwner: wa.contentOwner ? {id:wa.contentOwner.id,name:wa.contentOwner.name,kind:wa.contentOwner.kind} : null,
+    partnershipCode: wa.sourceCode?.code ?? null,
+    creatorUserId:wa.createdBy ?? null,
+    creator:wa.issuerUser ? {id:wa.issuerUser.id,name:wa.issuerUser.name,email:wa.issuerUser.email} : null,
     mac: wa.Device?.mac ?? null,
     createdAt: wa.createdAt,
     lastLoginAt: wa.lastLoginAt,
@@ -92,6 +104,7 @@ export async function listWebAccesses({ q, status, partnerId, page, pageSize }, 
   const where = {};
   const owner = scope.partnerId ?? partnerId;
   if (owner) where.partnerId = owner;
+  if (scope.contentOwnerPartnerId) where[Op.and]=[{[Op.or]:[{contentOwnerPartnerId:scope.contentOwnerPartnerId},{partnerId:scope.contentOwnerPartnerId,contentOwnerPartnerId:null}]}];
   if (status) where.status = status;
   if (q) {
     const term = String(q).trim();
@@ -110,6 +123,7 @@ export async function listWebAccesses({ q, status, partnerId, page, pageSize }, 
 async function loadOwned(id, scope = {}) {
   const where = { id };
   if (scope.partnerId) where.partnerId = scope.partnerId; // revendedor: id de outro dá 404
+  if (scope.contentOwnerPartnerId) where[Op.and]=[{[Op.or]:[{contentOwnerPartnerId:scope.contentOwnerPartnerId},{partnerId:scope.contentOwnerPartnerId,contentOwnerPartnerId:null}]}];
   const wa = await WebAccess.findOne({ where, include: includeFor });
   if (!wa) throw notFound("Acesso web");
   return wa;
@@ -136,7 +150,7 @@ export async function configFromActivation(activation) {
 }
 
 /** Cria o dispositivo web + o registro do acesso (código único). Repete se o sorteio colidir. */
-async function createRecord({ partner, actor, label }) {
+async function createRecord({ partner, actor, label, contentOwnerPartnerId=null, sourcePartnerCodeId=null, issuanceKey=null }) {
   for (let attempt = 0; attempt < 8; attempt++) {
     const code = generateWebCode();
     const mac = generateWebMac();
@@ -148,7 +162,8 @@ async function createRecord({ partner, actor, label }) {
         }, { transaction: t });
         const wa = await WebAccess.create({
           partnerId: partner?.id ?? null, deviceId: device.id, codeHash: webHash(code), codeEnc: encryptSecret(code),
-          label: label ?? null, createdBy: actor?.id ?? null,
+          label: label ?? null, createdBy: actor?.id ?? null, contentOwnerPartnerId, sourcePartnerCodeId, issuanceKey,
+          status: issuanceKey ? "pending" : "active",
         }, { transaction: t });
         await audit({
           actor, action: "web_access.create", entityType: "web_access", entityId: wa.id,
@@ -158,6 +173,10 @@ async function createRecord({ partner, actor, label }) {
       });
     } catch (e) {
       if (!(e instanceof UniqueConstraintError)) throw e;
+      if(issuanceKey && partner?.id){
+        const prior=await WebAccess.findOne({where:{partnerId:partner.id,issuanceKey}});
+        if(prior)return {wa:prior,device:await Device.findByPk(prior.deviceId),code:decryptSecret(prior.codeEnc),reused:true};
+      }
     }
   }
   throw new AppError(503, "CODE_GENERATION_FAILED", "Não foi possível gerar um código único. Tente novamente.");
@@ -229,6 +248,83 @@ export async function createWebAccess({ partner = null, actor, label, config, mo
   return { ...(await serialize(await loadOwned(wa.id))), code };
 }
 
+/**
+ * Simplified issuance: no mandatory reseller/content-partner relationship.
+ * The partnership code identifies the content owner and ONLY its contract is charged.
+ * For an issuer's own stock code the same activation service debits stock instead.
+ */
+export async function issueWebByPartnershipCode({issuerPartnerId,actor,code:rawCode,username,password,label,requestKey}){
+  const code=normalizeShortCode(rawCode);
+  if(!/^[0-9]{4,12}$/.test(code))throw new AppError(422,"INVALID_PARTNERSHIP_CODE","Use o código numérico de parceria (4 a 12 dígitos).");
+  const issuer=await Partner.findByPk(issuerPartnerId);
+  if(!issuer || !["reseller","both"].includes(issuer.kind) || issuer.status!=="active")
+    throw new AppError(403,"ISSUER_INACTIVE","Revenda sem permissão para emitir Player Web.");
+  if(requestKey){
+    const prior=await WebAccess.findOne({where:{partnerId:issuer.id,issuanceKey:requestKey},include:includeFor});
+    if(prior){
+      if(prior.status==="pending"){
+        const committed=await liveActivationOf(prior.deviceId);
+        if(committed){ await prior.update({status:"active"});return getWebAccess(prior.id,{partnerId:issuer.id}); }
+        throw new AppError(409,"ISSUANCE_PENDING","Emissão em andamento. Aguarde e consulte novamente.");
+      }
+      return serialize(prior);
+    }
+  }
+  const source=await PartnerCode.findOne({where:{code}});
+  // Uniform denial: do not enumerate other parties' codes.
+  if(!source || source.status!=="active" || (source.expiresAt && source.expiresAt<=new Date()))
+    throw new AppError(403,"WEB_ISSUANCE_UNAVAILABLE","Código não autorizado para emissão de Player Web.");
+  const owner=await Partner.findByPk(source.partnerId);
+  const terms=owner?.id!==issuer.id && owner ? await termsFor(owner.id) : null;
+  const decision=webIssuePolicy({issuer,owner,code:source,terms});
+  if(!decision.allowed)
+    throw new AppError(403,"WEB_ISSUANCE_UNAVAILABLE","Este código não está habilitado para emissão de Player Web por esta revenda.");
+  // Provider credential check is outside DB transactions. The code itself has no Xtream password.
+  const prepared=await preparePartnerActivation({code,username,password});
+  if(prepared.pc.id!==source.id || prepared.partner.id!==owner.id)
+    throw new AppError(409,"SOURCE_CHANGED","O código mudou durante a verificação; tente novamente.");
+  const {wa,device,reused}=await createRecord({partner:issuer,actor,label,contentOwnerPartnerId:owner.id,sourcePartnerCodeId:source.id,issuanceKey:requestKey});
+  if(reused){
+    if(wa.status==="pending"){
+      const committed=await liveActivationOf(wa.deviceId);
+      if(committed){ await wa.update({status:"active"});return getWebAccess(wa.id,{partnerId:issuer.id}); }
+      throw new AppError(409,"ISSUANCE_PENDING","Emissão em andamento. Consulte novamente.");
+    }
+    return getWebAccess(wa.id,{partnerId:issuer.id});
+  }
+  try {
+    const result=await activatePrepared({prepared,mac:device.mac,installationId:device.lastInstallationId,
+      idempotencyKey:requestKey,webIssuerPartnerId:issuer.id,meta:{ip:actor?.ip,userAgent:"delta-web-issuance"}});
+    await result.activation.update({deliveryModes:{...defaultModes()}});
+    await wa.update({status:"active"});
+    await audit({actor,action:"web_access.issue_by_code",entityType:"web_access",entityId:wa.id,
+      metadata:{issuerPartnerId:issuer.id,contentOwnerPartnerId:owner.id,partnerCodeId:source.id,
+        activationId:result.activation.id,commercialOrigin:decision.funding}});
+    return getWebAccess(wa.id,{partnerId:issuer.id});
+  }catch(err){
+    // If the database transaction failed, remove uncharged pending records.
+    // If it committed before a later error, preserve the record to avoid charging twice.
+    const committed=await liveActivationOf(device.id).catch(()=>null);
+    if(!committed){
+      await wa.destroy().catch(()=>{});
+      await device.destroy().catch(()=>{});
+    }
+    throw err;
+  }
+}
+
+/** Explicit, audited credential reveal for the verified CONTENT OWNER only. */
+export async function revealWebSourceCredentials(id,{ownerPartnerId,actor}){
+  const wa=await loadOwned(id,{contentOwnerPartnerId:ownerPartnerId});
+  const activation=await liveActivationOf(wa.deviceId);
+  if(!activation || activation.partnerId!==ownerPartnerId || !activation.credentialsEnc)
+    throw notFound("Credenciais desta ativação");
+  const {username,password}=JSON.parse(decryptSecret(activation.credentialsEnc));
+  await audit({actor,action:"web_access.credentials.reveal",entityType:"web_access",entityId:wa.id,
+    metadata:{contentOwnerPartnerId:ownerPartnerId}});
+  return {username,password,mac:wa.Device?.mac};
+}
+
 /* ------------------------------------------------------------------ gestão */
 
 const BLOCK_RULES = {
@@ -246,13 +342,15 @@ export async function changeStatus(id, action, { reason, actor, scope = {}, role
   const activationId = await sequelize.transaction(async (t) => {
     const where = { id };
     if (scope.partnerId) where.partnerId = scope.partnerId;
+    if (scope.contentOwnerPartnerId) where[Op.and]=[{[Op.or]:[{contentOwnerPartnerId:scope.contentOwnerPartnerId},{partnerId:scope.contentOwnerPartnerId,contentOwnerPartnerId:null}]}];
     const wa = await WebAccess.findOne({ where, transaction: t, lock: t.LOCK.UPDATE });
     if (!wa) throw notFound("Acesso web");
     if (!rule.from.includes(wa.status)) throw new AppError(409, "INVALID_STATE", `Não é possível executar '${action}' em um acesso '${wa.status}'.`);
     const a = await liveActivationOf(wa.deviceId, t);
 
-    if (action === "unblock" && role === "partner" && a?.blockedBy && a.blockedBy !== "partner") {
-      throw new AppError(403, "BLOCKED_BY_PLATFORM", "Este bloqueio foi aplicado pela plataforma.");
+    if (action === "unblock" && role !== "admin" && a?.blockedBy &&
+      a.blockedBy !== (role === "content_partner" ? "content_partner" : "partner")) {
+      throw new AppError(403, "BLOCKED_BY_PLATFORM", "Este bloqueio foi aplicado por outro nível de administração.");
     }
     if (action === "revoke" && role === "partner" && a) {
       const licId = a.grantedLicenseId ?? a.licenseId;
@@ -340,8 +438,8 @@ export async function loginWithCode({ code, ip, userAgent }) {
   const norm = normalizeWebCode(code);
   if (!norm) throw invalidCode();
   const wa = await WebAccess.findOne({ where: { codeHash: webHash(norm) }, include: [{ model: Device, attributes: ["id", "mac"] }] });
-  if (!wa || wa.status === "revoked") {
-    await audit({ actor: { type: "anonymous", ip }, action: "web_access.login", entityType: "web_access", entityId: wa?.id ?? null, result: "denied", metadata: { reason: wa ? "revoked" : "unknown" } });
+  if (!wa || wa.status === "revoked" || wa.status === "pending") {
+    await audit({ actor: { type: "anonymous", ip }, action: "web_access.login", entityType: "web_access", entityId: wa?.id ?? null, result: "denied", metadata: { reason: wa ? wa.status : "unknown" } });
     throw invalidCode();
   }
   const outcome = await sequelize.transaction(async (t) => {
@@ -365,7 +463,7 @@ export async function loginWithCode({ code, ip, userAgent }) {
     mac: wa.Device.mac,
     installationId: installationIdOf(wa.Device.mac), // o app deriva o mesmo valor: "webtv-<MAC>"
     activationId: activation.id,
-    kind: activation.licenseId ? "license" : "partner",
+    kind: (activation.licenseId || activation.grantedLicenseId) ? "license" : "partner",
     status: "active",
     configurationStatus: stateOf(activation),
     expiresAt: decision.expiresAt,

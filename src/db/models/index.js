@@ -81,6 +81,7 @@ export const PartnerCode = def("PartnerCode", "partner_codes", {
   providerId: { type: T.UUID },
   // Duração (meses) da licença do ESTOQUE do dono que este código consome ao ativar um dispositivo. NULL = código sem licença.
   licenseMonths: { type: T.INTEGER },
+  allowWebIssuance: {type:T.BOOLEAN,allowNull:false,defaultValue:false},
 });
 
 export const PartnerServicePlan = sequelize.define("PartnerServicePlan", {
@@ -170,6 +171,7 @@ export const Activation = def("Activation", "activations", {
   deliveryMode: str(20),
   // Modo de entrega POR TIPO ({api, live, movie, series} -> proxy|redirect), migration 20261105000001. NULL = automático.
   deliveryModes: { type: T.JSONB },
+  allowWebIssuance: {type:T.BOOLEAN,allowNull:false,defaultValue:false},
 });
 
 // Acesso ao Player Web (migration 20261105000001): código AB123456 -> dispositivo web com ativação e licença próprias.
@@ -178,6 +180,7 @@ export const WebAccess = def("WebAccess", "web_accesses", {
   codeHash: { type: T.CHAR(64), allowNull: false }, codeEnc: { type: T.TEXT, allowNull: false },
   label: str(160), status: str(20, { allowNull: false, defaultValue: "active" }), statusReason: str(500),
   createdBy: { type: T.UUID }, lastLoginAt: ts(),
+  contentOwnerPartnerId:{type:T.UUID}, sourcePartnerCodeId:{type:T.UUID}, issuanceKey:{type:T.UUID},
 });
 
 // Downloads de aplicativos para os revendedores (migration 20261106000001): nome, versão, link e código numérico do Downloader.
@@ -373,6 +376,9 @@ Activation.belongsTo(Device, { foreignKey: "deviceId" });
 WebAccess.belongsTo(Device, { foreignKey: "deviceId" });
 Device.hasOne(WebAccess, { foreignKey: "deviceId" });
 WebAccess.belongsTo(Partner, { foreignKey: "partnerId" });
+WebAccess.belongsTo(AdminUser,{foreignKey:"createdBy",as:"issuerUser"});
+WebAccess.belongsTo(Partner,{foreignKey:"contentOwnerPartnerId",as:"contentOwner"});
+WebAccess.belongsTo(PartnerCode,{foreignKey:"sourcePartnerCodeId",as:"sourceCode"});
 Partner.hasMany(WebAccess, { foreignKey: "partnerId" });
 Device.hasMany(DevicePairingToken, { foreignKey: "deviceId" });
 DevicePairingToken.belongsTo(Device, { foreignKey: "deviceId" });

@@ -86,20 +86,16 @@ router.get("/payments", validate({ query: paging }), async (req, res) => res.jso
 router.get("/credit-ledger", validate({ query: paging }), async (req, res) => res.json(await credits.listLedger({ ...req.valid.query, partnerId: req.user.partnerId })));
 router.get("/downloads", validate({ query: z.object({ ...pageQuery, q: z.string().trim().max(60).optional(), kind: z.enum(["app", "link"]).optional() }) }), async (req, res) => res.json(await downloads.listDownloads(req.valid.query)));
 
-// Web player: only permits EXISTING content-partner codes. Never grants courtesy
-// licenses or charges unrelated reseller stock. Activation follows the code contract.
-router.get("/web-access", validate({ query: z.object({ ...pageQuery, q: z.string().trim().max(60).optional(), status: z.enum(["active", "blocked", "revoked"]).optional() }) }), async (req, res) => res.json(await web.listWebAccesses(req.valid.query, scope(req))));
-router.post("/web-access", macWriteLimiter, validate({ body: z.object({ label: z.string().trim().max(160).optional(), code: z.string().trim().regex(/^[A-Za-z0-9]{4,12}$/), username: z.string().trim().min(1).max(128), password: z.string().min(1).max(128) }) }), async (req, res) => {
-  const { label, code, username, password } = req.valid.body;
-  const owned = await PartnerCode.findOne({ where: { partnerId: req.user.partnerId, code: { [Op.iLike]: code }, status: "active", licenseMonths: null } });
-  if (!owned) throw new AppError(404, "CODE_NOT_FOUND", "Código ativo da sua parceria não encontrado, ou está vinculado ao estoque de revenda.");
-  const p = await Partner.findByPk(req.user.partnerId);
-  const result = await web.createWebAccess({ partner: p, actor: actorOf(req), label, config: { mode: "partner", code: owned.code, username, password }, useStock: false });
-  res.status(201).json(result);
-});
-for (const action of ["block", "unblock", "revoke"]) {
-  router.post(`/web-access/:id/${action}`, macWriteLimiter, validate({ params: id, body: z.object({ reason: z.string().trim().min(3).max(500).optional() }).default({}) }), async (req, res) => {
-    res.json(await web.changeStatus(req.valid.params.id, action, { scope: scope(req), actor: actorOf(req), role: "partner", reason: req.valid.body.reason }));
+// Partner sees ALL Player Web accesses emitted from its codes, regardless of reseller.
+// Issuance is performed by resellers; NO mandatory account-to-account affiliation.
+router.get("/web-access/:id/credentials", credentialsViewLimiter,validate({params:id}),async(req,res)=>
+  res.set("Cache-Control","no-store").json(await web.revealWebSourceCredentials(req.valid.params.id,
+    {ownerPartnerId:req.user.partnerId,actor:actorOf(req)})));
+for(const action of ["block","unblock","revoke"]){
+  router.post(`/web-access/:id/${action}`,macWriteLimiter,validate({params:id,
+    body:z.object({reason:z.string().trim().min(3).max(500).optional()}).default({})}),async(req,res)=>{
+    res.json(await web.changeStatus(req.valid.params.id,action,{
+      scope:{contentOwnerPartnerId:req.user.partnerId},actor:actorOf(req),role:"content_partner",reason:req.valid.body.reason}));
   });
 }
 export default router;

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
-import { Device, Partner } from "../../db/models/index.js";
+import { Device, Partner, PartnerCode } from "../../db/models/index.js";
+import { Op } from "sequelize";
 import { validate } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
@@ -64,17 +65,33 @@ const requireReseller = async (req, _res, next) => {
 };
 partnerRouter.use(requireReseller);
 const scope = (req) => ({ partnerId: req.user.partnerId });
+const issueBody = z.object({
+  code:z.string().trim().regex(/^[0-9]{4,12}$/), username:z.string().trim().min(1).max(128),
+  password:z.string().min(1).max(128),label:z.string().trim().max(160).optional(),
+  requestKey:z.string().uuid(),
+}).strict();
 
 partnerRouter.get("/", validate({ query: listQuery }), async (req, res) => res.json(await svc.listWebAccesses(req.valid.query, scope(req))));
 partnerRouter.get("/:id", validate({ params: id }), async (req, res) => res.json(await svc.getWebAccess(req.valid.params.id, scope(req))));
+
+partnerRouter.post("/by-code", macWriteLimiter, validate({body:issueBody}),async(req,res)=>{
+  res.status(201).json(await svc.issueWebByPartnershipCode({
+    issuerPartnerId:req.user.partnerId,actor:actorOf(req),...req.valid.body,
+  }));
+});
 
 partnerRouter.post("/", macWriteLimiter, validate({ body: z.object(partnerCreateFields).refine(sourceOk, sourceMsg) }), async (req, res) => {
   const { mac, activationId, config: given, months: m, label } = req.valid.body;
   const actor = actorOf(req);
   const partner = req.reseller.partner;
+  if (given?.mode === "partner") throw new AppError(422,"USE_CODE_ISSUANCE","Use a emissão por código de parceria, com autorização e cobrança verificadas.");
   const config = mac
     ? await svc.configFromActivation(await reseller.activationForCopy({ partner, actor, mac, activationId }))
     : given;
+  if(config?.mode==="partner"){
+    const own=await PartnerCode.findOne({where:{partnerId:partner.id,code:config.code,licenseMonths:{[Op.ne]:null}}});
+    if(!own)throw new AppError(403,"USE_CODE_ISSUANCE","Emita o Player Web por código numérico autorizado. Cópias só são permitidas para códigos do estoque da sua revenda.");
+  }
   res.status(201).json(await svc.createWebAccess({ partner, actor, label, config, months: m, useStock: true }));
 });
 

@@ -17,6 +17,7 @@ import { applyPendingPlaylist } from "../devices/playlist-by-url.service.js";
 import { authorizeActivation, termsFor } from "../content-commerce/commerce.service.js";
 import { STOCK_KINDS } from "../stock/stock-ledger.js";
 import { sellFromStock } from "../stock/stock-license.js";
+import { webIssuePolicy } from "../web/issuance-policy.js";
 
 const live = { [Op.ne]: "revoked" };
 const invalidCode = () => new AppError(404, "INVALID_CODE", "Código inválido.");
@@ -134,7 +135,7 @@ export const activateLicenseById = ({ licenseId, mac, installationId, meta, tran
 
 /* ============ Parceria: código curto + usuário/senha do provedor ============ */
 
-async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc, mac, installationId, idempotencyKey, meta }) {
+async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc, mac, installationId, idempotencyKey, meta, webIssuerPartnerId=null }) {
   return sequelize.transaction(async (t) => {
     const lock = { transaction: t, lock: t.LOCK.UPDATE };
     const idemKey = idempotencyKey ? `${mac}:${idempotencyKey}`.slice(0, 140) : null;
@@ -144,6 +145,12 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
     const code = await PartnerCode.findByPk(codeId, lock);
     if (!partner || !code || code.partnerId !== partner.id) throw invalidCredentials();
     if (code.status !== "active" || (code.expiresAt && code.expiresAt <= new Date())) throw invalidCredentials();
+    if(webIssuerPartnerId){
+      const issuer=await Partner.findByPk(webIssuerPartnerId,lock);
+      const terms=webIssuerPartnerId===partner.id?null:await termsFor(partner.id,t);
+      if(!webIssuePolicy({issuer,owner:partner,code,terms}).allowed)
+        throw new AppError(403,"WEB_ISSUANCE_UNAVAILABLE","A emissão foi desabilitada durante a ativação.");
+    }
     // O código aponta para um servidor: se o admin o trocou depois da triagem, a validação das credenciais ficou velha.
     if (!(await isCodeServerAllowed(code,provider.id,t))) throw invalidCredentials();
 
@@ -286,11 +293,11 @@ export async function preparePartnerActivation({ code, username, password }) {
 }
 
 /** Fase 2 com credenciais já validadas por preparePartnerActivation (evita validar duas vezes no provedor). */
-export function activatePrepared({ prepared, mac: rawMac, installationId, idempotencyKey, meta }) {
+export function activatePrepared({ prepared, mac: rawMac, installationId, idempotencyKey, meta, webIssuerPartnerId=null }) {
   const mac = needMac(rawMac);
   return withRetry(() => activatePartnerOnce({
     codeId: prepared.pc.id, partnerId: prepared.partner.id, provider: prepared.provider,
-    credentialsEnc: prepared.credentialsEnc, mac, installationId, idempotencyKey, meta,
+    credentialsEnc: prepared.credentialsEnc, mac, installationId, idempotencyKey, meta, webIssuerPartnerId,
   }));
 }
 

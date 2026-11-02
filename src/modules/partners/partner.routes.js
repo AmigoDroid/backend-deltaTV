@@ -96,6 +96,7 @@ router.put("/:id/commercial",requirePermission("billing:write"),validate({params
   licensePolicy:z.enum(["standard","partner_only"]),
   creditsPerActivation:z.number().int().min(1).max(100),
   autoPriority:z.boolean(),
+  allowWebIssuance:z.boolean(),
 })}),async(req,res)=>res.json(await commerce.saveTerms(req.valid.params.id,req.valid.body,actorOf(req))));
 router.post("/:id/commercial/credits",requirePermission("billing:write"),validate({params:id,body:z.object({delta:z.number().int().min(-1000000).max(1000000).refine(n=>n!==0),note:z.string().trim().min(3).max(300)})}),
   async(req,res)=>res.json(await commerce.adminAdjust(req.valid.params.id,req.valid.body,actorOf(req))));
