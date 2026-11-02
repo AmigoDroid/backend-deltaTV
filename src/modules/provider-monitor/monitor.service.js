@@ -10,6 +10,7 @@ import { env } from "../../config/env.js";
 import { broadcastChange } from "../../realtime/socket.js";
 import {getServicePlan} from "../service-plans/plan.service.js";
 import { invalidatePartnerServerAlerts } from "./visibility.service.js";
+import { createSharedProbe, isNewProbeSample } from "./probe-dedup.js";
 
 const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
 const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",60,30,3600);
@@ -17,6 +18,9 @@ const TIMEOUT = int("PROVIDER_MONITOR_TIMEOUT_MS",3000,800,5000);
 const SLOW = int("PROVIDER_MONITOR_SLOW_MS",2500,300,5000);
 const CONCURRENCY = int("PROVIDER_MONITOR_CONCURRENCY",4,1,8);
 const MAX_PER_CYCLE = int("PROVIDER_MONITOR_MAX_PER_CYCLE",60,5,250);
+// Reaproveita sondagens de URLs idênticas entre parcerias, inclusive em lotes adjacentes.
+// Expira em até um intervalo: a saúde continua sendo realmente reavaliada.
+const PROBE_TTL_MS = int("PROVIDER_MONITOR_DEDUP_TTL_MS",Math.min(INTERVAL*1000,120_000),1000,120_000);
 let timer, running=false, cursor=0, alertRunning=false, cycles=0, lastCleanup=0;
 
 /** HEAD/GET de baixo custo, sem seguir redirect, sem guardar o corpo e com proteção SSRF. */
@@ -43,10 +47,15 @@ export async function probeServer(raw) {
   });
 }
 
+const sharedProbe = createSharedProbe(probeServer, { ttlMs: PROBE_TTL_MS, maxEntries: 1000 });
+
 async function updateOne(provider) {
   try {
-    const r=await probeServer(provider.baseUrl);
-    const [h,created]=await ProviderHealth.findOrCreate({where:{providerId:provider.id},defaults:{providerId:provider.id}});
+    const r=await sharedProbe(provider.baseUrl);
+    const [h]=await ProviderHealth.findOrCreate({where:{providerId:provider.id},defaults:{providerId:provider.id}});
+    // Se o lote atual reaproveitou uma medição já aplicada a este provedor, não
+    // avance os contadores nem gere um evento de queda/recuperação fictício.
+    if (!isNewProbeSample(h.lastCheckedAt, r.sampledAt)) return {stateChanged:false,notify:false};
     const failures=r.good?0:Math.min(100,(h.failures||0)+1);
     const successes=r.good?Math.min(100,(h.successes||0)+1):0;
     const state=failures>=2?"down":successes>=2?"healthy":r.good?"checking":"suspect";
@@ -54,10 +63,10 @@ async function updateOne(provider) {
     const stateChanged = state !== h.state;
     const latencyChanged = r.good && oldLatency != null &&
       Math.abs(r.latencyMs - oldLatency) >= Math.max(250, oldLatency * 0.4);
-    await h.update({state,latencyMs:r.latencyMs,lastCheckedAt:new Date(),lastGoodAt:r.good?new Date():h.lastGoodAt,failures,successes,lastError:r.error});
+    await h.update({state,latencyMs:r.latencyMs,lastCheckedAt:r.sampledAt,lastGoodAt:r.good?r.sampledAt:h.lastGoodAt,failures,successes,lastError:r.error});
     if(stateChanged){
       // Registro de incidente desacoplado: falha de telemetria não derruba o monitor.
-      try{await ProviderHealthEvent.create({providerId:provider.id,state,latencyMs:r.latencyMs,note:r.error,occurredAt:new Date()});}
+      try{await ProviderHealthEvent.create({providerId:provider.id,state,latencyMs:r.latencyMs,note:r.error,occurredAt:r.sampledAt});}
       catch(error){console.warn("[provider-monitor] histórico",error.message)}
     }
     return { stateChanged, notify: stateChanged || latencyChanged };
@@ -98,6 +107,11 @@ export async function monitorOnce() {
     for (const partnerId of changedPartnerIds) {
       invalidatePartnerServerAlerts(partnerId);
       broadcastChange({ partnerId, topic: "server-health" });
+    }
+    // Estatística agregada a cada 10 rodadas; demonstra economia de rede sem log por URL.
+    if ((cycles + 1) % 10 === 0) {
+      const m = sharedProbe.stats();
+      console.log(`[provider-monitor] sondagens HTTP=${m.requests} reutilizações=${m.reused} coalescências=${m.joined} cache=${m.cached}`);
     }
     // Retenção em 30 dias. Uma exclusão por dia em índice, nunca por sondagem.
     if(Date.now()-lastCleanup>86_400_000){
