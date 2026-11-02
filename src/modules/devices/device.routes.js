@@ -89,6 +89,7 @@ router.get(
 );
 router.get("/history", requirePermission("devices:read"), validate({ query: z.object({ mac: z.string().min(11).max(20) }) }), async (req, res) => res.json(await svc.deviceHistory(req.valid.query.mac)));
 router.get("/activations/:id", requirePermission("devices:read"), validate({ params: id }), async (req, res) => res.json(await svc.getActivation(req.valid.params.id)));
+router.get("/registrations/:id/attribution", requirePermission("devices:read"), validate({ params: id }), async (req, res) => res.json(await svc.deviceAttribution(req.valid.params.id)));
 
 // Edição completa do dispositivo: SÓ superadmin (permissão "devices:edit" não existe nos outros perfis).
 router.patch(

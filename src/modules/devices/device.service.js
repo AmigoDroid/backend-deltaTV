@@ -1,5 +1,5 @@
 import { Op, UniqueConstraintError } from "sequelize";
-import { sequelize, Activation, Device, License, Partner, PartnerProvider, Customer, AuditLog } from "../../db/models/index.js";
+import { sequelize, Activation, Device, License, Partner, PartnerProvider, Customer, AuditLog, AdminUser } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { macSearchSql, normalizeMac } from "../../shared/mac.js";
@@ -200,7 +200,9 @@ export async function editActivation(id, input, actor) {
   const row = await sequelize.transaction(async (t) => {
     const a = await Activation.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!a) throw notFound("Ativação");
-    if (a.status === "revoked") throw new AppError(409, "INVALID_STATE", "Esta ativação foi removida e não pode ser editada.");
+    // O superadmin pode corrigir a configuração histórica de uma ativação removida.
+    // A edição não restaura o acesso: o status revoked permanece inalterado.
+    if (a.status === "revoked" && actor?.role !== "superadmin") throw new AppError(409, "INVALID_STATE", "Esta ativação foi removida e não pode ser editada.");
     if (patch.playlistName !== undefined && patch.playlistName !== null && !a.playlistUrlEnc && !patch.playlistUrlEnc) {
       throw new AppError(422, "NO_OWN_LIST", "Este dispositivo não tem lista própria: informe também o link da lista.");
     }
@@ -224,4 +226,47 @@ export async function removeListByAdmin(deviceId, { activationId, reason }, acto
   if (!device) throw notFound("Dispositivo");
   const activation = await selectLiveActivation(device.id, activationId);
   return removeList({ device, activation, mac: device.mac, actor, reason });
+}
+
+/** Proveniência de cada ativação/lista, baseada em auditoria histórica.
+ * Não atribui a uma pessoa ações anônimas ou realizadas pelo próprio aparelho.
+ */
+export async function deviceAttribution(deviceId) {
+  const device = await Device.findByPk(deviceId);
+  if (!device) throw notFound("Dispositivo");
+  const activations = await Activation.findAll({ where: { deviceId }, attributes: ["id", "activatedAt", "playlistName", "partnerId", "licenseId", "status"], order: [["activatedAt", "DESC"]] });
+  const ids = activations.map(row => String(row.id));
+  const events = await AuditLog.findAll({
+    where: { [Op.or]: [
+      { entityType: "device", entityId: String(deviceId) },
+      ...(ids.length ? [{ entityType: "activation", entityId: { [Op.in]: ids } }] : []),
+    ] }, order: [["createdAt", "ASC"], ["id", "ASC"]],
+    attributes: ["id", "actorType", "actorId", "action", "entityType", "entityId", "metadata", "createdAt"],
+  });
+  const peopleIds = [...new Set(events.filter(e => ["admin", "partner"].includes(e.actorType) && e.actorId).map(e => e.actorId))];
+  const people = peopleIds.length ? await AdminUser.findAll({ where: { id: { [Op.in]: peopleIds } }, attributes: ["id", "name", "role"] }) : [];
+  const byId = new Map(people.map(u => [String(u.id), u]));
+  const actor = (event) => {
+    if (!event) return null;
+    const user = byId.get(String(event.actorId));
+    return { type: event.actorType, id: user?.id ?? event.actorId ?? null,
+      name: user?.name ?? event.metadata?.actorName ?? ({device:"Próprio dispositivo",anonymous:"Link público / anônimo",system:"Sistema"}[event.actorType] ?? "Origem não identificada"),
+      role: user?.role ?? null, at: event.createdAt, action: event.action };
+  };
+  const isPlaylist = e => /playlist|configuration.confirm|device.admin.edit|configuration.update/i.test(e.action)
+    && !/cancel|remove|pending_applied|self_revoke/i.test(e.action)
+    && !(e.action === "device.admin.edit" && !e.metadata?.listName && !e.metadata?.listUrlHost);
+  const result = activations.map(row => {
+    const own = events.filter(e => e.entityType === "activation" && String(e.entityId) === String(row.id));
+    const deviceEvents = events.filter(e => e.entityType === "device" && String(e.entityId) === String(deviceId) && String(e.metadata?.activationId ?? "") === String(row.id));
+    const all = [...own, ...deviceEvents].sort((x,y) => new Date(x.createdAt)-new Date(y.createdAt));
+    const creation = own.find(e => e.action === "activation.create") ?? null;
+    const panelActivation = deviceEvents.find(e => e.action === "device.configuration.confirm" && e.metadata?.added === true);
+    const created = panelActivation ?? creation ?? all.find(e => /activation|configuration.confirm/i.test(e.action));
+    const configured = all.filter(isPlaylist).at(-1) ?? null;
+    return { activationId: row.id, activatedAt: row.activatedAt, status: row.status,
+      listName: row.playlistName, activatedBy: actor(created), listAddedBy: actor(configured),
+      lastChangedBy: actor(all.filter(e => !/register|lookup/.test(e.action)).at(-1) ?? null) };
+  });
+  return { deviceId, mac: device.mac, activations: result };
 }
