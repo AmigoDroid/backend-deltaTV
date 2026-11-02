@@ -1,4 +1,6 @@
 import { Router } from "express";
+import { broadcastChange } from "../../realtime/socket.js";
+import partnerOperations from "./partner-operations.routes.js";
 import { z } from "zod";
 import { authenticate,requirePartnerRole } from "../../middleware/authenticate.js";
 import { Partner, PartnerCode, Activation, PartnerProvider, ProviderHealthEvent } from "../../db/models/index.js";
@@ -7,7 +9,7 @@ import { listCodeServerIds } from "./code-pool.service.js";
 import { AppError } from "../../shared/errors.js";
 import { validate } from "../../shared/validate.js";
 import { actorOf } from "../../shared/audit.js";
-import { listProviders,createProvider,updateProvider } from "../providers/provider.service.js";
+import { listProviders,createProvider,updateProvider,deleteProvider } from "../providers/provider.service.js";
 import * as partners from "../partners/partner.service.js";
 import { overview } from "./monitor.service.js";
 import * as commerce from "../content-commerce/commerce.service.js";
@@ -17,6 +19,17 @@ import { setCodeServers, invalidateServerPools } from "./code-pool.service.js";
 const r=Router();
 r.use(authenticate,requirePartnerRole);
 r.use(async(req,_res,next)=>{const p=await Partner.findByPk(req.user.partnerId);if(!p|| !["content","both"].includes(p.kind)) throw new AppError(403,"FORBIDDEN","Portal exclusivo de parceiros de conteúdo.");next();});
+// Scope realtime invalidations to THIS content partnership; never broadcast to unrelated revendas.
+r.use((req,res,next)=>{
+  if (["POST","PUT","PATCH","DELETE"].includes(req.method)) res.on("finish",()=>{
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      const topic = req.path.split("/").filter(Boolean)[0] || "data";
+      broadcastChange({partnerId:req.user.partnerId,topic});
+    }
+  });
+  next();
+});
+r.use("/", partnerOperations);
 r.get("/overview",async(req,res)=>res.set("Cache-Control","no-store").json(await overview(req.user.partnerId)));
 r.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
 r.get("/servers/:id/history",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{
@@ -51,11 +64,12 @@ r.get("/codes",validate({query:z.object({q:z.string().trim().max(80).optional(),
   res.set("Cache-Control","no-store").json({rows:rows.map(c=>({...c.toJSON(),serverIds:pools.get(c.id)||(c.providerId?[c.providerId]:[]),credits:balances.get(c.id)||{allocated:0,spent:0,available:0},activationCount:activationUsage.get(c.id)||0})),count,page,pageSize:25});
 });
 r.post("/servers",validate({body:srv}),async(req,res)=>res.status(201).json(await createProvider(req.user.partnerId,req.valid.body,actorOf(req),{max:50})));
+r.delete("/servers/:id",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{await deleteProvider(req.user.partnerId,req.valid.params.id,actorOf(req));res.status(204).end();});
 r.patch("/servers/:id",validate({params:z.object({id:z.string().uuid()}),body:srv.partial()}),async(req,res)=>res.json(await updateProvider(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req))));
 r.post("/codes",validate({body:z.object({code:z.string().trim().min(4).max(12).optional(),label:z.string().trim().max(120).optional(),providerId:z.string().uuid()})}),async(req,res)=>res.status(201).json(await partners.createCode(req.user.partnerId,req.valid.body,actorOf(req))));
 r.post("/codes/:id/revoke",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{await partners.revokeCode(req.user.partnerId,req.valid.params.id,actorOf(req));res.status(204).end();});
 r.put("/codes/:id/servers",validate({params:z.object({id:z.string().uuid()}),
   body:z.object({serverIds:z.array(z.string().uuid()).min(1)})}),
   async(req,res)=>res.json(await setCodeServers(req.user.partnerId,req.valid.params.id,req.valid.body.serverIds,actorOf(req))));
-r.patch("/codes/:id",validate({params:z.object({id:z.string().uuid()}),body:z.object({providerId:z.string().uuid()})}),async(req,res)=>{const result=await partners.updateCode(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req));invalidateServerPools(req.valid.params.id);res.json(result)});
+r.patch("/codes/:id",validate({params:z.object({id:z.string().uuid()}),body:z.object({providerId:z.string().uuid().optional(),label:z.string().trim().max(120).optional(),maxActivations:z.number().int().min(1).nullable().optional(),expiresAt:z.coerce.date().nullable().optional()}).refine(b=>Object.keys(b).length>0)}),async(req,res)=>{const result=await partners.updateCode(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req));invalidateServerPools(req.valid.params.id);res.json(result)});
 export default r;

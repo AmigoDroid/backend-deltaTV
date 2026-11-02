@@ -13,14 +13,14 @@ export const adminNotificationRoutes = Router();
 adminNotificationRoutes.use(authenticate);
 adminNotificationRoutes.use((req, _res, next) => req.user.role === "superadmin" ? next() : next(new AppError(403, "FORBIDDEN", "Somente o superadmin pode enviar notificações.")));
 const sendSchema = z.object({
-  audience: z.enum(["all", "selected"]), partnerIds: z.array(z.string().uuid()).max(500).default([]),
+  audience: z.enum(["all", "content", "selected"]), partnerIds: z.array(z.string().uuid()).max(500).default([]),
   title: z.string().trim().min(3).max(140), message: z.string().trim().min(3).max(4000),
   severity: z.enum(["info", "important", "warning"]).default("info"),
 });
 // Busca paginada no banco: nunca transfere o cadastro completo para o navegador.
 adminNotificationRoutes.get("/recipient-search", validate({ query: z.object({ q: z.string().trim().max(100).default(""), page: z.coerce.number().int().min(1).default(1), limit: z.coerce.number().int().min(1).max(30).default(20) }) }), async (req, res) => {
   const { q, page, limit } = req.valid.query;
-  const where = { kind: { [Op.in]: ["reseller", "both"] } };
+  const where = { kind: { [Op.in]: ["reseller", "content", "both"] } };
   if (q) where[Op.or] = [{ name: { [Op.iLike]: `%${q.replace(/[\\%_]/g, "\\$&")}%` } }, { slug: { [Op.iLike]: `%${q.replace(/[\\%_]/g, "\\$&")}%` } }, { contactEmail: { [Op.iLike]: `%${q.replace(/[\\%_]/g, "\\$&")}%` } }];
   const { rows, count } = await Partner.findAndCountAll({ where, attributes: ["id", "name", "slug", "status"], limit, offset: (page-1)*limit, order: [["name", "ASC"], ["id", "ASC"]] });
   res.set("Cache-Control", "no-store").json({ data: rows, meta: { page, total: count, pages: Math.ceil(count / limit) } });
@@ -30,12 +30,12 @@ adminNotificationRoutes.post("/send", validate({ body: sendSchema }), async (req
   const selected = [...new Set(partnerIds)];
   if (audience === "selected" && selected.length === 0)
     throw new AppError(400, "NO_RECIPIENTS", "Selecione pelo menos uma revenda.");
-  const scope = { kind: { [Op.in]: ["reseller", "both"] } };
+  const scope = { kind: { [Op.in]: audience === "content" ? ["content", "both"] : audience === "selected" ? ["reseller", "content", "both"] : ["reseller", "both"] } };
   if (audience === "selected") scope.id = { [Op.in]: selected };
   const total = await Partner.count({ where: scope });
   if (audience === "selected" && total !== selected.length)
-    throw new AppError(400, "INVALID_RECIPIENTS", "Uma ou mais revendas não existem ou não são revendedoras.");
-  if (!total) throw new AppError(400, "NO_RECIPIENTS", "Nenhuma revenda encontrada.");
+    throw new AppError(400, "INVALID_RECIPIENTS", "Um ou mais destinatários não existem ou não são parceiros ou revendas.");
+  if (!total) throw new AppError(400, "NO_RECIPIENTS", "Nenhum destinatário encontrado.");
 
   const campaignId = randomUUID();
   // Uma transação atômica, mas sem carregar todos os destinatários de uma vez.
@@ -58,7 +58,7 @@ adminNotificationRoutes.post("/send", validate({ body: sendSchema }), async (req
     }
   });
   // Notificações WS apenas após commit, nunca antes de a mensagem existir no banco.
-  broadcastNotificationRefresh(audience === "all" ? null : selected);
+  broadcastNotificationRefresh(audience === "selected" ? selected : null, audience === "content" ? "content" : audience === "all" ? "reseller" : null);
   res.status(201).json({ campaignId, sent: inserted });
 });
 // Um comunicado por envio. Cada entrega com seu read_at é um filho.

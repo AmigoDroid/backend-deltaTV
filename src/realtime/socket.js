@@ -45,7 +45,7 @@ export function isPartnerConnected(id) { return Boolean(id) && presence(id); }
 export function onlinePartnerCount() { return livePartnerIds().length; }
 // Só dispara invalidação, sem transportar mensagens privadas pelo WebSocket.
 // No envio geral evita uma emissão por linha do PostgreSQL.
-export function broadcastNotificationRefresh(partnerIds = null) {
+export function broadcastNotificationRefresh(partnerIds = null, _audience = null) {
   const target = partnerIds == null ? null : new Set(partnerIds.map(String));
   for (const peer of peers) {
     if (peer.user.role === "partner" && (target === null || target.has(String(peer.user.partnerId))))
