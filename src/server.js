@@ -1,5 +1,4 @@
 import { env } from "./config/env.js";
-import { proxyConfigurationWarnings } from "./shared/proxy-config.js";
 import { sequelize } from "./db/sequelize.js";
 import { createApp } from "./app.js";
 import { startScheduler } from "./jobs/scheduler.js";
@@ -11,9 +10,10 @@ dotenv.config();
 
 await sequelize.authenticate();
 const app = createApp();
-const server = app.listen(env.port, env.bindHost, () => {
-  console.log(`API de licenciamento em ${env.bindHost}:${env.port} (${env.nodeEnv}); trust proxy=${String(env.trustProxy)}`);
-  for (const warning of proxyConfigurationWarnings(env)) console.warn(`[proxy] ${warning}`);
+const server = app.listen(env.port, process.env.API_BIND_HOST || (env.isProd ? "127.0.0.1" : "0.0.0.0"), () => {
+  console.log(
+    `API de licenciamento em http://localhost:${env.port} (${env.nodeEnv})`,
+  );
 });
 const stopRealtime = attachRealtime(server);
 // Envio de APKs grandes (painel admin → Downloads): o padrão do Node (5 min para receber a requisição inteira) corta
