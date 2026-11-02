@@ -1,11 +1,14 @@
 import { Op } from "sequelize";
-import { sequelize, Partner, PartnerCode, PartnerProvider, Activation } from "../../db/models/index.js";
+import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { assertPublicUrl } from "../../shared/ssrf.js";
 import { probeAccount, xtreamOrigin } from "../xtream/xtream.service.js";
 import { DEFAULT_TEMPLATE, buildPlaylistUrl, normalizeBaseUrl, validateTemplate } from "./playlist-url.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
+import { invalidateServerPools } from "../provider-monitor/code-pool.service.js";
+import { clearResolutionCache } from "../provider-monitor/resolve.service.js";
+import { ProviderHealth } from "../../db/models/index.js";
 
 /**
  * Confirma no painel do provedor (API Xtream, player_api.php) que usuário/senha existem e a conta está ativa.
@@ -63,7 +66,10 @@ export async function updateProvider(partnerId, id, input, actor) {
   await p.update(patch);
   await audit({ actor, action: "provider.update", entityType: "partner", entityId: partnerId, metadata: { providerId: id, ...patch } });
   // Modo (proxy/redirect), URL base e status ficam em cache na rota espelho: sem isto a troca só vale após o TTL.
-  clearMirrorAuth();
+  invalidateServerPools();clearResolutionCache();
+  if(patch.baseUrl!==undefined || patch.status!==undefined) {
+    await ProviderHealth.update({state:"unknown",failures:0,successes:0,latencyMs:null,lastCheckedAt:null},{where:{providerId:id}});
+  }
   return p;
 }
 
@@ -75,6 +81,9 @@ export async function deleteProvider(partnerId, id, actor) {
     throw new AppError(409, "PROVIDER_IN_USE", `${used} dispositivo(s) usam este provedor. Desative-o em vez de excluir.`);
   }
   // Códigos ativos apontando para este servidor: o admin precisa movê-los/revogá-los antes (senão ficariam sem destino).
+  const additionalPools = await CodeServerPool.count({where:{providerId:id}});
+  if(additionalPools>0)throw new AppError(409,"PROVIDER_IN_CODE_POOL",
+    `Este servidor participa de ${additionalPools} pool(s). Remova-o dos códigos antes de excluir.`);
   const codes = await PartnerCode.count({ where: { providerId: id, status: { [Op.ne]: "revoked" } } });
   if (codes > 0) {
     throw new AppError(409, "PROVIDER_HAS_CODES", `${codes} código(s) apontam para este servidor. Mova-os para outro servidor ou revogue-os antes de excluir.`);
@@ -84,6 +93,6 @@ export async function deleteProvider(partnerId, id, actor) {
     await PartnerCode.update({ providerId: null }, { where: { providerId: id }, transaction: t });
     await p.destroy({ transaction: t });
   });
-  clearMirrorAuth();
+  invalidateServerPools();clearResolutionCache();
   await audit({ actor, action: "provider.delete", entityType: "partner", entityId: partnerId, metadata: { providerId: id } });
 }

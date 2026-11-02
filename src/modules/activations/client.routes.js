@@ -91,7 +91,7 @@ const configurationStatusOf = (activation, decision) => {
     return /EXPIRED/.test(decision.code ?? "") ? "expired" : "disabled";
   if (activation.partnerId && !activation.providerId) return "error";
   // Mesmo critério de registration.service: provedor desativado = "error" (em /xtream seria 503).
-  if (activation.partnerId && activation.PartnerProvider && activation.PartnerProvider.status !== "active")
+  if (activation.partnerId && activation.PartnerProvider && activation.PartnerProvider.status !== "active" && !(process.env.PROVIDER_MONITOR_ENABLED==="true" && activation.partnerCodeId))
     return "error";
   if (activation.partnerId && activation.providerId)
     return "configured_partner";

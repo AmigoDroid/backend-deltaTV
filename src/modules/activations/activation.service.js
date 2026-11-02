@@ -12,6 +12,7 @@ import { issueSession, overdueSinceFor, denialError, checkActivation, revokeSess
 import { normalizeShortCode, shortCodeProblem } from "../partners/short-code.js";
 import { probeCredentials } from "../providers/provider.service.js";
 import { sameInstallation } from "../devices/device-identity.js";
+import { serversForCode, isCodeServerAllowed, rankedServersForCode } from "../provider-monitor/code-pool.service.js";
 import { applyPendingPlaylist } from "../devices/playlist-by-url.service.js";
 import { STOCK_KINDS } from "../stock/stock-ledger.js";
 import { sellFromStock } from "../stock/stock-license.js";
@@ -143,7 +144,7 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
     if (!partner || !code || code.partnerId !== partner.id) throw invalidCredentials();
     if (code.status !== "active" || (code.expiresAt && code.expiresAt <= new Date())) throw invalidCredentials();
     // O código aponta para um servidor: se o admin o trocou depois da triagem, a validação das credenciais ficou velha.
-    if (code.providerId && code.providerId !== provider.id) throw invalidCredentials();
+    if (!(await isCodeServerAllowed(code,provider.id,t))) throw invalidCredentials();
 
     // Um MAC pode ter VÁRIOS parceiros: a ativação procurada é a deste MAC COM ESTE parceiro. As ativações dos
     // outros parceiros no mesmo MAC não são tocadas (antes, ativar outro parceiro substituía a ativação existente).
@@ -247,18 +248,16 @@ export async function preparePartnerActivation({ code, username, password }) {
   const pre = evaluateAccess({ activation: { status: "active" }, partner, overdueSince: await overdueSinceFor(partner.id) });
   if (!pre.allowed) throw denialError(pre);
 
-  // Código com servidor definido => SÓ esse servidor (sem fallback para outros do parceiro).
-  // Código antigo sem servidor (provider_id NULL) => comportamento anterior: servidores ativos por prioridade.
-  const providers = await PartnerProvider.findAll({
-    where: { partnerId: partner.id, status: "active", ...(pc.providerId ? { id: pc.providerId } : {}) },
-    order: [["priority", "ASC"], ["createdAt", "ASC"]],
-  });
+  // Pool EXCLUSIVO do código. Sem pool, mantém comportamento seguro do servidor principal.
+  // Quando o monitor está habilitado, experimenta primeiro o servidor saudável de menor latência.
+  const providers = process.env.PROVIDER_MONITOR_ENABLED === "true"
+    ? await rankedServersForCode(pc) : await serversForCode(pc);
   if (providers.length === 0) throw new AppError(503, "PROVIDER_NOT_CONFIGURED", "Serviço indisponível. Contate seu fornecedor.");
 
   let chosen = null;
   let refused = false;
   let unverified = null; // painel que bloqueou a checagem do servidor (401/403 sem corpo): senha não provada errada
-  for (const p of providers) {
+  for (const p of (pc.providerId ? providers.slice(0,4) : providers)) {
     const r = await probeCredentials(p, { username, password });
     if (r.ok) { chosen = p; break; }
     if (r.reason === "invalid") refused = true;

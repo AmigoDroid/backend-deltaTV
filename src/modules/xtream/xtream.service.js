@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resolveForActivation } from "../provider-monitor/resolve.service.js";
 import { PartnerProvider } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
 import { decryptSecret } from "../../shared/crypto.js";
@@ -18,7 +19,7 @@ import { deliveryModeOf, deliveryModesOf, needsMirror, MIRROR_PASS } from "../mi
 
 export const XTREAM_UA = "Mozilla/5.0";
 const MAX_BODY = 256 * 1024; // a resposta de autenticação tem poucos KB
-const TRIES = 3;             // alguns painéis devolvem 404/5xx de forma intermitente
+const TRIES = 2;             // alguns painéis devolvem 404/5xx de forma intermitente
 const PROBE_TTL_MS = 5 * 60_000;      // conta válida
 const PROBE_BAD_TTL_MS = 60_000;      // recusa definitiva: curto, para a correção no provedor valer logo
 const probeCache = new Map(); // chave (hash) -> { at, value }
@@ -60,7 +61,7 @@ export async function xtreamCredentialsOf(activation) {
     return parsed;
   }
   const provider = activation.providerId ? await PartnerProvider.findByPk(activation.providerId) : null;
-  if (!provider || provider.status !== "active" || !activation.credentialsEnc) {
+  if (!provider || !activation.credentialsEnc) {
     throw new AppError(503, "PROVIDER_UNAVAILABLE", "Serviço indisponível. Contate seu fornecedor.");
   }
   let username, password;
@@ -72,7 +73,12 @@ export async function xtreamCredentialsOf(activation) {
     console.error(`[xtream] credentials_enc ilegível (activation ${activation.id}): ${err.message}`);
     throw new AppError(503, "CREDENTIALS_UNREADABLE", "Não foi possível ler as credenciais guardadas. Reconfigure a lista deste dispositivo.");
   }
-  return { baseUrl: xtreamOrigin(provider.baseUrl), username, password };
+  const resolved = await resolveForActivation(activation,provider,{username,password});
+  if (resolved.provider?.status !== "active") {
+    throw new AppError(503,"PROVIDER_UNAVAILABLE","Nenhum servidor ativo disponível para esta lista.");
+  }
+  return { baseUrl: xtreamOrigin(resolved.provider.baseUrl), username, password,
+    verifiedAlternative: resolved.verified, selectedProvider: resolved.provider };
 }
 
 export const hasXtreamSource = (activation) => !!(activation.providerId || activation.playlistUrlEnc);
@@ -105,7 +111,7 @@ export async function probeAccount({ baseUrl, username, password }) {
   for (let i = 0; i < TRIES; i++) {
     let res;
     try {
-      res = await safeGet(url, { headers: { "user-agent": XTREAM_UA, accept: "application/json" }, timeoutMs: 15000 });
+      res = await safeGet(url, { headers: { "user-agent": XTREAM_UA, accept: "application/json" }, timeoutMs: 4000 });
     } catch {
       value = { ok: false, reason: "unreachable" };
       continue;
@@ -145,7 +151,10 @@ export async function probeAccount({ baseUrl, username, password }) {
     await new Promise((r) => setTimeout(r, 400));
   }
   // Só guarda resposta definitiva; "unreachable"/"unverified" tentam de novo na próxima chamada.
-  if (value.ok || value.reason === "invalid") probeCache.set(key, { at: Date.now(), value });
+  if (value.ok || value.reason === "invalid") {
+    probeCache.delete(key);probeCache.set(key, { at: Date.now(), value });
+    if(probeCache.size>4000)probeCache.delete(probeCache.keys().next().value);
+  }
   return value;
 }
 
@@ -159,7 +168,8 @@ export const forgetProbe = () => probeCache.clear();
  */
 export async function xtreamConfigFor(activation, { sessionId } = {}) {
   const cred = await xtreamCredentialsOf(activation);
-  const probe = await probeAccount(cred);
+  // URL alternativa já autenticada pelo resolvedor: não repetir a requisição à origem.
+  const probe = cred.verifiedAlternative ? {ok:true,account:null} : await probeAccount(cred);
   if (!probe.ok && probe.reason === "invalid") {
     throw new AppError(403, "PROVIDER_ACCOUNT_INVALID", probe.status
       ? `A conta no provedor está ${probe.status}. Contate seu fornecedor.`
@@ -175,5 +185,5 @@ export async function xtreamConfigFor(activation, { sessionId } = {}) {
     : null;
 
   if (mode === "proxy" && mirror) return { ...mirror, userAgent: XTREAM_UA, account, mode, modes, mirror: true };
-  return { ...cred, userAgent: XTREAM_UA, account, mode, modes, mirror };
+  return { baseUrl: cred.baseUrl, username: cred.username, password: cred.password, userAgent: XTREAM_UA, account, mode, modes, mirror };
 }

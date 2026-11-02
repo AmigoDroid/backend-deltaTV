@@ -1,3 +1,4 @@
+import { xtreamCredentialsOf } from "./xtream.service.js";
 import crypto from "node:crypto";
 import net from "node:net";
 import { env } from "../../config/env.js";
@@ -55,14 +56,10 @@ export async function xtreamAccountOf(activation) {
       return a ? { ...a, key: accountKey(a) } : null;
     }
     if (activation.providerId && activation.credentialsEnc) {
-      const { PartnerProvider } = await import("../../db/models/index.js"); // só quando necessário (evita carregar o banco à toa)
-      const provider = await PartnerProvider.findByPk(activation.providerId);
-      if (!provider || provider.status !== "active") return null;
-      if (!/^\/get\.php\?/i.test(provider.playlistTemplate || "")) return null; // só o padrão Xtream
-      const { username, password } = JSON.parse(decryptSecret(activation.credentialsEnc));
-      if (!username || !password) return null;
-      const a = { base: provider.baseUrl, username: String(username), password: String(password) };
-      return { ...a, key: accountKey(a) };
+      const a = await xtreamCredentialsOf(activation);
+      if (a.selectedProvider && !/^\/get\.php\?/i.test(a.selectedProvider.playlistTemplate || "")) return null;
+      const account = {base:a.baseUrl,username:a.username,password:a.password};
+      return {...account,key:accountKey(account)};
     }
   } catch (err) {
     console.error(`[xtream] conta Xtream ilegível (activation ${activation.id}): ${err.message}`);

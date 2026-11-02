@@ -1,6 +1,6 @@
 import { isPartnerConnected } from "../../realtime/socket.js";
 import { Op, UniqueConstraintError } from "sequelize";
-import { sequelize, Partner, PartnerCode, PartnerProvider, Activation, Invoice, AdminUser } from "../../db/models/index.js";
+import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, Invoice, AdminUser } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { hashPassword } from "../../shared/crypto.js";
@@ -274,7 +274,11 @@ export async function updateCode(partnerId, codeId, input, actor) {
     if (!partner || !c) throw notFound("Código");
     const patch = {};
     for (const k of ["label", "maxActivations", "expiresAt"]) if (input[k] !== undefined) patch[k] = input[k];
-    if (input.providerId !== undefined) patch.providerId = await resolveProviderId(partnerId, input.providerId, t);
+    if (input.providerId !== undefined) {
+      patch.providerId = await resolveProviderId(partnerId, input.providerId, t);
+      // Alteração manual do destino principal tem precedência sobre o pool anterior.
+      await CodeServerPool.destroy({where:{codeId},transaction:t});
+    }
     // Só vale para NOVAS ativações: licenças já vendidas por este código não mudam.
     if (input.licenseMonths !== undefined) {
       patch.licenseMonths = await resolveLicenseMonths(partner, input.licenseMonths, { transaction: t, current: c.licenseMonths });
@@ -287,6 +291,10 @@ export async function updateCode(partnerId, codeId, input, actor) {
     await audit({ actor, action: "partner.code.update", entityType: "partner", entityId: partnerId, metadata: { codeId, ...patch }, transaction: t });
     return c;
   });
+  if (input.providerId !== undefined) {
+    const {invalidateServerPools}=await import("../provider-monitor/code-pool.service.js");
+    invalidateServerPools(codeId);
+  }
   return codeOut(await PartnerCode.findByPk(updated.id, {
     attributes: { include: [[sequelize.literal(CODE_ACTIVATIONS), "activationCount"]] },
     include: [{ model: PartnerProvider, as: "provider", attributes: ["id", "name", "baseUrl", "status"], required: false }],

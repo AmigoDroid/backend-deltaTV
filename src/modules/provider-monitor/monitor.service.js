@@ -1,110 +1,146 @@
 import http from "node:http";
 import https from "node:https";
 import { Op } from "sequelize";
-import { Partner, PartnerCode, PartnerProvider, ProviderHealth, CodeFailover, sequelize } from "../../db/models/index.js";
+import { Partner, PartnerCode, PartnerProvider, ProviderHealth, CodeFailover, CodeServerPool } from "../../db/models/index.js";
 import { assertPublicUrl, safeLookup } from "../../shared/ssrf.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
+import { clearResolutionCache } from "./resolve.service.js";
 import { sendMail } from "../mail/mail.transport.js";
 import { env } from "../../config/env.js";
-import { audit } from "../../shared/audit.js";
 
-const INTERVAL = Math.max(30, Number(process.env.PROVIDER_MONITOR_INTERVAL_SECONDS || 60));
-const TIMEOUT = Math.max(1000, Math.min(10000, Number(process.env.PROVIDER_MONITOR_TIMEOUT_MS || 4000)));
-const SLOW = Math.max(500, Number(process.env.PROVIDER_MONITOR_SLOW_MS || 2500));
-let timer, running = false;
+const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
+const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",60,30,3600);
+const TIMEOUT = int("PROVIDER_MONITOR_TIMEOUT_MS",3000,800,5000);
+const SLOW = int("PROVIDER_MONITOR_SLOW_MS",2500,300,5000);
+const CONCURRENCY = int("PROVIDER_MONITOR_CONCURRENCY",4,1,8);
+const MAX_PER_CYCLE = int("PROVIDER_MONITOR_MAX_PER_CYCLE",60,5,250);
+let timer, running=false, cursor=0, alertRunning=false, cycles=0;
 
-// Do not follow redirects or download response bodies; verify DNS again at connect time.
+/** HEAD/GET de baixo custo, sem seguir redirect, sem guardar o corpo e com proteção SSRF. */
 export async function probeServer(raw) {
- const url = await assertPublicUrl(raw);
- const target = new URL("/player_api.php", url);
- const started = Date.now();
- return new Promise(resolve => {
-  const transport = target.protocol === "https:" ? https : http;
-  const req = transport.request(target, { method:"GET", lookup:safeLookup, timeout:TIMEOUT,
-   headers:{ "User-Agent":"DeltaTV-Monitor/1.0", "Accept":"application/json", "Connection":"close" } }, res => {
-    const ms = Date.now()-started;
-    const good = res.statusCode >= 200 && res.statusCode < 500 && res.statusCode !== 429 && ms <= SLOW;
-    res.destroy();
-    resolve({ good, latencyMs:ms, error: good ? null : (ms>SLOW ? "Resposta lenta" : `HTTP ${res.statusCode}`) });
-  });
-  req.on("timeout", () => req.destroy(new Error("Timeout")));
-  req.on("error", e => resolve({ good:false, latencyMs:Date.now()-started, error:String(e.message).slice(0,180) }));
-  req.end();
- });
-}
-
-export async function monitorOnce() {
- if (running) return;
- running=true;
- try {
-  const providers=await PartnerProvider.findAll({where:{status:"active"},order:[["partnerId","ASC"],["priority","ASC"]]});
-  for (const provider of providers) {
-   try {
-    const r=await probeServer(provider.baseUrl);
-    let h=await ProviderHealth.findOne({where:{providerId:provider.id}});
-    if(!h) h=ProviderHealth.build({providerId:provider.id});
-    const failures=r.good ? 0 : (h.failures||0)+1;
-    const successes=r.good ? (h.successes||0)+1 : 0;
-    const state=failures>=2 ? "down" : successes>=2 ? "healthy" : r.good ? "checking" : "suspect";
-    await h.update({state,latencyMs:r.latencyMs,lastCheckedAt:new Date(),
-      lastGoodAt:r.good?new Date():h.lastGoodAt,failures,successes,lastError:r.error});
-   } catch(e) { console.warn("[provider-monitor]",provider.id,e.message); }
+  let url;
+  try{url=await assertPublicUrl(raw);}catch(e){
+    return {good:false,latencyMs:TIMEOUT,error:`DNS ou destino indisponível: ${String(e.message).slice(0,100)}`};
   }
-  const liveProviders=providers.filter(p=>p.status==="active");
-  const byPartner=new Map();
-  for(const p of liveProviders){if(!byPartner.has(p.partnerId))byPartner.set(p.partnerId,[]);byPartner.get(p.partnerId).push(p);}
-  const health=await ProviderHealth.findAll({where:{providerId:{[Op.in]:providers.map(x=>x.id)}}});
-  const goodIds=new Set(health.filter(h=>h.state==="healthy").map(h=>h.providerId));
-  const downIds=new Set(health.filter(h=>h.state==="down").map(h=>h.providerId));
-  const codes=await PartnerCode.findAll({where:{status:"active",providerId:{[Op.ne]:null}}});
-  for(const code of codes){
-   const candidates=byPartner.get(code.partnerId)||[];
-   if(!candidates.length)continue;
-   const current=candidates.find(p=>p.id===code.providerId);
-   const healthy=candidates.find(p=>goodIds.has(p.id));
-   let state=await CodeFailover.findOne({where:{codeId:code.id}});
-   if(!state)state=await CodeFailover.create({codeId:code.id,originalProviderId:code.providerId,currentProviderId:code.providerId});
-   // Only fail over after TWO failed probes. Do not flip while status is unknown/suspect.
-   if(current && downIds.has(current.id) && healthy && healthy.id!==current.id){
-    await sequelize.transaction(async t=>{
-      await code.update({providerId:healthy.id},{transaction:t});
-      await state.update({currentProviderId:healthy.id,lastSwitchedAt:new Date(),outageNotifiedAt:null},{transaction:t});
-      await audit({actor:{type:"system"},action:"provider.failover",entityType:"partner_code",entityId:code.id,
-        metadata:{from:current.id,to:healthy.id},transaction:t});
+  const target=new URL("/player_api.php",url);
+  const started=Date.now();
+  return new Promise(resolve=>{
+    const transport=target.protocol==="https:"?https:http;
+    const req=transport.request(target,{method:"GET",lookup:safeLookup,timeout:TIMEOUT,
+      headers:{"User-Agent":"DeltaTV-Monitor/2.0",Accept:"application/json",Connection:"close"}},res=>{
+      const ms=Date.now()-started;
+      // 401/403 pode ser WAF; indica que o host respondeu, mas não autentica conta do cliente.
+      const good = ms<=SLOW && res.statusCode>=200 && res.statusCode<500 && res.statusCode!==429;
+      res.destroy();
+      resolve({good,latencyMs:ms,error:good?null:(ms>SLOW?"Resposta lenta":`HTTP ${res.statusCode}`)});
     });
-    clearMirrorAuth();
-   }
-   const allDown=candidates.every(p=>downIds.has(p.id));
-   if(allDown && !state.outageNotifiedAt){
-     // Persist before send to avoid e-mail storms; failed delivery is logged for manual retry.
-     await state.update({outageNotifiedAt:new Date()});
-     try {
-       const partner=await Partner.findByPk(code.partnerId);
-       if(partner?.contactEmail && env.mail.configured){
-         await sendMail({to:partner.contactEmail,subject:`[Delta TV] Indisponibilidade do código ${code.code}`,
-           text:`Todos os servidores ativos cadastrados para sua parceria estão indisponíveis. Código: ${code.code}. Verifique os endereços no painel parceiro.deltatv.com.br.`});
-       }else console.warn("[provider-monitor] Sem SMTP ou e-mail para",code.id);
-     }catch(e){console.error("[provider-monitor] E-mail",code.id,e.message);}
-   }else if(healthy && state.outageNotifiedAt){await state.update({outageNotifiedAt:null});}
-  }
- }finally{running=false;}
+    req.on("timeout",()=>req.destroy(new Error("Timeout")));
+    req.on("error",e=>resolve({good:false,latencyMs:Date.now()-started,error:String(e.message).slice(0,160)}));
+    req.end();
+  });
 }
 
-export function startProviderMonitor(){
- if(process.env.PROVIDER_MONITOR_ENABLED!=="true") {console.log("[provider-monitor] desativado (PROVIDER_MONITOR_ENABLED=true para habilitar)");return;}
- const run=()=>monitorOnce().catch(e=>console.error("[provider-monitor]",e.message));
- setTimeout(run, 10000).unref();timer=setInterval(run,INTERVAL*1000);timer.unref();
+async function updateOne(provider) {
+  try {
+    const r=await probeServer(provider.baseUrl);
+    const [h,created]=await ProviderHealth.findOrCreate({where:{providerId:provider.id},defaults:{providerId:provider.id}});
+    const failures=r.good?0:Math.min(100,(h.failures||0)+1);
+    const successes=r.good?Math.min(100,(h.successes||0)+1):0;
+    const state=failures>=2?"down":successes>=2?"healthy":r.good?"checking":"suspect";
+    const changed=state!==h.state;
+    await h.update({state,latencyMs:r.latencyMs,lastCheckedAt:new Date(),lastGoodAt:r.good?new Date():h.lastGoodAt,failures,successes,lastError:r.error});
+    return changed;
+  }catch(e){ console.warn("[provider-monitor] sondagem",provider.id,e.message);return false; }
+}
+async function workers(items,fn,n) {
+  let next=0;
+  await Promise.all(Array.from({length:Math.min(n,items.length)},async()=>{
+    while(next<items.length){const item=items[next++];await fn(item);}
+  }));
+}
+
+// Executa com limite fixo de tarefas e memória. Não cria uma requisição por TV nem por código.
+export async function monitorOnce() {
+  if(running)return;
+  running=true;
+  try {
+    const total=await PartnerProvider.count({where:{status:"active"}});
+    if(!total)return;
+    if(cursor>=total)cursor=0;
+    let providers=await PartnerProvider.findAll({where:{status:"active"},attributes:["id","baseUrl"],order:[["id","ASC"]],offset:cursor,limit:MAX_PER_CYCLE,raw:true});
+    cursor=(cursor+providers.length)%total;
+    if(providers.length<MAX_PER_CYCLE && cursor===0 && total>providers.length){
+      const more=await PartnerProvider.findAll({where:{status:"active"},attributes:["id","baseUrl"],order:[["id","ASC"]],limit:MAX_PER_CYCLE-providers.length,raw:true});
+      providers=providers.concat(more);cursor=more.length;
+    }
+    let changed=false;
+    await workers(providers,async p=>{if(await updateOne(p))changed=true;},CONCURRENCY);
+    if(changed){clearMirrorAuth();clearResolutionCache();}
+    // E-mail e milhares de códigos NÃO bloqueiam o loop de sondagem.
+    if(++cycles % 3 === 0 && !alertRunning) {
+      alertRunning=true;
+      void alertOutages().catch(e=>console.error("[provider-monitor] alertas",e.message))
+        .finally(()=>{alertRunning=false;});
+    }
+  }finally{running=false;}
+}
+
+// Notifica somente incidentes confirmados, por código, e apenas quando TODAS suas URLs estão DOWN.
+async function alertOutages() {
+  const codes=await PartnerCode.findAll({where:{status:"active"},attributes:["id","partnerId","code","providerId"],raw:true});
+  if(!codes.length)return;
+  const links=await CodeServerPool.findAll({where:{codeId:{[Op.in]:codes.map(c=>c.id)}},attributes:["codeId","providerId"],raw:true});
+  const pools=new Map();for(const l of links){if(!pools.has(l.codeId))pools.set(l.codeId,[]);pools.get(l.codeId).push(l.providerId);}
+  const activeProviders=await PartnerProvider.findAll({where:{status:"active"},attributes:["id"],raw:true});
+  const activeIds=new Set(activeProviders.map(p=>p.id));
+  const states=await ProviderHealth.findAll({attributes:["providerId","state","lastCheckedAt"],raw:true});
+  const health=new Map(states.map(s=>[s.providerId,s]));
+  const known=await CodeFailover.findAll({attributes:["id","codeId","outageNotifiedAt"],raw:false});
+  const byCode=new Map(known.map(s=>[s.codeId,s]));
+  const now=Date.now(), activeCutoff=Math.max(180_000,INTERVAL*3000);
+  let emails=0;
+  for(const code of codes){
+    const ids=(pools.get(code.id)|| (code.providerId?[code.providerId]:[])).filter(id=>activeIds.has(id));
+    if(!ids.length)continue;
+    const unavailable=ids.every(id=>{
+      const h=health.get(id);
+      return h?.state==="down" && h.lastCheckedAt && now-new Date(h.lastCheckedAt).getTime()<activeCutoff;
+    });
+    const recovered=ids.some(id=>health.get(id)?.state==="healthy");
+    let state=byCode.get(code.id);
+    if(!unavailable && (!recovered || !state?.outageNotifiedAt))continue;
+    if(recovered && state?.outageNotifiedAt){await state.update({outageNotifiedAt:null});continue;}
+    if(!unavailable || state?.outageNotifiedAt)continue;
+    if(emails>=20){console.warn("[provider-monitor] lote de alertas limitado; restantes na próxima rodada");break;}
+    if(!env.mail.configured)continue;
+    const partner=await Partner.findByPk(code.partnerId,{attributes:["contactEmail"]});
+    if(partner?.contactEmail){
+      emails++;
+      try{
+        await sendMail({to:partner.contactEmail,subject:`[Delta TV] Servidores indisponíveis — código ${code.code}`,
+          text:`Todos os endereços vinculados ao código ${code.code} estão indisponíveis. Consulte parceiro.deltatv.com.br.`});
+        if(!state)state=await CodeFailover.create({codeId:code.id,originalProviderId:code.providerId,currentProviderId:code.providerId});
+        await state.update({outageNotifiedAt:new Date()});
+      }catch(e){console.error("[provider-monitor] alerta por e-mail",e.message);}
+    }
+  }
+}
+
+export function startProviderMonitor() {
+  if(process.env.PROVIDER_MONITOR_ENABLED!=="true") {console.log("[provider-monitor] desativado");return;}
+  const run=()=>monitorOnce().catch(e=>console.error("[provider-monitor]",e.message));
+  setTimeout(run,10_000).unref();timer=setInterval(run,INTERVAL*1000);timer.unref();
 }
 export function stopProviderMonitor(){if(timer)clearInterval(timer);}
 
-export async function overview(partnerId){
- const providers=await PartnerProvider.findAll({where:{partnerId},order:[["priority","ASC"]]});
- const states=await ProviderHealth.findAll({where:{providerId:{[Op.in]:providers.map(p=>p.id)}}});
- const lookup=new Map(states.map(s=>[s.providerId,s]));
- const codes=await PartnerCode.findAll({where:{partnerId},order:[["createdAt","DESC"]],limit:500});
- return {providers:providers.map(p=>({id:p.id,name:p.name,baseUrl:p.baseUrl,priority:p.priority,status:p.status,
-   health:lookup.get(p.id)?{state:lookup.get(p.id).state,latencyMs:lookup.get(p.id).latencyMs,
-   lastCheckedAt:lookup.get(p.id).lastCheckedAt,lastGoodAt:lookup.get(p.id).lastGoodAt,lastError:lookup.get(p.id).lastError}:null})),
-   codes:codes.map(c=>({id:c.id,code:c.code,label:c.label,status:c.status,providerId:c.providerId})),
-   monitorEnabled:process.env.PROVIDER_MONITOR_ENABLED==="true"};
+export async function overview(partnerId) {
+  const providers=await PartnerProvider.findAll({where:{partnerId},order:[["priority","ASC"]],raw:true});
+  const states=providers.length?await ProviderHealth.findAll({where:{providerId:{[Op.in]:providers.map(p=>p.id)}},raw:true}):[];
+  const byId=new Map(states.map(s=>[s.providerId,s]));
+  const totalCodes=await PartnerCode.count({where:{partnerId}});
+  return {providers:providers.map(p=>({id:p.id,name:p.name,baseUrl:p.baseUrl,priority:p.priority,status:p.status,
+    health:byId.get(p.id)?{state:byId.get(p.id).state,latencyMs:byId.get(p.id).latencyMs,lastCheckedAt:byId.get(p.id).lastCheckedAt,
+      lastGoodAt:byId.get(p.id).lastGoodAt,lastError:byId.get(p.id).lastError}:null})),
+    totalCodes, codes:[],
+    monitorEnabled:process.env.PROVIDER_MONITOR_ENABLED==="true"};
 }

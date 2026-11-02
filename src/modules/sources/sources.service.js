@@ -477,10 +477,14 @@ export const playlistUrlForSource = (source) => {
 export async function playlistUrlForActivation(activation) {
   if (activation.playlistUrlEnc) return decryptSecret(activation.playlistUrlEnc);
   const provider = activation.providerId ? await PartnerProvider.findByPk(activation.providerId) : null;
-  if (!provider || provider.status !== "active" || !activation.credentialsEnc) {
+  if (!provider || !activation.credentialsEnc) {
     throw new AppError(503, "PROVIDER_UNAVAILABLE", "Serviço indisponível. Contate seu fornecedor.");
   }
-  return buildPlaylistUrl(provider.baseUrl, provider.playlistTemplate, JSON.parse(decryptSecret(activation.credentialsEnc)));
+  const credentials=JSON.parse(decryptSecret(activation.credentialsEnc));
+  const { resolveForActivation } = await import("../provider-monitor/resolve.service.js");
+  const resolved=await resolveForActivation(activation,provider,credentials);
+  if(resolved.provider?.status!=="active")throw new AppError(503,"PROVIDER_UNAVAILABLE","Nenhum servidor ativo disponível para esta lista.");
+  return buildPlaylistUrl(resolved.provider.baseUrl, resolved.provider.playlistTemplate, credentials);
 }
 
 /** Abre o corpo da playlist M3U na origem (SSRF/redirects tratados por safeGet), cortando acima de `maxBytes` (0 = sem limite). */

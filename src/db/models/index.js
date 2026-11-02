@@ -90,6 +90,11 @@ export const PartnerProvider = def("PartnerProvider", "partner_providers", {
   status: str(20, { allowNull: false, defaultValue: "active" }),
 });
 
+// Servidores explicitamente autorizados por código. Sem linhas = só o provedor principal (legado).
+export const CodeServerPool = def("CodeServerPool", "code_server_pools", {
+  codeId: { type: T.UUID, allowNull: false }, providerId: { type: T.UUID, allowNull: false },
+});
+
 export const ProviderHealth = def("ProviderHealth", "provider_health", {
   providerId: { type: T.UUID, allowNull: false, unique: true },
   state: str(20, { allowNull: false, defaultValue: "unknown" }), latencyMs: { type: T.INTEGER },
@@ -319,6 +324,9 @@ PartnerCode.hasMany(Activation, { foreignKey: "partnerCodeId" });
 Activation.belongsTo(PartnerCode, { foreignKey: "partnerCodeId" });
 LicenseStockLedger.belongsTo(Partner, { foreignKey: "partnerId" });
 LicenseStockLedger.belongsTo(Partner, { foreignKey: "counterpartyPartnerId", as: "counterparty" });
+PartnerCode.hasMany(CodeServerPool, { foreignKey: "codeId", as: "serverPool" });
+CodeServerPool.belongsTo(PartnerCode, { foreignKey: "codeId" });
+CodeServerPool.belongsTo(PartnerProvider, { foreignKey: "providerId", as: "server" });
 PartnerProvider.hasMany(PartnerCode, { foreignKey: "providerId" });
 PartnerCode.belongsTo(PartnerProvider, { foreignKey: "providerId", as: "provider" });
 Device.hasMany(Activation, { foreignKey: "deviceId" });

@@ -1,3 +1,4 @@
+import { isCodeServerAllowed } from "../provider-monitor/code-pool.service.js";
 import { Op } from "sequelize";
 import {
   sequelize, Activation, Device, DevicePairingToken, Partner, PartnerCode, PartnerProvider,
@@ -21,7 +22,7 @@ function statusName(activation, decision) {
   if (!activation) return "awaiting_configuration";
   if (activation.status === "blocked") return "disabled";
   if (activation.status === "revoked") return "deactivated";
-  if (activation.partnerId && (!activation.PartnerProvider || activation.PartnerProvider.status !== "active")) return "error";
+  if (activation.partnerId && (!activation.PartnerProvider || (activation.PartnerProvider.status !== "active" && !(process.env.PROVIDER_MONITOR_ENABLED==="true" && activation.partnerCodeId)))) return "error";
   if (!decision.allowed) {
     return /EXPIRED/.test(decision.code ?? "") ? "expired" : "disabled";
   }
@@ -386,7 +387,7 @@ async function configurePartnerList(device, input, actor) {
     const provider = await PartnerProvider.findByPk(prepared.provider.id, { transaction });
     if (!partner || !code || !provider || code.partnerId !== partner.id || provider.partnerId !== partner.id ||
         code.status !== "active" || (code.expiresAt && code.expiresAt <= new Date()) || provider.status !== "active" ||
-        (code.providerId && code.providerId !== provider.id)) {
+        !(await isCodeServerAllowed(code,provider.id,transaction))) {
       throw new AppError(401, "INVALID_CODE_OR_CREDENTIALS", "Código, usuário ou senha inválidos.");
     }
     const overdueSince = await overdueSinceFor(partner.id, transaction);
