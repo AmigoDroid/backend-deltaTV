@@ -5,6 +5,7 @@ import { adminNotificationRoutes } from "./notifications/notification.routes.js"
 import { authenticate } from "../middleware/authenticate.js";
 import licenses from "./licenses/license.routes.js";
 import partners from "./partners/partner.routes.js";
+import servicePlansCatalog from "./service-plans/catalog.routes.js";
 import devices from "./devices/device.routes.js";
 import billing from "./billing/billing.routes.js";
 import sources from "./sources/sources.routes.js";
@@ -25,6 +26,7 @@ router.use("/notifications", adminNotificationRoutes);
 router.use("/system", systemRoutes);
 router.use("/licenses", licenses);
 router.use("/partners", partners);
+router.use("/service-plans", servicePlansCatalog);
 router.use("/server-monitor", adminServerMonitor);
 router.use("/devices", devices);
 router.use("/billing", billing);

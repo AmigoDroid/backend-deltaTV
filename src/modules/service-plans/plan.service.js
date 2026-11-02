@@ -1,5 +1,5 @@
 import { QueryTypes } from "sequelize";
-import { sequelize, Partner, PartnerServicePlan, ContentPartnerTerms } from "../../db/models/index.js";
+import { sequelize, Partner, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { defaultTier, featuresFor, TIERS } from "./plan.rules.js";
@@ -17,10 +17,12 @@ export async function getServicePlan(partnerId,{fresh=false}={}){
   ]);
   if(!partner)throw notFound("Parceiro");
   const tier=record?.tier||defaultTier(partner.kind);
-  const features=featuresFor(tier,record||{});
+  const catalog = await ServicePlanCatalog.findByPk(tier,{raw:true});
+  if(!catalog)throw new AppError(409,"PLAN_MISSING","Plano técnico não encontrado no catálogo.");
+  const features=featuresFor(tier,record||{},catalog);
   // Compatibilidade: o controle antigo de prioridade do contrato continua funcionando.
   if(contract?.autoPriority===false)features.autoPriority=false;
-  return remember(partnerId,{tier,features,overrides:{
+  return remember(partnerId,{tier,planName:catalog.name,features,overrides:{
     maxServersOverride:record?.maxServersOverride??null,autoFailoverOverride:record?.autoFailoverOverride??null,
     autoPriorityOverride:record?.autoPriorityOverride??null,emailAlertsOverride:record?.emailAlertsOverride??null,
     detailedHistoryOverride:record?.detailedHistoryOverride??null,
@@ -31,7 +33,11 @@ export async function updateServicePlan(partnerId,body,actor){
   await sequelize.transaction(async t=>{
     const partner=await Partner.findByPk(partnerId,{transaction:t,lock:t.LOCK.UPDATE});
     if(!partner)throw notFound("Parceiro");
-    const features=featuresFor(body.tier,body);
+    const catalog=await ServicePlanCatalog.findByPk(body.tier,{transaction:t,lock:t.LOCK.UPDATE});
+    if(!catalog||!catalog.active)throw new AppError(409,"PLAN_UNAVAILABLE","Plano indisponível para novas atribuições.");
+    if(catalog.audience!=="both" && partner.kind!=="both" && catalog.audience!==partner.kind)
+      throw new AppError(422,"PLAN_AUDIENCE","Este plano não é permitido para esse tipo de parceiro.");
+    const features=featuresFor(body.tier,body,catalog);
     // Nunca fazer downgrade silencioso cortando URLs já usadas por clientes.
     const over=await sequelize.query(`SELECT c.id,c.code,count(pool.id)::integer AS count
       FROM partner_codes c JOIN code_server_pools pool ON pool.code_id=c.id

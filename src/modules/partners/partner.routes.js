@@ -80,7 +80,7 @@ router.get("/:id/service-plan",requirePermission("partners:read"),validate({para
   res.set("Cache-Control","no-store").json(await getServicePlan(req.valid.params.id)));
 const nullableBool=z.boolean().nullable();
 router.put("/:id/service-plan",requirePermission("partners:write"),validate({params:id,body:z.object({
-  tier:z.enum(["reseller_basic","partner_professional","partner_premium"]),
+  tier:z.string().regex(/^[a-z][a-z0-9_]{2,31}$/),
   maxServersOverride:z.number().int().min(1).max(8).nullable().optional(),
   autoFailoverOverride:nullableBool.optional(),autoPriorityOverride:nullableBool.optional(),
   emailAlertsOverride:nullableBool.optional(),detailedHistoryOverride:nullableBool.optional(),

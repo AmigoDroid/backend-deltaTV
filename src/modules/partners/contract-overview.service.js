@@ -1,5 +1,5 @@
 import { Op } from "sequelize";
-import { Partner, ContentPartnerTerms, PartnerServicePlan } from "../../db/models/index.js";
+import { Partner, ContentPartnerTerms, PartnerServicePlan, ServicePlanCatalog } from "../../db/models/index.js";
 import { defaultTier, featuresFor } from "../service-plans/plan.rules.js";
 
 /** Resumo financeiro paginado: 3 consultas por página, sem N+1 nem carregar todos os parceiros. */
@@ -24,6 +24,12 @@ export async function contractOverview({ q = "", kind = "", page = 1, pageSize =
     ContentPartnerTerms.findAll({ where: { partnerId: { [Op.in]: ids } }, raw: true }),
     PartnerServicePlan.findAll({ where: { partnerId: { [Op.in]: ids } }, raw: true }),
   ]);
+  const neededKeys = [...new Set(rows.map(p => plans.find(s => s.partnerId === p.id)?.tier || defaultTier(p.kind)))];
+  const catalogRows = await ServicePlanCatalog.findAll({
+    where:{key:{[Op.in]:neededKeys}},
+    attributes:["key","name","maxServers","autoFailover","autoPriority","emailAlerts","detailedHistory"],raw:true,
+  });
+  const catalogByKey = new Map(catalogRows.map(p => [p.key,p]));
   const termsById = new Map(terms.map((t) => [t.partnerId, t]));
   const plansById = new Map(plans.map((p) => [p.partnerId, p]));
   return {
@@ -31,10 +37,11 @@ export async function contractOverview({ q = "", kind = "", page = 1, pageSize =
       const terms = termsById.get(p.id);
       const service = plansById.get(p.id);
       const tier = service?.tier || defaultTier(p.kind);
-      const features = featuresFor(tier, service || {});
+      const base = catalogByKey.get(tier);
+      const features = base ? featuresFor(tier, service || {}, base) : {maxServers:1};
       return {
         ...p,
-        tier, features,
+        tier, tierName: base?.name || tier, features,
         contractMode: p.kind !== "reseller" ? (terms?.mode || "legacy") : null,
         fixedFeeCents: terms?.fixedFeeCents ?? null,
         activationLimit: terms?.activationLimit ?? null,

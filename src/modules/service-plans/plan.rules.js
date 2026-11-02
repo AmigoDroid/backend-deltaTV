@@ -5,9 +5,13 @@ export const TIERS = Object.freeze({
   partner_premium: Object.freeze({label:"Parceiro · Premium",maxServers:8,autoFailover:true,autoPriority:true,emailAlerts:true,detailedHistory:true}),
 });
 export const defaultTier = kind => kind === "reseller" ? "reseller_basic" : "partner_professional";
-export function featuresFor(tier, overrides={}) {
-  if(!Object.hasOwn(TIERS,tier)) throw new Error("Plano de recursos desconhecido");
-  const base=TIERS[tier];
+export function featuresFor(tier, overrides={}, catalog=null) {
+  if (!catalog && !Object.hasOwn(TIERS,tier)) throw new Error("Plano de recursos desconhecido");
+  const base = catalog ? {
+    label: catalog.name, maxServers: catalog.maxServers,
+    autoFailover: catalog.autoFailover, autoPriority: catalog.autoPriority,
+    emailAlerts: catalog.emailAlerts, detailedHistory: catalog.detailedHistory,
+  } : TIERS[tier];
   const result={...base};
   for(const [field,override] of Object.entries({
     maxServers:"maxServersOverride",autoFailover:"autoFailoverOverride",autoPriority:"autoPriorityOverride",

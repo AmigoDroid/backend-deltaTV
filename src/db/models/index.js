@@ -93,6 +93,18 @@ export const PartnerServicePlan = sequelize.define("PartnerServicePlan", {
   detailedHistoryOverride:{type:T.BOOLEAN},
 },{tableName:"partner_service_plans"});
 
+export const ServicePlanCatalog = sequelize.define("ServicePlanCatalog", {
+  key:{type:T.STRING(32),primaryKey:true,allowNull:false},
+  name:str(120,{allowNull:false}), description:str(500,{allowNull:false,defaultValue:""}),
+  audience:str(16,{allowNull:false}), monthlyPriceCents:{type:T.INTEGER,allowNull:true},
+  maxServers:int(1),autoFailover:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  autoPriority:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  emailAlerts:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  detailedHistory:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  active:{type:T.BOOLEAN,allowNull:false,defaultValue:true},
+  system:{type:T.BOOLEAN,allowNull:false,defaultValue:false},sortOrder:int(100),
+},{tableName:"service_plan_catalogs"});
+
 export const ContentPartnerTerms = sequelize.define("ContentPartnerTerms", {
   partnerId: {type:T.UUID,primaryKey:true},mode: str(24,{allowNull:false,defaultValue:"legacy"}),
   fixedFeeCents:int(0),activationLimit:{type:T.INTEGER},

@@ -24,3 +24,15 @@ test('para novos cadastros, revenda inicia no básico e parceiro no profissional
 test('limites inválidos são recusados',()=>{
  assert.throws(()=>featuresFor('partner_premium',{maxServersOverride:10}));assert.throws(()=>featuresFor('fake'));
 });
+
+test('plano personalizado aplica recursos próprios sem depender de TIERS fixo',()=>{
+ const catalog={name:'Parceiro Gold',maxServers:6,autoFailover:true,autoPriority:true,emailAlerts:true,detailedHistory:false};
+ const f=featuresFor('parceiro_gold',{},catalog);
+ assert.equal(f.maxServers,6);assert.equal(f.autoPriority,true);
+ assert.equal(f.label,'Parceiro Gold');
+});
+test('exceções individuais sobrepõem o plano personalizado',()=>{
+ const catalog={name:'Gold',maxServers:6,autoFailover:true,autoPriority:true,emailAlerts:true,detailedHistory:true};
+ const f=featuresFor('parceiro_gold',{maxServersOverride:2,autoFailoverOverride:false},catalog);
+ assert.equal(f.maxServers,2);assert.equal(f.autoFailover,false);assert.equal(f.autoPriority,false);
+});
