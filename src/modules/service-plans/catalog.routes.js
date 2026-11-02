@@ -17,11 +17,17 @@ const fields=z.object({
   autoFailover:z.boolean(),autoPriority:z.boolean(),
   emailAlerts:z.boolean(),detailedHistory:z.boolean(),
   sortOrder:z.number().int().min(0).max(9999),
-}).strict().refine((v)=>v.autoFailover||!v.autoPriority,{message:"Prioridade automática exige failover"});
+}).strict();
+// Zod v3: refine() retorna ZodEffects, que não suporta extend().
+// Estenda o objeto antes de aplicar a regra cruzada em cada operação.
+const validatePriority = (v) => v.autoFailover || !v.autoPriority;
+const priorityError = { message: "Prioridade automática exige failover", path: ["autoPriority"] };
+const createBody = fields.extend({ key }).refine(validatePriority, priorityError);
+const updateBody = fields.extend({ active: z.boolean() }).refine(validatePriority, priorityError);
 router.get("/",async(_req,res)=>res.set("Cache-Control","no-store").json({data:await listCatalog()}));
-router.post("/",validate({body:fields.extend({key})}),async(req,res)=>
+router.post("/",validate({body:createBody}),async(req,res)=>
   res.status(201).json(await createCatalogPlan(req.valid.body,actorOf(req))));
-router.put("/:key",validate({params,body:fields.extend({active:z.boolean()})}),async(req,res)=>
+router.put("/:key",validate({params,body:updateBody}),async(req,res)=>
   res.json(await updateCatalogPlan(req.valid.params.key,req.valid.body,actorOf(req))));
 router.delete("/:key",validate({params}),async(req,res)=>
   res.json(await removeCatalogPlan(req.valid.params.key,actorOf(req))));
