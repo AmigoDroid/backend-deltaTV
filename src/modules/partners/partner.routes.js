@@ -14,6 +14,7 @@ import { DEFAULT_TEMPLATE } from "../providers/playlist-url.js";
 import { codeCheckLimiter } from "../../middleware/security.js";
 import * as commerce from "../content-commerce/commerce.service.js";
 import {getServicePlan,updateServicePlan} from "../service-plans/plan.service.js";
+import { contractOverview } from "./contract-overview.service.js";
 
 import { partnerDeletionPreview, deletePartnerAsSuper } from "../admin-deletion.service.js";
 
@@ -55,6 +56,10 @@ router.get(
   validate({ query: z.object({ ...pageQuery, q: z.string().max(100).optional(), status: z.enum(["pending", "active", "expired", "suspended", "blocked", "cancelled"]).optional(), kind: z.enum(["content", "reseller"]).optional() }) }),
   async (req, res) => res.json(await svc.listPartners(req.valid.query)),
 );
+// Central comercial do Superadmin: paginação no banco e preço real negociado por parceiro.
+router.get("/contract-overview", requirePermission("override"), validate({ query: z.object({
+  ...pageQuery, q: z.string().max(100).optional(), kind: z.enum(["content", "reseller"]).optional(),
+}) }), async (req, res) => res.set("Cache-Control", "no-store").json(await contractOverview(req.valid.query)));
 router.post("/", requirePermission("partners:write"), validate({ body: createBody }), async (req, res) => {
   const p = await svc.createPartner(req.valid.body, actorOf(req));
   res.status(201).json(await svc.getPartner(p.id));
