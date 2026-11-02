@@ -28,25 +28,25 @@ export async function serversForCode(code, { bypassCache = false } = {}) {
     // Compatibilidade com códigos antigos sem provider_id: esses códigos já aceitavam qualquer servidor
     // ativo da própria parceria. Não alterar esse comportamento silenciosamente.
     const legacy=await PartnerProvider.findAll({where:{partnerId:code.partnerId,status:"active"},order:[["priority","ASC"],["createdAt","ASC"]],raw:true});
-    const allowed=plan.features.autoFailover ? legacy.slice(0,plan.features.maxServers) : legacy.slice(0,1);
+    const allowed=plan.features.autoFailover ? (plan.features.maxServers === null ? legacy : legacy.slice(0,plan.features.maxServers)) : legacy.slice(0,1);
     save(code.id,allowed);return allowed;
   }
   const rows = await PartnerProvider.findAll({where:{id:{[Op.in]:ids},partnerId:code.partnerId,status:"active"},raw:true});
-  const allowed=plan.features.autoFailover ? rows.slice(0,plan.features.maxServers) : rows.filter(s=>s.id===code.providerId).slice(0,1);
+  const allowed=plan.features.autoFailover ? (plan.features.maxServers === null ? rows : rows.slice(0,plan.features.maxServers)) : rows.filter(s=>s.id===code.providerId).slice(0,1);
   save(code.id,allowed);
   return allowed;
 }
-/** Atualização atômica; 1–8 servidores ativos e da mesma parceria, sem duplicidades. */
+/** Atualização atômica; URLs ativas da mesma parceria, sem duplicidades. */
 export async function setCodeServers(partnerId, codeId, ids, actor) {
-  if (!Array.isArray(ids) || ids.length < 1 || ids.length > 8 || new Set(ids).size !== ids.length) {
-    throw new AppError(422,"INVALID_SERVER_POOL","Escolha entre 1 e 8 servidores diferentes.");
+  if (!Array.isArray(ids) || ids.length < 1 || new Set(ids).size !== ids.length) {
+    throw new AppError(422,"INVALID_SERVER_POOL","Escolha pelo menos um servidor, sem duplicidades.");
   }
   const result = await sequelize.transaction(async (t) => {
     // Mesmo lock que updateServicePlan: downgrade e seleção de pool não competem entre si.
     const parent=await sequelize.models.Partner.findByPk(partnerId,{transaction:t,lock:t.LOCK.UPDATE});
     if(!parent)throw notFound("Parceiro");
     const plan=await getServicePlan(partnerId,{fresh:true});
-    if(ids.length>plan.features.maxServers)throw new AppError(403,"PLAN_SERVER_LIMIT",`Seu plano permite até ${plan.features.maxServers} URL(s) por código.`);
+    if(plan.features.maxServers !== null && ids.length>plan.features.maxServers)throw new AppError(403,"PLAN_SERVER_LIMIT",`Seu plano permite até ${plan.features.maxServers} URL(s) por código.`);
     if(ids.length>1 && !plan.features.autoFailover)throw new AppError(403,"PLAN_FAILOVER_DISABLED","O seu plano não permite failover automático.");
     const code = await PartnerCode.findOne({where:{id:codeId,partnerId},transaction:t,lock:t.LOCK.UPDATE});
     if (!code) throw notFound("Código");

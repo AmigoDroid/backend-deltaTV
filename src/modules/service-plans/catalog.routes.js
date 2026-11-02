@@ -13,7 +13,7 @@ const fields=z.object({
   description:z.string().trim().max(500).default(""),
   audience:z.enum(["reseller","content","both"]),
   monthlyPriceCents:z.number().int().min(0).max(100000000).nullable(),
-  maxServers:z.number().int().min(1).max(8),
+  maxServers:z.number().int().min(1).max(2147483647).nullable(),
   autoFailover:z.boolean(),autoPriority:z.boolean(),
   emailAlerts:z.boolean(),detailedHistory:z.boolean(),
   sortOrder:z.number().int().min(0).max(9999),

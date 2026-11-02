@@ -17,7 +17,12 @@ export function featuresFor(tier, overrides={}, catalog=null) {
     maxServers:"maxServersOverride",autoFailover:"autoFailoverOverride",autoPriority:"autoPriorityOverride",
     emailAlerts:"emailAlertsOverride",detailedHistory:"detailedHistoryOverride",
   })) if(overrides[override]!==null && overrides[override]!==undefined) result[field]=overrides[override];
-  if(!Number.isInteger(result.maxServers)||result.maxServers<1||result.maxServers>8) throw new Error("Limite inválido");
+  // null representa plano sem limite; a exceção 0 também significa sem limite.
+  // Os padrões Básico/Profissional/Premium continuam com suas cotas negociadas.
+  if (result.maxServers === 0) result.maxServers = null;
+  if (result.maxServers !== null && (!Number.isInteger(result.maxServers) || result.maxServers < 1 || result.maxServers > 2147483647)) {
+    throw new Error("Limite de URLs inválido");
+  }
   if(!result.autoFailover)result.autoPriority=false;
   return result;
 }

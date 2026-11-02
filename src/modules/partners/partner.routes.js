@@ -29,8 +29,8 @@ const commercial = z.object({
   contactPhone: z.string().max(40).nullable().optional(),
   billingModel: z.enum(["none", "fixed", "per_device", "tiered"]), // none = sem mensalidade
   monthlyFeeCents: cents.optional(), perDeviceCents: cents.optional(), minFeeCents: cents.optional(),
-  tiers: z.array(z.object({ upTo: z.number().int().min(1).nullable(), amountCents: cents })).max(20).optional(),
-  deviceLimit: z.number().int().min(0).nullable().optional(),
+  tiers: z.array(z.object({ upTo: z.number().int().min(1).max(2147483647).nullable(), amountCents: cents })).max(20).optional(),
+  deviceLimit: z.number().int().min(0).max(2147483647).nullable().optional(),
   dueDay: z.number().int().min(1).max(28).optional(),
   graceDays: z.number().int().min(0).max(90).optional(),
   suspendPolicy: z.enum(["auto_after_grace", "manual"]).optional(),
@@ -81,7 +81,8 @@ router.get("/:id/service-plan",requirePermission("partners:read"),validate({para
 const nullableBool=z.boolean().nullable();
 router.put("/:id/service-plan",requirePermission("partners:write"),validate({params:id,body:z.object({
   tier:z.string().regex(/^[a-z][a-z0-9_]{2,31}$/),
-  maxServersOverride:z.number().int().min(1).max(8).nullable().optional(),
+  // null = herdar do plano; 0 = sem limite; número positivo = limite negociado.
+  maxServersOverride:z.number().int().min(0).max(2147483647).nullable().optional(),
   autoFailoverOverride:nullableBool.optional(),autoPriorityOverride:nullableBool.optional(),
   emailAlertsOverride:nullableBool.optional(),detailedHistoryOverride:nullableBool.optional(),
 }).strict()}),async(req,res)=>res.json(await updateServicePlan(req.valid.params.id,req.valid.body,actorOf(req))));
@@ -123,7 +124,7 @@ for (const action of ["suspend", "block", "reactivate", "cancel"]) {
 const codeBody = z.object({
   code: z.string().trim().min(4).max(12).optional(),
   label: z.string().max(120).optional(),
-  maxActivations: z.number().int().min(1).nullable().optional(),
+  maxActivations: z.number().int().min(1).max(2147483647).nullable().optional(),
   expiresAt: z.coerce.date().nullable().optional(),
   // Servidor do parceiro para o qual o código aponta. Omitido: usa o único servidor do parceiro (se houver só um).
   providerId: z.string().uuid().nullable().optional(),

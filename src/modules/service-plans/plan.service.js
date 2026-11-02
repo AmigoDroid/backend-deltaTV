@@ -39,12 +39,14 @@ export async function updateServicePlan(partnerId,body,actor){
       throw new AppError(422,"PLAN_AUDIENCE","Este plano não é permitido para esse tipo de parceiro.");
     const features=featuresFor(body.tier,body,catalog);
     // Nunca fazer downgrade silencioso cortando URLs já usadas por clientes.
-    const over=await sequelize.query(`SELECT c.id,c.code,count(pool.id)::integer AS count
-      FROM partner_codes c JOIN code_server_pools pool ON pool.code_id=c.id
-      WHERE c.partner_id=:partnerId AND c.status='active'
-      GROUP BY c.id,c.code HAVING count(pool.id)>:maxServers LIMIT 1`,{
-      replacements:{partnerId,maxServers:features.maxServers},type:QueryTypes.SELECT,transaction:t});
-    if(over.length)throw new AppError(409,"SERVER_POOL_EXCEEDS_PLAN",`O código ${over[0].code} tem ${over[0].count} URLs. Reduza para ${features.maxServers} antes de alterar o plano.`);
+    if (features.maxServers !== null) {
+      const over=await sequelize.query(`SELECT c.id,c.code,count(pool.id)::integer AS count
+        FROM partner_codes c JOIN code_server_pools pool ON pool.code_id=c.id
+        WHERE c.partner_id=:partnerId AND c.status='active'
+        GROUP BY c.id,c.code HAVING count(pool.id)>:maxServers LIMIT 1`,{
+        replacements:{partnerId,maxServers:features.maxServers},type:QueryTypes.SELECT,transaction:t});
+      if(over.length)throw new AppError(409,"SERVER_POOL_EXCEEDS_PLAN",`O código ${over[0].code} tem ${over[0].count} URLs. Reduza para ${features.maxServers} antes de alterar o plano.`);
+    }
     const [row]=await PartnerServicePlan.findOrCreate({where:{partnerId},defaults:{partnerId,tier:defaultTier(partner.kind)},transaction:t});
     await row.update({tier:body.tier,maxServersOverride:body.maxServersOverride??null,autoFailoverOverride:body.autoFailoverOverride??null,
       autoPriorityOverride:body.autoPriorityOverride??null,emailAlertsOverride:body.emailAlertsOverride??null,

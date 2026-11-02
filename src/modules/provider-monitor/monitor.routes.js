@@ -55,7 +55,7 @@ r.patch("/servers/:id",validate({params:z.object({id:z.string().uuid()}),body:sr
 r.post("/codes",validate({body:z.object({code:z.string().trim().min(4).max(12).optional(),label:z.string().trim().max(120).optional(),providerId:z.string().uuid()})}),async(req,res)=>res.status(201).json(await partners.createCode(req.user.partnerId,req.valid.body,actorOf(req))));
 r.post("/codes/:id/revoke",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{await partners.revokeCode(req.user.partnerId,req.valid.params.id,actorOf(req));res.status(204).end();});
 r.put("/codes/:id/servers",validate({params:z.object({id:z.string().uuid()}),
-  body:z.object({serverIds:z.array(z.string().uuid()).min(1).max(8)})}),
+  body:z.object({serverIds:z.array(z.string().uuid()).min(1)})}),
   async(req,res)=>res.json(await setCodeServers(req.user.partnerId,req.valid.params.id,req.valid.body.serverIds,actorOf(req))));
 r.patch("/codes/:id",validate({params:z.object({id:z.string().uuid()}),body:z.object({providerId:z.string().uuid()})}),async(req,res)=>{const result=await partners.updateCode(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req));invalidateServerPools(req.valid.params.id);res.json(result)});
 export default r;

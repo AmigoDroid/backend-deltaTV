@@ -22,7 +22,7 @@ test('para novos cadastros, revenda inicia no básico e parceiro no profissional
  assert.equal(defaultTier('reseller'),'reseller_basic');assert.equal(defaultTier('content'),'partner_professional');
 });
 test('limites inválidos são recusados',()=>{
- assert.throws(()=>featuresFor('partner_premium',{maxServersOverride:10}));assert.throws(()=>featuresFor('fake'));
+ assert.throws(()=>featuresFor('partner_premium',{maxServersOverride:-1}));assert.throws(()=>featuresFor('fake'));
 });
 
 test('plano personalizado aplica recursos próprios sem depender de TIERS fixo',()=>{
@@ -35,4 +35,17 @@ test('exceções individuais sobrepõem o plano personalizado',()=>{
  const catalog={name:'Gold',maxServers:6,autoFailover:true,autoPriority:true,emailAlerts:true,detailedHistory:true};
  const f=featuresFor('parceiro_gold',{maxServersOverride:2,autoFailoverOverride:false},catalog);
  assert.equal(f.maxServers,2);assert.equal(f.autoFailover,false);assert.equal(f.autoPriority,false);
+});
+
+
+test('planos personalizados aceitam mais de oito URLs',()=>{
+  const p={name:'Gold',maxServers:150,autoFailover:true,autoPriority:true,emailAlerts:true,detailedHistory:true};
+  assert.equal(featuresFor('gold',{},p).maxServers,150);
+  assert.equal(featuresFor('gold',{maxServersOverride:600},p).maxServers,600);
+});
+test('plano ilimitado e exceção de parceiro ilimitada',()=>{
+  const p={name:'Ilimitado',maxServers:null,autoFailover:true,autoPriority:true,emailAlerts:true,detailedHistory:true};
+  assert.equal(featuresFor('unlimited',{},p).maxServers,null);
+  assert.equal(featuresFor('partner_professional',{maxServersOverride:0}).maxServers,null);
+  assert.equal(featuresFor('unlimited',{maxServersOverride:3},p).maxServers,3);
 });

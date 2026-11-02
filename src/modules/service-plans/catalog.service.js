@@ -38,9 +38,9 @@ async function validatePlanChanges(key, body, transaction) {
     JOIN partner_codes c ON c.partner_id=p.id AND c.status='active'
     JOIN code_server_pools pool ON pool.code_id=c.id
     WHERE coalesce(s.tier, CASE WHEN p.kind='reseller' THEN 'reseller_basic' ELSE 'partner_professional' END)=:key
-      AND coalesce(s.max_servers_override,:limit) < 8
+      AND (s.max_servers_override > 0 OR (s.max_servers_override IS NULL AND :limit IS NOT NULL))
     GROUP BY c.code,c.id,s.max_servers_override
-    HAVING count(pool.id)>coalesce(s.max_servers_override,:limit)
+    HAVING count(pool.id)>coalesce(nullif(s.max_servers_override,0),:limit)
     LIMIT 1`, { replacements:{key,limit:body.maxServers}, type:QueryTypes.SELECT, transaction });
   if (tooMany.length) throw new AppError(409,"SERVER_POOL_EXCEEDS_PLAN",`O código ${tooMany[0].code} possui mais URLs que o novo limite. Ajuste antes de salvar.`);
 }

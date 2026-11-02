@@ -2,7 +2,7 @@
 
 ## O que foi alterado
 
-- Um **código de parceria** pode ter de 1 a 8 **servidores ativos do mesmo parceiro** (`code_server_pools`). Servidores são cadastros `partner_providers`, não URLs arbitrárias da TV.
+- Um **código de parceria** pode ter múltiplos **servidores ativos do mesmo parceiro**, limitados pelo plano configurado (inclusive sem limite comercial) (`code_server_pools`). Servidores são cadastros `partner_providers`, não URLs arbitrárias da TV.
 - No portal do parceiro (`parceiro.deltatv.com.br`), em **Códigos → Configurar URLs**, escolha os servidores daquela lista. A primeira URL selecionada será a referência principal para o código.
 - Quando a TV solicita `GET /api/v1/client/xtream`, ou usa as rotas de catálogo Xtream e playlist, a API escolhe o servidor saudável mais rápido **medido da VPS** entre os permitidos para o código. O código e a licença não mudam e **não há atualizações em massa de ativações**.
 - URLs alternativas são usadas somente após a API validar que **usuário/senha daquela ativação** funcionam na URL alternativa. URLs que não aceitam as credenciais são ignoradas. A autenticação não faz download de catálogo nem de M3U.

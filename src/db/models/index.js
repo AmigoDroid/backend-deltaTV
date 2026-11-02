@@ -97,7 +97,7 @@ export const ServicePlanCatalog = sequelize.define("ServicePlanCatalog", {
   key:{type:T.STRING(32),primaryKey:true,allowNull:false},
   name:str(120,{allowNull:false}), description:str(500,{allowNull:false,defaultValue:""}),
   audience:str(16,{allowNull:false}), monthlyPriceCents:{type:T.INTEGER,allowNull:true},
-  maxServers:int(1),autoFailover:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  maxServers:{type:T.INTEGER,allowNull:true,defaultValue:1},autoFailover:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   autoPriority:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   emailAlerts:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   detailedHistory:{type:T.BOOLEAN,allowNull:false,defaultValue:false},

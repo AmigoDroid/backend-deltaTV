@@ -25,7 +25,7 @@ Um plano em uso não pode ser excluído; pode ser desativado para novas atribui�
 
 ## Limites / segurança
 
-- Backend valida limites de 1 a 8 URLs por código, tipos elegíveis, ativação de plano e privilégios.
+- Backend valida limites positivos personalizados ou plano com URLs ilimitadas; mantém validações de tipo, ativação de plano e privilégios. Requer a migration `20261118000001-unlimited-plan-urls.cjs`.
 - Contratos existentes permanecem vinculados à mesma chave. O cache é invalidado quando um plano muda.
 - A exclusão usa FK com `ON DELETE RESTRICT`; não há exclusão em cascata de parceiros/ativação.
 - Em múltiplos workers PM2, a invalidação de cache é local ao processo. Recomenda-se uma instância do backend para sua VPS, ou invalidação distribuída no futuro.
