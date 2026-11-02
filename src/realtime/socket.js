@@ -37,8 +37,12 @@ export function broadcastDevicePresence(online, windowSeconds) {
 }
 function broadcastPresence(partnerId) {
   if (!partnerId) return;
-  // Apenas equipe administrativa recebe o status de conectividade das revendas.
-  for (const peer of peers) if (peer.user.role !== "partner") emit(peer.socket, { type: "partner-presence", partnerId, online: presence(partnerId), onlineCount: onlinePartnerCount() });
+  const online = presence(partnerId);
+  const lastDisconnectedAt = online ? null : new Date().toISOString();
+  // O horário de desconexão viaja só como metadado, sem informações sensíveis.
+  for (const peer of peers) if (peer.user.role !== "partner") emit(peer.socket, {
+    type: "partner-presence", partnerId, online, onlineCount: onlinePartnerCount(), lastDisconnectedAt,
+  });
 }
 async function touch(user) {
   if (user.role !== "partner") return;
@@ -62,7 +66,16 @@ export function attachRealtime(server) {
     const timeout = setTimeout(() => { if (!peer) socket.close(1008, "Auth required"); }, 5000);
     const close = () => {
       clearTimeout(timeout);
-      if (peer) { peers.delete(peer); broadcastPresence(peer.user.partnerId); peer = null; }
+      if (peer) {
+        const user = peer.user;
+        peers.delete(peer);
+        if (user.role === "partner" && !presence(user.partnerId)) {
+          // Uma escrita por desconexão final: permite estimar o tempo offline após recarregar a página.
+          void touch(user);
+        }
+        broadcastPresence(user.partnerId);
+        peer = null;
+      }
     };
     socket.on("message", async (raw) => {
       let packet;
