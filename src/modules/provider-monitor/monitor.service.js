@@ -1,13 +1,14 @@
 import http from "node:http";
 import https from "node:https";
 import { Op } from "sequelize";
-import { Partner, PartnerCode, PartnerProvider, ProviderHealth, CodeFailover, CodeServerPool, ContentPartnerTerms } from "../../db/models/index.js";
+import { Partner, PartnerCode, PartnerProvider, ProviderHealth, CodeFailover, CodeServerPool, ProviderHealthEvent } from "../../db/models/index.js";
 import { assertPublicUrl, safeLookup } from "../../shared/ssrf.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { clearResolutionCache } from "./resolve.service.js";
 import { sendMail } from "../mail/mail.transport.js";
 import { env } from "../../config/env.js";
 import { broadcastChange } from "../../realtime/socket.js";
+import {getServicePlan} from "../service-plans/plan.service.js";
 
 const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
 const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",60,30,3600);
@@ -15,7 +16,7 @@ const TIMEOUT = int("PROVIDER_MONITOR_TIMEOUT_MS",3000,800,5000);
 const SLOW = int("PROVIDER_MONITOR_SLOW_MS",2500,300,5000);
 const CONCURRENCY = int("PROVIDER_MONITOR_CONCURRENCY",4,1,8);
 const MAX_PER_CYCLE = int("PROVIDER_MONITOR_MAX_PER_CYCLE",60,5,250);
-let timer, running=false, cursor=0, alertRunning=false, cycles=0;
+let timer, running=false, cursor=0, alertRunning=false, cycles=0, lastCleanup=0;
 
 /** HEAD/GET de baixo custo, sem seguir redirect, sem guardar o corpo e com proteção SSRF. */
 export async function probeServer(raw) {
@@ -53,6 +54,11 @@ async function updateOne(provider) {
     const latencyChanged = r.good && oldLatency != null &&
       Math.abs(r.latencyMs - oldLatency) >= Math.max(250, oldLatency * 0.4);
     await h.update({state,latencyMs:r.latencyMs,lastCheckedAt:new Date(),lastGoodAt:r.good?new Date():h.lastGoodAt,failures,successes,lastError:r.error});
+    if(stateChanged){
+      // Registro de incidente desacoplado: falha de telemetria não derruba o monitor.
+      try{await ProviderHealthEvent.create({providerId:provider.id,state,latencyMs:r.latencyMs,note:r.error,occurredAt:new Date()});}
+      catch(error){console.warn("[provider-monitor] histórico",error.message)}
+    }
     return { stateChanged, notify: stateChanged || latencyChanged };
   }catch(e){ console.warn("[provider-monitor] sondagem",provider.id,e.message);return { stateChanged:false, notify:false }; }
 }
@@ -89,6 +95,12 @@ export async function monitorOnce() {
     if (changedState) { clearMirrorAuth();clearResolutionCache(); }
     // Um único aviso por parceria e rodada, nunca um por TV nem por usuário.
     for (const partnerId of changedPartnerIds) broadcastChange({ partnerId, topic: "server-health" });
+    // Retenção em 30 dias. Uma exclusão por dia em índice, nunca por sondagem.
+    if(Date.now()-lastCleanup>86_400_000){
+      lastCleanup=Date.now();
+      void ProviderHealthEvent.destroy({where:{occurredAt:{[Op.lt]:new Date(Date.now()-30*86_400_000)}}})
+        .catch(e=>console.warn("[provider-monitor] limpeza histórico",e.message));
+    }
     // E-mail e milhares de códigos NÃO bloqueiam o loop de sondagem.
     if(++cycles % 3 === 0 && !alertRunning) {
       alertRunning=true;
@@ -126,6 +138,7 @@ async function alertOutages() {
     if(!unavailable || state?.outageNotifiedAt)continue;
     if(emails>=20){console.warn("[provider-monitor] lote de alertas limitado; restantes na próxima rodada");break;}
     if(!env.mail.configured)continue;
+    if(!(await getServicePlan(code.partnerId)).features.emailAlerts)continue;
     const partner=await Partner.findByPk(code.partnerId,{attributes:["contactEmail"]});
     if(partner?.contactEmail){
       emails++;
@@ -151,15 +164,15 @@ export async function overview(partnerId) {
   const states=providers.length?await ProviderHealth.findAll({where:{providerId:{[Op.in]:providers.map(p=>p.id)}},raw:true}):[];
   const byId=new Map(states.map(s=>[s.providerId,s]));
   const totalCodes=await PartnerCode.count({where:{partnerId}});
-  const terms=await ContentPartnerTerms.findByPk(partnerId,{attributes:["autoPriority"],raw:true});
-  const automated=terms?.autoPriority!==false;
+  const servicePlan=await getServicePlan(partnerId);
+  const automated=servicePlan.features.autoPriority;
   const effectiveOrder=[...providers].sort((a,b)=>{
     const healthRank=p=>byId.get(p.id)?.state==="healthy"?0:byId.get(p.id)?.state==="down"?2:1;
     return healthRank(a)-healthRank(b) || (automated?(byId.get(a.id)?.latencyMs??1e9)-(byId.get(b.id)?.latencyMs??1e9)||a.priority-b.priority
       :a.priority-b.priority||(byId.get(a.id)?.latencyMs??1e9)-(byId.get(b.id)?.latencyMs??1e9));
   });
   const ranks=new Map(effectiveOrder.map((p,i)=>[p.id,i+1]));
-  return {autoPriority:automated,providers:providers.map(p=>({id:p.id,name:p.name,baseUrl:p.baseUrl,priority:p.priority,effectivePriority:ranks.get(p.id),status:p.status,
+  return {autoPriority:automated,servicePlan:{tier:servicePlan.tier,features:servicePlan.features},providers:providers.map(p=>({id:p.id,name:p.name,baseUrl:p.baseUrl,priority:p.priority,effectivePriority:ranks.get(p.id),status:p.status,
     health:byId.get(p.id)?{state:byId.get(p.id).state,latencyMs:byId.get(p.id).latencyMs,lastCheckedAt:byId.get(p.id).lastCheckedAt,
       lastGoodAt:byId.get(p.id).lastGoodAt,lastError:byId.get(p.id).lastError}:null})),
     totalCodes, codes:[],

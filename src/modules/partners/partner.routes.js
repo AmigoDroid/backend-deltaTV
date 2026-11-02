@@ -13,6 +13,7 @@ import * as stock from "../stock/stock.service.js";
 import { DEFAULT_TEMPLATE } from "../providers/playlist-url.js";
 import { codeCheckLimiter } from "../../middleware/security.js";
 import * as commerce from "../content-commerce/commerce.service.js";
+import {getServicePlan,updateServicePlan} from "../service-plans/plan.service.js";
 
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
@@ -58,6 +59,17 @@ router.post("/", requirePermission("partners:write"), validate({ body: createBod
 });
 router.get("/codes/check", requirePermission("partners:read"), codeCheckLimiter, validate({ query: z.object({ code: z.string().max(40) }) }), async (req, res) => res.json(await svc.checkCode(req.valid.query.code)));
 router.get("/:id", requirePermission("partners:read"), validate({ params: id }), async (req, res) => res.json(await svc.getPartner(req.valid.params.id)));
+// Capacidade técnica por plano; condições financeiras continuam independentes.
+router.get("/:id/service-plan",requirePermission("partners:read"),validate({params:id}),async(req,res)=>
+  res.set("Cache-Control","no-store").json(await getServicePlan(req.valid.params.id)));
+const nullableBool=z.boolean().nullable();
+router.put("/:id/service-plan",requirePermission("partners:write"),validate({params:id,body:z.object({
+  tier:z.enum(["reseller_basic","partner_professional","partner_premium"]),
+  maxServersOverride:z.number().int().min(1).max(8).nullable().optional(),
+  autoFailoverOverride:nullableBool.optional(),autoPriorityOverride:nullableBool.optional(),
+  emailAlertsOverride:nullableBool.optional(),detailedHistoryOverride:nullableBool.optional(),
+}).strict()}),async(req,res)=>res.json(await updateServicePlan(req.valid.params.id,req.valid.body,actorOf(req))));
+
 // Condições comerciais exclusivas do parceiro de conteúdo. Nunca permitir que o parceiro altere o próprio contrato.
 router.get("/:id/commercial",requirePermission("partners:read"),validate({params:id}),async(req,res)=>res.set("Cache-Control","no-store").json(await commerce.dashboard(req.valid.params.id)));
 router.put("/:id/commercial",requirePermission("billing:write"),validate({params:id,body:z.object({

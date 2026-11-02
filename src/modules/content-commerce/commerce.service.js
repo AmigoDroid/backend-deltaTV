@@ -1,6 +1,7 @@
 import { Op, QueryTypes } from "sequelize";
 import { sequelize, Partner, PartnerCode, Activation, ContentPartnerTerms, ContentCodeBalance, ContentActivationCharge } from "../../db/models/index.js";
 import { clearResolutionCache } from "../provider-monitor/resolve.service.js";
+import {invalidatePlan} from "../service-plans/plan.service.js";
 import { clearContractAccessCache } from "../access/access.service.js";
 import { creditMove, creditBalanceOf } from "../credits/credit-ledger.js";
 import { AppError, notFound } from "../../shared/errors.js";
@@ -51,6 +52,7 @@ export async function saveTerms(partnerId,input,actor) {
     await audit({actor,action:"content.terms.update",entityType:"partner",entityId:partnerId,metadata:{before,after:termsOf(row)},transaction:t});
     return termsOf(row);
   });
+  invalidatePlan(partnerId);
   clearResolutionCache();
   clearContractAccessCache();
   return result;

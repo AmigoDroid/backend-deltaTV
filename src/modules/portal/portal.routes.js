@@ -26,6 +26,7 @@ import { countOnlineForPartner } from "../devices/presence.js";
 import { partnerRouter as webAccessRoutes } from "../web/web.routes.js";
 import { partnerRouter as appDownloadsRoutes } from "../downloads/download.routes.js";
 import { env } from "../../config/env.js";
+import {getServicePlan} from "../service-plans/plan.service.js";
 
 /**
  * Portal do parceiro (/api/v1/partner). ISOLAMENTO: o partnerId vem EXCLUSIVAMENTE do token do usuário
@@ -35,6 +36,7 @@ const router = Router();
 router.use(authenticate, requirePartnerRole);
 router.use("/notifications", partnerNotificationRoutes);
 router.use("/server-monitor", resellerServerMonitor);
+router.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
 router.use("/pix", pixRoutes);
 router.use("/credits", creditRoutes);
 router.use("/clients", clientsRoutes);

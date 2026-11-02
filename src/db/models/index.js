@@ -83,6 +83,16 @@ export const PartnerCode = def("PartnerCode", "partner_codes", {
   licenseMonths: { type: T.INTEGER },
 });
 
+export const PartnerServicePlan = sequelize.define("PartnerServicePlan", {
+  partnerId:{type:T.UUID,primaryKey:true},
+  tier:str(32,{allowNull:false}),
+  maxServersOverride:{type:T.INTEGER},
+  autoFailoverOverride:{type:T.BOOLEAN},
+  autoPriorityOverride:{type:T.BOOLEAN},
+  emailAlertsOverride:{type:T.BOOLEAN},
+  detailedHistoryOverride:{type:T.BOOLEAN},
+},{tableName:"partner_service_plans"});
+
 export const ContentPartnerTerms = sequelize.define("ContentPartnerTerms", {
   partnerId: {type:T.UUID,primaryKey:true},mode: str(24,{allowNull:false,defaultValue:"legacy"}),
   fixedFeeCents:int(0),activationLimit:{type:T.INTEGER},
@@ -113,6 +123,10 @@ export const ProviderHealth = def("ProviderHealth", "provider_health", {
   state: str(20, { allowNull: false, defaultValue: "unknown" }), latencyMs: { type: T.INTEGER },
   lastCheckedAt: ts(), lastGoodAt: ts(), failures: int(0), successes: int(0), lastError: str(220),
 });
+export const ProviderHealthEvent = def("ProviderHealthEvent", "provider_health_events", {
+  providerId:{type:T.UUID,allowNull:false}, state:str(20,{allowNull:false}),
+  latencyMs:{type:T.INTEGER},note:str(220),occurredAt:ts(),
+},{timestamps:false});
 export const CodeFailover = def("CodeFailover", "code_failovers", {
   codeId: { type: T.UUID, allowNull: false, unique: true }, originalProviderId: { type: T.UUID },
   currentProviderId: { type: T.UUID }, outageNotifiedAt: ts(), lastSwitchedAt: ts(),

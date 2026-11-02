@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { authenticate,requirePartnerRole } from "../../middleware/authenticate.js";
-import { Partner, PartnerCode, Activation } from "../../db/models/index.js";
+import { Partner, PartnerCode, Activation, PartnerProvider, ProviderHealthEvent } from "../../db/models/index.js";
 import { Op, fn, col } from "sequelize";
 import { listCodeServerIds } from "./code-pool.service.js";
 import { AppError } from "../../shared/errors.js";
@@ -12,11 +12,21 @@ import * as partners from "../partners/partner.service.js";
 import { overview } from "./monitor.service.js";
 import * as commerce from "../content-commerce/commerce.service.js";
 import * as devices from "../devices/device.service.js";
+import { getServicePlan } from "../service-plans/plan.service.js";
 import { setCodeServers, invalidateServerPools } from "./code-pool.service.js";
 const r=Router();
 r.use(authenticate,requirePartnerRole);
 r.use(async(req,_res,next)=>{const p=await Partner.findByPk(req.user.partnerId);if(!p|| !["content","both"].includes(p.kind)) throw new AppError(403,"FORBIDDEN","Portal exclusivo de parceiros de conteúdo.");next();});
 r.get("/overview",async(req,res)=>res.set("Cache-Control","no-store").json(await overview(req.user.partnerId)));
+r.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
+r.get("/servers/:id/history",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{
+  const plan=await getServicePlan(req.user.partnerId);
+  if(!plan.features.detailedHistory)throw new AppError(403,"PLAN_HISTORY_REQUIRED","Histórico detalhado disponível no Premium.");
+  const provider=await PartnerProvider.findOne({where:{id:req.valid.params.id,partnerId:req.user.partnerId},attributes:["id"]});
+  if(!provider)throw new AppError(404,"NOT_FOUND","Servidor não encontrado.");
+  const events=await ProviderHealthEvent.findAll({where:{providerId:provider.id},order:[["occurredAt","DESC"]],limit:50,raw:true});
+  res.set("Cache-Control","no-store").json({data:events});
+});
 r.get("/commercial",async(req,res)=>res.set("Cache-Control","no-store").json(await commerce.dashboard(req.user.partnerId)));
 r.get("/devices",validate({query:z.object({codeId:z.string().uuid().optional(),q:z.string().max(40).optional(),page:z.coerce.number().int().min(1).default(1),pageSize:z.coerce.number().int().min(1).max(50).default(20)})}),
   async(req,res)=>res.set("Cache-Control","no-store").json(await commerce.listDevices(req.user.partnerId,req.valid.query)));

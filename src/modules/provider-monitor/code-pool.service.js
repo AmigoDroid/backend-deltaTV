@@ -1,8 +1,9 @@
 import { Op } from "sequelize";
-import { sequelize, PartnerCode, PartnerProvider, CodeServerPool, ProviderHealth, ContentPartnerTerms } from "../../db/models/index.js";
+import { sequelize, PartnerCode, PartnerProvider, CodeServerPool, ProviderHealth } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
+import {getServicePlan} from "../service-plans/plan.service.js";
 
 const TTL = 30_000;
 const MAX_CACHE = 1500;
@@ -20,17 +21,20 @@ function save(key, rows) {
 export async function serversForCode(code, { bypassCache = false } = {}) {
   const hit = poolCache.get(code.id);
   if (!bypassCache && hit && Date.now() - hit.at < TTL) return hit.rows;
+  const plan=await getServicePlan(code.partnerId);
   const links = await CodeServerPool.findAll({where:{codeId: code.id}, attributes:["providerId"], raw:true});
   const ids = links.length ? links.map(x => x.providerId) : (code.providerId ? [code.providerId] : []);
   if (!ids.length) {
     // Compatibilidade com códigos antigos sem provider_id: esses códigos já aceitavam qualquer servidor
     // ativo da própria parceria. Não alterar esse comportamento silenciosamente.
     const legacy=await PartnerProvider.findAll({where:{partnerId:code.partnerId,status:"active"},order:[["priority","ASC"],["createdAt","ASC"]],raw:true});
-    save(code.id,legacy);return legacy;
+    const allowed=plan.features.autoFailover ? legacy.slice(0,plan.features.maxServers) : legacy.slice(0,1);
+    save(code.id,allowed);return allowed;
   }
   const rows = await PartnerProvider.findAll({where:{id:{[Op.in]:ids},partnerId:code.partnerId,status:"active"},raw:true});
-  save(code.id, rows);
-  return rows;
+  const allowed=plan.features.autoFailover ? rows.slice(0,plan.features.maxServers) : rows.filter(s=>s.id===code.providerId).slice(0,1);
+  save(code.id,allowed);
+  return allowed;
 }
 /** Atualização atômica; 1–8 servidores ativos e da mesma parceria, sem duplicidades. */
 export async function setCodeServers(partnerId, codeId, ids, actor) {
@@ -38,6 +42,12 @@ export async function setCodeServers(partnerId, codeId, ids, actor) {
     throw new AppError(422,"INVALID_SERVER_POOL","Escolha entre 1 e 8 servidores diferentes.");
   }
   const result = await sequelize.transaction(async (t) => {
+    // Mesmo lock que updateServicePlan: downgrade e seleção de pool não competem entre si.
+    const parent=await sequelize.models.Partner.findByPk(partnerId,{transaction:t,lock:t.LOCK.UPDATE});
+    if(!parent)throw notFound("Parceiro");
+    const plan=await getServicePlan(partnerId,{fresh:true});
+    if(ids.length>plan.features.maxServers)throw new AppError(403,"PLAN_SERVER_LIMIT",`Seu plano permite até ${plan.features.maxServers} URL(s) por código.`);
+    if(ids.length>1 && !plan.features.autoFailover)throw new AppError(403,"PLAN_FAILOVER_DISABLED","O seu plano não permite failover automático.");
     const code = await PartnerCode.findOne({where:{id:codeId,partnerId},transaction:t,lock:t.LOCK.UPDATE});
     if (!code) throw notFound("Código");
     if (code.status !== "active") throw new AppError(409,"CODE_INACTIVE","Código inativo.");
@@ -67,8 +77,8 @@ export async function rankedServersForCode(code) {
   if (!servers.length) return [];
   const states=await ProviderHealth.findAll({where:{providerId:{[Op.in]:servers.map(s=>s.id)}},raw:true});
   const byId=new Map(states.map(h=>[h.providerId,h]));
-  const settings=await ContentPartnerTerms.findByPk(code.partnerId,{attributes:["autoPriority"]});
-  const auto=settings?.autoPriority!==false;
+  const plan=await getServicePlan(code.partnerId);
+  const auto=plan.features.autoPriority;
   const active=servers.map(s=>({...s,health:byId.get(s.id)}));
   // Prioridade efetiva dinâmica, computada em memória; nunca grava no banco a cada sondagem.
   // Saúde tem precedência. Dentro do mesmo estado, escolha entre preferência manual ou menor latência.
