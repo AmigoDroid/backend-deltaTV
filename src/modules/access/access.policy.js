@@ -18,6 +18,7 @@ export const DENIAL_MESSAGES = {
   PARTNER_BLOCKED: "Serviço indisponível. Contate seu fornecedor.",
   PARTNER_SUSPENDED: "Serviço indisponível. Contate seu fornecedor.",
   PARTNER_CANCELLED: "Serviço indisponível. Contate seu fornecedor.",
+  PARTNER_DELETED: "Parceria encerrada. Contate o suporte.",
   PARTNER_NOT_STARTED: "Serviço indisponível. Contate seu fornecedor.",
   PARTNER_EXPIRED: "Serviço indisponível. Contate seu fornecedor.",
   PARTNER_DELINQUENT: "Serviço indisponível. Contate seu fornecedor.",
@@ -47,6 +48,7 @@ export function evaluateAccess({ activation, license = null, grantedLicense = nu
   if (activation.status === "revoked") return deny("ACTIVATION_REVOKED");
   if (activation.status === "blocked") return deny("DEVICE_BLOCKED", activation.statusReason);
 
+  if (partner?.status === "deleted") return deny("PARTNER_DELETED");
   if (license) return evaluateLicense(license, now);
 
   if (grantedLicense) {

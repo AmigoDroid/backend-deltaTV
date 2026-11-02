@@ -60,7 +60,7 @@ router.post(
     const b = req.valid.body;
     if (req.userScope === "partner" && b.role !== "partner") throw forbiddenRole();
     if ((b.role === "partner") !== !!b.partnerId) throw new AppError(422, "PARTNER_REQUIRED", "Usuários 'partner' exigem partnerId (e somente eles).");
-    if (b.partnerId && !(await Partner.findByPk(b.partnerId))) throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente.");
+    if (b.partnerId && !(await Partner.findOne({ where: { id: b.partnerId, status: { [Op.ne]: "deleted" } } }))) throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente ou excluído.");
     const u = await AdminUser.create({ name: b.name, email: b.email, passwordHash: await hashPassword(b.password), role: b.role, partnerId: b.partnerId ?? null });
     await audit({ actor: actorOf(req), action: "user.create", entityType: "admin_user", entityId: u.id, metadata: { role: b.role, partnerId: b.partnerId ?? null } });
     res.status(201).json(await present(u));
@@ -86,7 +86,7 @@ router.patch(
     const role = rest.role ?? u.role;
     const partnerId = rest.partnerId !== undefined ? rest.partnerId : (role === "partner" ? u.partnerId : null);
     if ((role === "partner") !== !!partnerId) throw new AppError(422, "PARTNER_REQUIRED", "Usuários 'partner' exigem um parceiro (e somente eles).");
-    if (partnerId && !(await Partner.findByPk(partnerId))) throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente.");
+    if (partnerId && !(await Partner.findOne({ where: { id: partnerId, status: { [Op.ne]: "deleted" } } }))) throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente ou excluído.");
     const changes = { ...rest, role, partnerId };
 
     // Nunca deixar a plataforma sem superadmin ativo.

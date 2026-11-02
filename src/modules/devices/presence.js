@@ -29,6 +29,8 @@ let flushing = null;
 const windowMs = () => env.presenceWindowSeconds * 1000;
 
 /** Registra que o aparelho está vivo agora. Barato: só memória. */
+export function forgetDevice(deviceId) { seen.delete(deviceId); dirty.delete(deviceId); }
+
 export function touchDevice(deviceId, now = Date.now()) {
   if (!deviceId) return;
   seen.set(deviceId, now);

@@ -12,6 +12,8 @@ import { configurationSchema as configuration } from "./device-config.schema.js"
 import { countOnline } from "./presence.js";
 import { env } from "../../config/env.js";
 
+import { activationDeletionPreview, deviceDeletionPreview, deleteActivationAsSuper, deleteDeviceAsSuper } from "../admin-deletion.service.js";
+
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
 
@@ -90,6 +92,13 @@ router.get(
 router.get("/history", requirePermission("devices:read"), validate({ query: z.object({ mac: z.string().min(11).max(20) }) }), async (req, res) => res.json(await svc.deviceHistory(req.valid.query.mac)));
 router.get("/activations/:id", requirePermission("devices:read"), validate({ params: id }), async (req, res) => res.json(await svc.getActivation(req.valid.params.id)));
 router.get("/registrations/:id/attribution", requirePermission("devices:read"), validate({ params: id }), async (req, res) => res.json(await svc.deviceAttribution(req.valid.params.id)));
+
+// Exclusão permanente exclusiva do superadmin. Prévia obrigatória na interface.
+const deletionBody = z.object({ confirmMac: z.string().trim().min(11).max(30), reason: z.string().trim().max(400).optional() }).strict();
+router.get("/activations/:id/deletion-preview", requirePermission("override"), validate({ params: id }), async (req, res) => res.json(await activationDeletionPreview(req.valid.params.id, actorOf(req))));
+router.delete("/activations/:id", requirePermission("override"), validate({ params: id, body: deletionBody }), async (req, res) => res.json(await deleteActivationAsSuper(req.valid.params.id, req.valid.body, actorOf(req))));
+router.get("/registrations/:id/deletion-preview", requirePermission("override"), validate({ params: id }), async (req, res) => res.json(await deviceDeletionPreview(req.valid.params.id, actorOf(req))));
+router.delete("/registrations/:id", requirePermission("override"), validate({ params: id, body: deletionBody }), async (req, res) => res.json(await deleteDeviceAsSuper(req.valid.params.id, req.valid.body, actorOf(req))));
 
 // Edição completa do dispositivo: SÓ superadmin (permissão "devices:edit" não existe nos outros perfis).
 router.patch(

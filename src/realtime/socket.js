@@ -13,6 +13,10 @@ const presence = (partnerId) => {
   return false;
 };
 // Só metadados de invalidação: nenhum conteúdo financeiro, credencial ou cadastro é enviado por socket.
+// Encerra sessões WebSocket de um parceiro excluído (inclusive abas já abertas).
+export function disconnectPartner(partnerId) {
+  for (const peer of [...peers]) if (peer.user.role === "partner" && String(peer.user.partnerId) === String(partnerId)) peer.socket.close(1008, "Account disabled");
+}
 export function livePartnerIds() {
   return [...new Set([...peers].filter((p) => p.user.role === "partner").map((p) => p.user.partnerId))];
 }

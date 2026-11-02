@@ -103,7 +103,7 @@ export const ContentCodeBalance = sequelize.define("ContentCodeBalance", {
   codeId:{type:T.UUID,primaryKey:true},allocated:int(0),spent:int(0),
 },{tableName:"content_code_balances"});
 export const ContentActivationCharge = def("ContentActivationCharge", "content_activation_charges", {
-  activationId:{type:T.UUID,allowNull:false},codeId:{type:T.UUID,allowNull:false},credits:int(1),
+  activationId:{type:T.UUID,allowNull:true},codeId:{type:T.UUID,allowNull:false},credits:int(1),
 },{updatedAt:false});
 
 export const PartnerProvider = def("PartnerProvider", "partner_providers", {

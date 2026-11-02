@@ -15,6 +15,8 @@ import { codeCheckLimiter } from "../../middleware/security.js";
 import * as commerce from "../content-commerce/commerce.service.js";
 import {getServicePlan,updateServicePlan} from "../service-plans/plan.service.js";
 
+import { partnerDeletionPreview, deletePartnerAsSuper } from "../admin-deletion.service.js";
+
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
 const cents = z.number().int().min(0).max(100_000_000);
@@ -58,6 +60,11 @@ router.post("/", requirePermission("partners:write"), validate({ body: createBod
   res.status(201).json(await svc.getPartner(p.id));
 });
 router.get("/codes/check", requirePermission("partners:read"), codeCheckLimiter, validate({ query: z.object({ code: z.string().max(40) }) }), async (req, res) => res.json(await svc.checkCode(req.valid.query.code)));
+router.get("/:id/deletion-preview", requirePermission("override"), validate({ params: id }), async (req, res) => res.set("Cache-Control", "no-store").json(await partnerDeletionPreview(req.valid.params.id, actorOf(req))));
+router.delete("/:id", requirePermission("override"), validate({ params: id, body: z.object({
+  confirmSlug: z.string().min(1), deleteClients: z.boolean(), deleteDevices: z.boolean(),
+  reason: z.string().trim().min(8).max(400),
+}).strict() }), async (req, res) => res.json(await deletePartnerAsSuper(req.valid.params.id, req.valid.body, actorOf(req))));
 router.get("/:id", requirePermission("partners:read"), validate({ params: id }), async (req, res) => res.json(await svc.getPartner(req.valid.params.id)));
 // Capacidade técnica por plano; condições financeiras continuam independentes.
 router.get("/:id/service-plan",requirePermission("partners:read"),validate({params:id}),async(req,res)=>
