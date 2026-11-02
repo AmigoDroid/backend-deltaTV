@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from "ws";
+import { readHostMetrics } from "../modules/system/metrics.js";
 import { AdminUser } from "../db/models/index.js";
 import { verifyJwt } from "../shared/crypto.js";
 import { env } from "../config/env.js";
@@ -91,11 +92,18 @@ export function attachRealtime(server) {
           const user = await AdminUser.findByPk(claims.sub);
           if (!user || user.status !== "active" || user.tokenVersion !== claims.tv || !["partner", "admin", "superadmin", "support"].includes(user.role) || (user.role === "partner" && !user.partnerId)) throw Error("Invalid account");
           if (socket.readyState !== WebSocket.OPEN) return;
-          peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, exp: claims.exp, alive: true };
+          peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, exp: claims.exp, alive: true, systemMetricsSubscribed: false };
           peers.add(peer); clearTimeout(timeout);
           emit(socket, { type: "ready", role: user.role, ...(user.role !== "partner" ? { onlinePartnerIds: livePartnerIds(), onlinePartnerCount: onlinePartnerCount() } : {}) });
           if (user.role === "partner") { lastTouch = now(); void touch(peer.user); broadcastPresence(user.partnerId); }
         } catch { socket.close(1008, "Unauthorized"); }
+        return;
+      }
+      if (packet?.type === "system-metrics-subscribe") {
+        // Nunca expor o uso do host a administradores comuns ou revendas.
+        if (peer.user.role !== "superadmin") { socket.close(1008, "Forbidden"); return; }
+        peer.systemMetricsSubscribed = packet.enabled === true;
+        if (peer.systemMetricsSubscribed) emit(socket, { type: "system-metrics", metrics: readHostMetrics() });
         return;
       }
       if (packet?.type === "heartbeat" && peer.user.role === "partner" && now() - lastTouch >= 60000) {
@@ -106,6 +114,16 @@ export function attachRealtime(server) {
     socket.on("close", close);
     socket.on("error", close);
   });
+  // Uma única amostra para todos os superadmins inscritos, somente enquanto alguém observa a tela.
+  const metricsTimer = setInterval(() => {
+    const subscribers = [...peers].filter((p) => p.systemMetricsSubscribed && p.user.role === "superadmin" && p.socket.readyState === WebSocket.OPEN);
+    if (!subscribers.length) return;
+    const packet = { type: "system-metrics", metrics: readHostMetrics() };
+    for (const peer of subscribers) {
+      if (peer.socket.bufferedAmount < 16 * 1024) emit(peer.socket, packet);
+    }
+  }, 5000);
+  metricsTimer.unref();
   const timer = setInterval(() => {
     for (const peer of [...peers]) {
       if (peer.exp * 1000 <= now() || !peer.alive) { peer.socket.terminate(); continue; }
@@ -113,5 +131,5 @@ export function attachRealtime(server) {
     }
   }, 30000);
   timer.unref();
-  return () => { clearInterval(timer); for (const peer of [...peers]) peer.socket.close(1001); wss.close(); };
+  return () => { clearInterval(timer); clearInterval(metricsTimer); for (const peer of [...peers]) peer.socket.close(1001); wss.close(); };
 }

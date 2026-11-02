@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { systemRoutes } from "./system/system.routes.js";
 import { adminServerMonitor } from "./provider-monitor/visibility.routes.js";
 import { adminNotificationRoutes } from "./notifications/notification.routes.js";
 import { authenticate } from "../middleware/authenticate.js";
@@ -21,6 +22,7 @@ import { adminRouter as appDownloads } from "./downloads/download.routes.js";
 const router = Router();
 router.use(authenticate);
 router.use("/notifications", adminNotificationRoutes);
+router.use("/system", systemRoutes);
 router.use("/licenses", licenses);
 router.use("/partners", partners);
 router.use("/server-monitor", adminServerMonitor);
