@@ -1,6 +1,6 @@
 import { recordLogin } from "./login-history.service.js";
 import { Op } from "sequelize";
-import { sequelize, AdminUser, AuthSession } from "../../db/models/index.js";
+import { sequelize, AdminUser, AuthSession, Partner } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
@@ -59,10 +59,17 @@ export async function login({ email, password, audience }, meta) {
     throw new AppError(401, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.");
   }
   // Painel admin x portal do revendedor: a senha estava certa, mas a conta é do outro painel.
-  if (audience && (audience === "partner") !== (user.role === "partner")) {
+  if (audience && (audience !== "admin") !== (user.role === "partner")) {
     await audit({ actor, action: "auth.login", entityType: "admin_user", entityId: user.id, result: "failure", metadata: { reason: "wrong_audience", audience } });
     await recordLogin(user, meta, "failure", "wrong_audience");
     throw new AppError(401, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.");
+  }
+  if (audience === "content_partner") {
+    const partner = user.partnerId ? await Partner.findByPk(user.partnerId) : null;
+    if (user.role !== "partner" || !partner || !["content","both"].includes(partner.kind)) {
+      await recordLogin(user,meta,"failure","wrong_audience");
+      throw new AppError(401,"INVALID_CREDENTIALS","E-mail ou senha inválidos.");
+    }
   }
   await user.update({ failedLogins: 0, lockedUntil: null, lastLoginAt: new Date(), lastActivityAt: user.role === "partner" ? new Date() : user.lastActivityAt });
   const result = await issue(user, meta);

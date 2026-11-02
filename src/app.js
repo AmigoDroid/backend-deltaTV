@@ -6,6 +6,7 @@ import { env } from "./config/env.js";
 import { AppError, errorHandler } from "./shared/errors.js";
 import { requestContext, apiLimiter, mirrorLimiter } from "./middleware/security.js";
 import authRoutes from "./modules/auth/auth.routes.js";
+import contentPartnerRoutes from "./modules/provider-monitor/monitor.routes.js";
 import adminRoutes from "./modules/admin.routes.js";
 import clientRoutes from "./modules/activations/client.routes.js";
 import portalRoutes from "./modules/portal/portal.routes.js";
@@ -65,6 +66,7 @@ export function createApp() {
   app.use("/pair", pairingRoutes);
 
   app.use("/api/v1/auth", authRoutes);
+  app.use("/api/v1/content-partner", contentPartnerRoutes);
   app.use("/api/v1/admin", adminRoutes);
   app.use("/api/v1/partner", portalRoutes);
   app.use("/api/v1/client", clientRoutes);

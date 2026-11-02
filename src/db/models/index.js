@@ -90,6 +90,16 @@ export const PartnerProvider = def("PartnerProvider", "partner_providers", {
   status: str(20, { allowNull: false, defaultValue: "active" }),
 });
 
+export const ProviderHealth = def("ProviderHealth", "provider_health", {
+  providerId: { type: T.UUID, allowNull: false, unique: true },
+  state: str(20, { allowNull: false, defaultValue: "unknown" }), latencyMs: { type: T.INTEGER },
+  lastCheckedAt: ts(), lastGoodAt: ts(), failures: int(0), successes: int(0), lastError: str(220),
+});
+export const CodeFailover = def("CodeFailover", "code_failovers", {
+  codeId: { type: T.UUID, allowNull: false, unique: true }, originalProviderId: { type: T.UUID },
+  currentProviderId: { type: T.UUID }, outageNotifiedAt: ts(), lastSwitchedAt: ts(),
+});
+
 export const Device = def("Device", "devices", {
   mac: { type: T.CHAR(17) }, lastInstallationId: str(100), lastSeenAt: ts(),
   // Multiplataforma (migration 20261018000001). device_key é preenchida por gatilho quando só o MAC é informado.

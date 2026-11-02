@@ -5,6 +5,7 @@ import { startScheduler } from "./jobs/scheduler.js";
 import { startPresence, stopPresence, countOnline } from "./modules/devices/presence.js";
 import { attachRealtime, broadcastDevicePresence } from "./realtime/socket.js";
 import dotenv from "dotenv";
+import { startProviderMonitor,stopProviderMonitor } from "./modules/provider-monitor/monitor.service.js";
 dotenv.config();
 
 await sequelize.authenticate();
@@ -39,11 +40,12 @@ async function publishOnlineIfChanged() {
 void publishOnlineIfChanged();
 const devicePresenceTimer = setInterval(() => { void publishOnlineIfChanged(); }, 10000);
 devicePresenceTimer.unref();
-if (env.enableScheduler) startScheduler();
+if (env.enableScheduler) { startScheduler(); startProviderMonitor(); }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     clearInterval(devicePresenceTimer);
+    stopProviderMonitor();
     stopRealtime();
     server.close(async () => {
       await stopPresence(); // grava os últimos sinais antes de fechar o banco

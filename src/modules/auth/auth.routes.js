@@ -18,7 +18,7 @@ router.post(
   "/login", loginLimiter,
   // `audience` separa os dois painéis: o painel admin envia "admin", o portal do revendedor envia "partner".
   // Conta do outro tipo recebe o mesmo erro de senha inválida (não revela que o e-mail existe).
-  validate({ body: z.object({ email: z.string().email().max(200), password: z.string().min(1).max(128), audience: z.enum(["admin", "partner"]).optional() }) }),
+  validate({ body: z.object({ email: z.string().email().max(200), password: z.string().min(1).max(128), audience: z.enum(["admin", "partner", "content_partner"]).optional() }) }),
   async (req, res) => res.json(await svc.login(req.valid.body, meta(req))),
 );
 
