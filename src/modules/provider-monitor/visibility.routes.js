@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { requirePermission, requirePartnerRole } from "../../middleware/authenticate.js";
 import { validate } from "../../shared/validate.js";
-import { listServerHealth } from "./visibility.service.js";
+import { listServerHealth, getPartnerServerAlerts } from "./visibility.service.js";
 
 const query = z.object({
   q: z.string().trim().max(100).optional(),
@@ -21,6 +21,10 @@ adminServerMonitor.get("/", requirePermission("partners:read"),
 
 export const resellerServerMonitor = Router();
 resellerServerMonitor.use(requirePartnerRole);
+// Só leitura de telemetria recente, sem novas sondagens HTTP. Escopo vem do JWT.
+resellerServerMonitor.get("/alerts", async (req, res) => {
+  res.set("Cache-Control", "no-store").json(await getPartnerServerAlerts(req.user.partnerId));
+});
 resellerServerMonitor.get("/", validate({ query }), async (req, res) => {
   res.set("Cache-Control", "no-store").json(await listServerHealth({ ...req.valid.query, partnerId: req.user.partnerId }));
 });

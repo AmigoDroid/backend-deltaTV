@@ -9,6 +9,7 @@ import { sendMail } from "../mail/mail.transport.js";
 import { env } from "../../config/env.js";
 import { broadcastChange } from "../../realtime/socket.js";
 import {getServicePlan} from "../service-plans/plan.service.js";
+import { invalidatePartnerServerAlerts } from "./visibility.service.js";
 
 const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
 const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",60,30,3600);
@@ -94,7 +95,10 @@ export async function monitorOnce() {
     // Uma oscilação de latência não precisa invalidar as sessões existentes.
     if (changedState) { clearMirrorAuth();clearResolutionCache(); }
     // Um único aviso por parceria e rodada, nunca um por TV nem por usuário.
-    for (const partnerId of changedPartnerIds) broadcastChange({ partnerId, topic: "server-health" });
+    for (const partnerId of changedPartnerIds) {
+      invalidatePartnerServerAlerts(partnerId);
+      broadcastChange({ partnerId, topic: "server-health" });
+    }
     // Retenção em 30 dias. Uma exclusão por dia em índice, nunca por sondagem.
     if(Date.now()-lastCleanup>86_400_000){
       lastCleanup=Date.now();

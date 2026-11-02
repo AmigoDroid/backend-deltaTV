@@ -8,6 +8,29 @@ const INTERVAL = Math.max(30, Math.min(3600, Number(process.env.PROVIDER_MONITOR
 const MAX_PER_CYCLE = Math.max(5, Math.min(250, Number(process.env.PROVIDER_MONITOR_MAX_PER_CYCLE) || 60));
 const enabled = () => env.enableScheduler && process.env.PROVIDER_MONITOR_ENABLED === "true";
 const DEFAULT_PAGE_SIZE = 20;
+const SLOW_MS = Math.max(300, Math.min(5000, Number(process.env.PROVIDER_MONITOR_SLOW_MS) || 2500));
+// Uma única contagem global por minuto, compartilhada por todas as sessões de revenda.
+// Assim a janela de validade acompanha o número real de servidores monitorados, sem uma COUNT por usuário.
+let activeCountCache = { until: 0, value: null, pending: null };
+async function freshnessWindowSeconds() {
+  if (!enabled()) return 180;
+  const now = Date.now();
+  if (activeCountCache.value !== null && activeCountCache.until > now) {
+    return Math.max(180, Math.min(3600, INTERVAL * (Math.ceil(activeCountCache.value / MAX_PER_CYCLE) + 2)));
+  }
+  if (!activeCountCache.pending) {
+    activeCountCache.pending = sequelize.query(
+      "SELECT count(*)::integer AS total FROM partner_providers WHERE status = 'active'",
+      { type: QueryTypes.SELECT },
+    ).then(([row]) => {
+      activeCountCache.value = Number(row?.total) || 0;
+      activeCountCache.until = Date.now() + 60000;
+      return activeCountCache.value;
+    }).finally(() => { activeCountCache.pending = null; });
+  }
+  const total = await activeCountCache.pending;
+  return Math.max(180, Math.min(3600, INTERVAL * (Math.ceil(total / MAX_PER_CYCLE) + 2)));
+}
 
 const healthState = `CASE
   WHEN pp.status <> 'active' THEN 'disabled'
@@ -26,12 +49,7 @@ export async function listServerHealth({ partnerId = null, q = "", status = "", 
   const currentPage = Math.max(1, Math.min(100000, Number(page) || 1));
   // Ao monitorar milhares de origens, não declarar queda por medição antiga.
   // Uma volta completa de sondagens pode demorar mais do que o intervalo base.
-  const [activeCount] = await sequelize.query(
-    "SELECT count(*)::integer AS total FROM partner_providers WHERE status = 'active'",
-    { type: QueryTypes.SELECT },
-  );
-  const rounds = Math.max(1, Math.ceil((Number(activeCount.total) || 0) / MAX_PER_CYCLE));
-  const freshnessSeconds = Math.max(180, Math.min(3600, INTERVAL * (rounds + 2)));
+  const freshnessSeconds = await freshnessWindowSeconds();
   const replacements = {
     partnerId, monitorEnabled, freshAfter: new Date(Date.now() - freshnessSeconds * 1000),
     pattern: `%${String(q || "").trim().replace(/[\\%_]/g, "\\$&")}%`,
@@ -71,5 +89,75 @@ export async function listServerHealth({ partnerId = null, q = "", status = "", 
     monitorEnabled, intervalSeconds: INTERVAL, freshnessSeconds,
     lastSnapshotAt: new Date().toISOString(), summary, rows, count,
     page: currentPage, pageSize: size, pages: Math.max(1, Math.ceil(count / size)),
+  };
+}
+
+
+// Cache pequeno e limitado por parceria para evitar uma query por navegador a cada abertura.
+// Quando o monitor detecta mudança, ele invalida o parceiro ANTES de emitir o WebSocket.
+const alertCache = new Map();
+const MAX_ALERT_CACHE = 500;
+export function invalidatePartnerServerAlerts(partnerId) {
+  if (partnerId) alertCache.delete(String(partnerId));
+}
+
+/** Resumo leve para a faixa de alerta no portal: somente servidores desta parceria.
+ * Nunca realiza sondagens e nunca devolve URLs completas, tokens ou credenciais.
+ * A janela de validade evita alarmes baseados em medições antigas.
+ */
+export async function getPartnerServerAlerts(partnerId) {
+  if (!enabled()) return { monitorEnabled: false, thresholdMs: SLOW_MS, total: 0, slow: 0, down: 0, unstable: 0, items: [] };
+  const key = String(partnerId);
+  const cached = alertCache.get(key);
+  if (cached && cached.until > Date.now()) return cached.value;
+  const pending = fetchPartnerServerAlerts(partnerId);
+  // Cacheia também a promise para agrupar requisições concorrentes.
+  alertCache.delete(key);
+  if (alertCache.size >= MAX_ALERT_CACHE) alertCache.delete(alertCache.keys().next().value);
+  alertCache.set(key, { until: Date.now() + 15000, value: pending });
+  pending.catch(() => { if (alertCache.get(key)?.value === pending) alertCache.delete(key); });
+  return pending;
+}
+
+async function fetchPartnerServerAlerts(partnerId) {
+  const freshSeconds = await freshnessWindowSeconds();
+  const rows = await sequelize.query(`WITH problems AS (
+    SELECT pp.id, pp.name, pp.base_url AS "baseUrl",
+      ph.latency_ms AS "latencyMs", ph.last_checked_at AS "lastCheckedAt",
+      CASE
+        WHEN ph.last_error = 'Resposta lenta' THEN 'slow'
+        WHEN ph.state = 'down' THEN 'down'
+        WHEN ph.latency_ms >= :slowMs THEN 'slow'
+        ELSE 'unstable'
+      END AS kind
+    FROM partner_providers pp
+    JOIN provider_health ph ON ph.provider_id = pp.id
+    WHERE pp.partner_id = :partnerId AND pp.status = 'active'
+      AND ph.last_checked_at >= :freshAfter
+      AND (ph.state IN ('down', 'suspect') OR ph.latency_ms >= :slowMs)
+  )
+  SELECT *, count(*) OVER ()::integer AS total,
+    count(*) FILTER (WHERE kind = 'slow') OVER ()::integer AS slow,
+    count(*) FILTER (WHERE kind = 'down') OVER ()::integer AS down,
+    count(*) FILTER (WHERE kind = 'unstable') OVER ()::integer AS unstable
+  FROM problems
+  ORDER BY CASE kind WHEN 'down' THEN 0 WHEN 'slow' THEN 1 ELSE 2 END,
+    "latencyMs" DESC NULLS LAST, name ASC, id ASC
+  LIMIT 3`, {
+    replacements: { partnerId, slowMs: SLOW_MS, freshAfter: new Date(Date.now() - freshSeconds * 1000) },
+    type: QueryTypes.SELECT,
+  });
+  const first = rows[0];
+  return {
+    monitorEnabled: true, thresholdMs: SLOW_MS,
+    total: Number(first?.total) || 0,
+    slow: Number(first?.slow) || 0,
+    down: Number(first?.down) || 0,
+    unstable: Number(first?.unstable) || 0,
+    items: rows.map(r => {
+      let host = 'Endereço não identificado';
+      try { host = new URL(r.baseUrl).host; } catch { /* URL legada inválida */ }
+      return { id: r.id, name: r.name, host, latencyMs: r.latencyMs, lastCheckedAt: r.lastCheckedAt, kind: r.kind };
+    }),
   };
 }
