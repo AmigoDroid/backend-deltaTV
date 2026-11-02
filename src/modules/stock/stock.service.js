@@ -45,18 +45,18 @@ export async function stockOf(partnerId, { page = 1, pageSize = 20 } = {}) {
 
 /* ---------- Administração (você) ---------- */
 
-async function loadHolder(partnerId) {
+async function loadHolder(partnerId, actor) {
   const partner = await Partner.findByPk(partnerId);
   if (!partner) throw notFound("Parceiro");
   if (!STOCK_KINDS.includes(partner.kind)) {
     throw new AppError(422, "NOT_A_RESELLER", "Só cadastros do tipo Revendedor (ou Conteúdo e revendedor) têm estoque de licenças.");
   }
-  if (["cancelled", "blocked"].includes(partner.status)) throw new AppError(409, "INVALID_STATE", "Este cadastro não pode receber licenças.");
+  if (["cancelled", "blocked"].includes(partner.status) && actor?.role !== "superadmin") throw new AppError(409, "INVALID_STATE", "Este cadastro não pode receber licenças.");
   return partner;
 }
 
 export async function grantStock(partnerId, { months, quantity, unitPriceCents, note }, actor) {
-  await loadHolder(partnerId);
+  await loadHolder(partnerId, actor);
   await ensurePlan(months); // garante que a duração existe como plano (1–120 meses)
   await sequelize.transaction(async (t) => {
     const balance = await move(t, { partnerId, months, delta: quantity, kind: "grant", actor, unitPriceCents: unitPriceCents ?? null, note });

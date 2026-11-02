@@ -1,4 +1,5 @@
 import express from "express";
+import { broadcastChange } from "./realtime/socket.js";
 import helmet from "helmet";
 import cors from "cors";
 import { env } from "./config/env.js";
@@ -48,6 +49,17 @@ export function createApp() {
   app.use("/dl", appDownloadFiles);
 
   app.use(apiLimiter);
+  // Notificar após respostas bem-sucedidas de operações autenticadas; a API continua sendo a fonte dos dados.
+  app.use((req, res, next) => {
+    if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
+    if (!/^\/api\/v1\/(admin|partner)\//.test(req.path)) return next();
+    res.on("finish", () => {
+      if (res.statusCode >= 200 && res.statusCode < 300 && req.user) {
+        broadcastChange({ partnerId: req.user.role === "partner" ? req.user.partnerId : null });
+      }
+    });
+    next();
+  });
 
   app.get("/health", (_req, res) => res.json({ ok: true }));
   app.use("/pair", pairingRoutes);

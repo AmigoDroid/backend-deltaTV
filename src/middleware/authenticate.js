@@ -1,3 +1,4 @@
+import { Op } from "sequelize";
 import { AdminUser } from "../db/models/index.js";
 import { verifyJwt } from "../shared/crypto.js";
 import { AppError } from "../shared/errors.js";
@@ -30,6 +31,14 @@ export async function authenticate(req, _res, next) {
   const user = await AdminUser.findByPk(payload.sub);
   if (!user || user.status !== "active" || user.tokenVersion !== payload.tv) {
     throw new AppError(401, "INVALID_TOKEN", "Sessão inválida ou expirada.");
+  }
+  // Presença do portal: no máximo uma escrita por minuto por conta, compartilhada entre processos.
+  // Falha de telemetria nunca deve derrubar uma requisição autenticada.
+  if (user.role === "partner") {
+    try {
+      const cutoff = new Date(Date.now() - 60_000);
+      await AdminUser.update({ lastActivityAt: new Date() }, { where: { id: user.id, [Op.or]: [{ lastActivityAt: null }, { lastActivityAt: { [Op.lt]: cutoff } }] } });
+    } catch (error) { console.warn("[partner-presence]", error.message); }
   }
   req.user = { id: user.id, name: user.name, email: user.email, role: user.role, partnerId: user.partnerId };
   next();

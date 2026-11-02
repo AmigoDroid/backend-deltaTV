@@ -4,6 +4,7 @@ import { maskDeep } from "./mask.js";
 export const actorOf = (req) => ({
   type: req.user ? (req.user.role === "partner" ? "partner" : "admin") : "anonymous",
   id: req.user?.id ?? null,
+  role: req.user?.role ?? null,
   ip: req.ip,
   // Quem exatamente fez (pessoa e revendedor): vai para o metadata da auditoria, para responder "quem alterou esta TV?".
   name: req.user?.name ?? null,

@@ -32,8 +32,28 @@ export const AdminUser = def("AdminUser", "admin_users", {
   name: str(160, { allowNull: false }), email: str(200, { allowNull: false }),
   passwordHash: { type: T.TEXT, allowNull: false }, role: str(20, { allowNull: false }),
   partnerId: { type: T.UUID }, status: str(20, { allowNull: false, defaultValue: "active" }),
-  failedLogins: int(0), lockedUntil: ts(), tokenVersion: int(0), lastLoginAt: ts(),
+  failedLogins: int(0), lockedUntil: ts(), tokenVersion: int(0), lastLoginAt: ts(), lastActivityAt: ts(),
 });
+
+export const LoginHistory = def("LoginHistory", "login_history", {
+  adminUserId: { type: T.UUID }, userEmail: str(200), role: str(20), partnerId: { type: T.UUID },
+  outcome: str(12, { allowNull: false }), reason: str(60), ip: str(64), isp: str(160),
+  country: str(90), region: str(90), city: str(90), userAgent: str(500),
+  browser: str(90), os: str(90), device: str(90),
+}, { updatedAt: false });
+
+export const NotificationCampaign = def("NotificationCampaign", "notification_campaigns", {
+  senderId: { type: T.UUID }, title: str(140, { allowNull: false }),
+  message: { type: T.TEXT, allowNull: false }, severity: str(16, { allowNull: false, defaultValue: "info" }),
+});
+
+export const PartnerNotification = def("PartnerNotification", "partner_notifications", {
+  partnerId: { type: T.UUID, allowNull: false }, senderId: { type: T.UUID }, batchId: { type: T.UUID }, campaignId: { type: T.UUID, allowNull: false },
+  readAt: ts(),
+});
+
+PartnerNotification.belongsTo(NotificationCampaign, { foreignKey: "campaignId", as: "campaign" });
+NotificationCampaign.hasMany(PartnerNotification, { foreignKey: "campaignId", as: "recipients" });
 
 export const AuthSession = def("AuthSession", "auth_sessions", {
   adminUserId: { type: T.UUID, allowNull: false }, refreshHash: { type: T.CHAR(64), allowNull: false },

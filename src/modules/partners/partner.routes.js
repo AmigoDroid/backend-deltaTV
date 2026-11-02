@@ -1,3 +1,4 @@
+import { livePartnerIds } from "../../realtime/socket.js";
 import { Router } from "express";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
@@ -38,6 +39,12 @@ const createBody = commercial.extend({
   portalUser: z.object({ name: z.string().min(2).max(160), email: z.string().email().max(200), password: z.string().min(12).max(128) }).optional(),
 }).refine((v) => v.endsAt > v.startsAt, { message: "O término deve ser posterior ao início", path: ["endsAt"] });
 const reason = z.object({ reason: z.string().trim().min(3).max(500).optional() });
+
+router.get("/presence/live", requirePermission("partners:read"), (_req, res) => {
+  const ids = livePartnerIds();
+  res.set("Cache-Control", "no-store");
+  res.json({ onlinePartnerIds: ids, onlineCount: ids.length, source: "websocket" });
+});
 
 router.get(
   "/", requirePermission("partners:read"),

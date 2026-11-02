@@ -87,7 +87,7 @@ export const duplicate = () => new AppError(409, "CLIENT_EXISTS", "Já existe um
 
 export async function createClient({ partnerId, actor, input }) {
   const fields = fieldsFrom(input, { create: true });
-  if ((await ResellerClient.count({ where: { partnerId } })) >= MAX_CLIENTS_PER_PARTNER) {
+  if (actor?.role !== "superadmin" && (await ResellerClient.count({ where: { partnerId } })) >= MAX_CLIENTS_PER_PARTNER) {
     throw new AppError(422, "CLIENT_LIMIT", `Limite de ${MAX_CLIENTS_PER_PARTNER} clientes cadastrados atingido.`);
   }
   let c;

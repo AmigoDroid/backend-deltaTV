@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { partnerNotificationRoutes } from "../notifications/notification.routes.js";
 import { z } from "zod";
 import { sequelize, Partner } from "../../db/models/index.js";
 import { validate } from "../../shared/validate.js";
@@ -31,6 +32,7 @@ import { env } from "../../config/env.js";
  */
 const router = Router();
 router.use(authenticate, requirePartnerRole);
+router.use("/notifications", partnerNotificationRoutes);
 router.use("/pix", pixRoutes);
 router.use("/credits", creditRoutes);
 router.use("/clients", clientsRoutes);

@@ -1,3 +1,4 @@
+import { recordLogin } from "./login-history.service.js";
 import { Op } from "sequelize";
 import { sequelize, AdminUser, AuthSession } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
@@ -41,10 +42,12 @@ export async function login({ email, password, audience }, meta) {
     dummyHash ??= await hashPassword("dummy-password-for-timing");
     await verifyPassword(password, dummyHash); // iguala o tempo de resposta
     await audit({ actor, action: "auth.login", entityType: "admin_user", result: "failure", metadata: { reason: "unknown_or_disabled" } });
+    await recordLogin(user, meta, "failure", "invalid_credentials");
     throw new AppError(401, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.");
   }
   if (user.lockedUntil && user.lockedUntil > new Date()) {
     await audit({ actor, action: "auth.login", entityType: "admin_user", entityId: user.id, result: "failure", metadata: { reason: "locked" } });
+    await recordLogin(user, meta, "failure", "locked");
     throw new AppError(429, "ACCOUNT_LOCKED", "Conta temporariamente bloqueada por tentativas inválidas.");
   }
   if (!(await verifyPassword(password, user.passwordHash))) {
@@ -52,15 +55,18 @@ export async function login({ email, password, audience }, meta) {
     const lock = failed >= MAX_FAILED;
     await user.update({ failedLogins: lock ? 0 : failed, lockedUntil: lock ? new Date(Date.now() + LOCK_MINUTES * 60000) : null });
     await audit({ actor, action: "auth.login", entityType: "admin_user", entityId: user.id, result: "failure", metadata: { reason: "bad_password", locked: lock } });
+    await recordLogin(user, meta, "failure", lock ? "locked_after_failures" : "bad_password");
     throw new AppError(401, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.");
   }
   // Painel admin x portal do revendedor: a senha estava certa, mas a conta é do outro painel.
   if (audience && (audience === "partner") !== (user.role === "partner")) {
     await audit({ actor, action: "auth.login", entityType: "admin_user", entityId: user.id, result: "failure", metadata: { reason: "wrong_audience", audience } });
+    await recordLogin(user, meta, "failure", "wrong_audience");
     throw new AppError(401, "INVALID_CREDENTIALS", "E-mail ou senha inválidos.");
   }
-  await user.update({ failedLogins: 0, lockedUntil: null, lastLoginAt: new Date() });
+  await user.update({ failedLogins: 0, lockedUntil: null, lastLoginAt: new Date(), lastActivityAt: user.role === "partner" ? new Date() : user.lastActivityAt });
   const result = await issue(user, meta);
+  await recordLogin(user, meta, "success");
   await audit({ actor: { type: "admin", id: user.id, ip: meta.ip }, action: "auth.login", entityType: "admin_user", entityId: user.id });
   return result;
 }

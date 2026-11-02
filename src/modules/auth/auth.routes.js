@@ -7,9 +7,11 @@ import { AdminUser } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
 import { hashPassword, verifyPassword } from "../../shared/crypto.js";
 import * as svc from "./auth.service.js";
+import history from "./login-history.routes.js";
 import { registerReseller } from "../partners/reseller-signup.service.js";
 
 const router = Router();
+router.use("/history", history);
 const meta = (req) => ({ ip: req.ip, userAgent: req.get("user-agent") });
 
 router.post(

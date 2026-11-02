@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { adminNotificationRoutes } from "./notifications/notification.routes.js";
 import { authenticate } from "../middleware/authenticate.js";
 import licenses from "./licenses/license.routes.js";
 import partners from "./partners/partner.routes.js";
@@ -18,6 +19,7 @@ import { adminRouter as appDownloads } from "./downloads/download.routes.js";
 // Tudo em /api/v1/admin exige autenticação; cada rota exige a permissão correspondente.
 const router = Router();
 router.use(authenticate);
+router.use("/notifications", adminNotificationRoutes);
 router.use("/licenses", licenses);
 router.use("/partners", partners);
 router.use("/devices", devices);

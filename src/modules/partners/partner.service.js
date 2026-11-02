@@ -1,3 +1,4 @@
+import { isPartnerConnected } from "../../realtime/socket.js";
 import { Op, UniqueConstraintError } from "sequelize";
 import { sequelize, Partner, PartnerCode, PartnerProvider, Activation, Invoice, AdminUser } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
@@ -13,6 +14,11 @@ import { STOCK_KINDS, balancesOf, quantityOf } from "../stock/stock-ledger.js";
 
 export const AUTO_SUSPEND_REASON = "Suspensão automática por inadimplência";
 const DEVICE_COUNT = `(SELECT count(*) FROM activations a WHERE a.partner_id = "Partner".id AND a.status <> 'revoked')`;
+const PORTAL_ACTIVITY = `(SELECT max(u.last_activity_at) FROM admin_users u WHERE u.partner_id = "Partner".id AND u.role = 'partner' AND u.status = 'active')`;
+const withPresence = (partner) => {
+  const activity = partner.lastPortalActivityAt ?? null;
+  return { ...partner, lastPortalActivityAt: activity, online: isPartnerConnected(partner.id) };
+};
 const CODE_ACTIVATIONS = `(SELECT count(*) FROM activations a WHERE a.partner_code_id = "PartnerCode".id AND a.status <> 'revoked')`;
 
 const codeOut = (c, stock = null) => {
@@ -32,7 +38,7 @@ const out = (p) => {
   const j = p.toJSON();
   j.effectiveStatus = effectivePartnerStatus(p);
   j.deviceCount = Number(j.deviceCount ?? 0);
-  return j;
+  return withPresence(j);
 };
 
 export async function listPartners({ q, status, page, pageSize }) {
@@ -42,14 +48,14 @@ export async function listPartners({ q, status, page, pageSize }) {
   else if (status) where.status = status;
   if (q) where[Op.or] = [{ name: { [Op.iLike]: `%${q}%` } }, { slug: { [Op.iLike]: `%${q}%` } }];
   const { rows, count } = await Partner.findAndCountAll({
-    where, attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"]] },
+    where, attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"], [sequelize.literal(PORTAL_ACTIVITY), "lastPortalActivityAt"]] },
     order: [["name", "ASC"]], ...pageOf({ page, pageSize }),
   });
   return paged(rows.map(out), count, { page, pageSize });
 }
 
 export async function getPartner(id) {
-  const p = await Partner.findByPk(id, { attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"]] } });
+  const p = await Partner.findByPk(id, { attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"], [sequelize.literal(PORTAL_ACTIVITY), "lastPortalActivityAt"]] } });
   if (!p) throw notFound("Parceiro");
   const [codes, stock, invoices, providers] = await Promise.all([
     findCodes(id),
@@ -98,7 +104,7 @@ export async function updatePartner(id, input, actor) {
     if ((input.startsAt || input.endsAt) && !(new Date(endsAt) > new Date(startsAt))) throw new AppError(422, "INVALID_PERIOD", "O término deve ser posterior ao início.");
     if (input.deviceLimit !== undefined && input.deviceLimit !== null) {
       const used = await Activation.count({ where: { partnerId: id, status: { [Op.ne]: "revoked" } }, transaction: t });
-      if (input.deviceLimit < used) throw new AppError(409, "LIMIT_BELOW_USAGE", `Existem ${used} dispositivos ativos; reduza-os antes de baixar o limite.`);
+      if (input.deviceLimit < used && actor?.role !== "superadmin") throw new AppError(409, "LIMIT_BELOW_USAGE", `Existem ${used} dispositivos ativos; reduza-os antes de baixar o limite.`);
     }
     await p.update(input, { transaction: t });
     await audit({ actor, action: "partner.update", entityType: "partner", entityId: id, metadata: input, transaction: t });
@@ -275,7 +281,7 @@ export async function updateCode(partnerId, codeId, input, actor) {
     }
     if (patch.maxActivations != null) {
       const used = await Activation.count({ where: { partnerCodeId: c.id, status: { [Op.ne]: "revoked" } }, transaction: t });
-      if (patch.maxActivations < used) throw new AppError(409, "LIMIT_BELOW_USAGE", `Este código tem ${used} ativações; o limite não pode ser menor.`);
+      if (patch.maxActivations < used && actor?.role !== "superadmin") throw new AppError(409, "LIMIT_BELOW_USAGE", `Este código tem ${used} ativações; o limite não pode ser menor.`);
     }
     await c.update(patch, { transaction: t });
     await audit({ actor, action: "partner.code.update", entityType: "partner", entityId: partnerId, metadata: { codeId, ...patch }, transaction: t });

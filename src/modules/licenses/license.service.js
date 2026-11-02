@@ -110,7 +110,7 @@ export async function updateLicense(id, input, actor) {
     if (!l) throw notFound("Licença");
     if (input.maxDevices !== undefined) {
       const used = await Activation.count({ where: { licenseId: id, status: { [Op.ne]: "revoked" } }, transaction: t });
-      if (input.maxDevices < used) throw new AppError(409, "LIMIT_BELOW_USAGE", `Existem ${used} dispositivos vinculados; remova ativações antes de reduzir o limite.`);
+      if (input.maxDevices < used && actor?.role !== "superadmin") throw new AppError(409, "LIMIT_BELOW_USAGE", `Existem ${used} dispositivos vinculados; remova ativações antes de reduzir o limite.`);
       l.maxDevices = input.maxDevices;
     }
     if (input.notes !== undefined) l.notes = input.notes;
@@ -161,7 +161,7 @@ export async function renewLicense(id, input, actor) {
   const renewed = await sequelize.transaction(async (t) => {
     const l = await License.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!l) throw notFound("Licença");
-    if (["cancelled", "blocked"].includes(l.status)) {
+    if (["cancelled", "blocked"].includes(l.status) && actor?.role !== "superadmin") {
       throw new AppError(409, "NOT_RENEWABLE", "Reative a licença antes de renovar (canceladas não podem ser renovadas).");
     }
     const plan = await Plan.findByPk(input.planId ?? l.planId, { transaction: t });
@@ -174,7 +174,7 @@ export async function renewLicense(id, input, actor) {
     await l.update(
       {
         planId: plan.id, expiresAt: next, startsAt: l.startsAt ?? now,
-        status: l.status === "pending" ? "active" : l.status,
+        status: l.status === "pending" || (actor?.role === "superadmin" && ["cancelled", "blocked"].includes(l.status)) ? "active" : l.status,
         ...(input.planId ? { maxDevices: plan.maxDevices } : {}),
       },
       { transaction: t },
