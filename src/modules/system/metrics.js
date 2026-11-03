@@ -2,6 +2,9 @@
 // Cache compartilhado para HTTP e WebSocket, reduzindo leituras do /proc e do sistema de arquivos.
 import os from "node:os";
 import fs from "node:fs";
+import { readNetworkMetrics } from "./network.js";
+import { relayStats } from "../../shared/relay.js";
+import { env } from "../../config/env.js";
 
 const MIN_SAMPLE_MS = 1000;
 let lastSample = null;
@@ -75,6 +78,8 @@ export function readHostMetrics() {
     cpu: { percent: usedPercent, cores: os.cpus().length, load1: Math.round(os.loadavg()[0] * 100) / 100 },
     ...memory,
     storage: rootStorage(),
+    network: readNetworkMetrics(),
+    transmission: { nodeActiveStreams: relayStats().activeStreams, nodeStreamLimit: env.proxyMaxConcurrent, nginxAccelEnabled: env.accelOrigin },
     uptimeSeconds: Math.floor(os.uptime()),
     node: { rss: runtime.rss, heapUsed: runtime.heapUsed, heapTotal: runtime.heapTotal, uptimeSeconds: Math.floor(process.uptime()) },
   };
