@@ -3,11 +3,12 @@ import { z } from "zod";
 import { validate } from "../../shared/validate.js";
 import { loginLimiter, refreshLimiter, signupLimiter } from "../../middleware/security.js";
 import { authenticate } from "../../middleware/authenticate.js";
-import { AdminUser } from "../../db/models/index.js";
+import { sequelize, AdminUser } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
 import { hashPassword, verifyPassword } from "../../shared/crypto.js";
 import * as svc from "./auth.service.js";
 import history from "./login-history.routes.js";
+import { disconnectAdminUser } from "../../realtime/socket.js";
 import { registerReseller } from "../partners/reseller-signup.service.js";
 import { verifyPreRegistration, completePreRegistration } from "../partners/partner-invite.service.js";
 
@@ -72,12 +73,16 @@ router.post(
   "/change-password", authenticate,
   validate({ body: z.object({ currentPassword: z.string().max(128), newPassword: z.string().min(12).max(128) }) }),
   async (req, res) => {
-    const user = await AdminUser.findByPk(req.user.id);
-    if (!(await verifyPassword(req.valid.body.currentPassword, user.passwordHash))) {
-      throw new AppError(400, "INVALID_CREDENTIALS", "Senha atual incorreta.");
-    }
-    await user.update({ passwordHash: await hashPassword(req.valid.body.newPassword) });
-    await svc.revokeAllSessions(user.id); // derruba todas as sessões, inclusive a atual
+    const passwordHash = await hashPassword(req.valid.body.newPassword);
+    await sequelize.transaction(async transaction => {
+      const user = await AdminUser.findByPk(req.user.id, { transaction, lock: transaction.LOCK.UPDATE });
+      if (!user || !(await verifyPassword(req.valid.body.currentPassword, user.passwordHash))) {
+        throw new AppError(400, "INVALID_CREDENTIALS", "Senha atual incorreta.");
+      }
+      await user.update({ passwordHash }, { transaction });
+      await svc.revokeAllSessions(user.id, transaction);
+    });
+    disconnectAdminUser(req.user.id);
     res.status(204).end();
   },
 );

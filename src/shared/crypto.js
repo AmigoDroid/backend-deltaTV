@@ -76,7 +76,7 @@ export function verifyJwt(token, expectedTyp, { graceSeconds = 0 } = {}) {
   } catch {
     throw invalid();
   }
-  if (!payload.exp || payload.exp < Math.floor(Date.now() / 1000) - graceSeconds) throw invalid();
+  if (!payload || typeof payload !== "object" || !Number.isFinite(payload.exp) || payload.exp <= Math.floor(Date.now() / 1000) - graceSeconds) throw invalid();
   if (expectedTyp && payload.typ !== expectedTyp) throw invalid();
   return payload;
 }

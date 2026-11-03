@@ -96,6 +96,7 @@ export function attachRealtime(server) {
   });
   wss.on("connection", (socket) => {
     let peer = null;
+    let authenticating = false;
     let lastTouch = 0;
     const timeout = setTimeout(() => { if (!peer) socket.close(1008, "Auth required"); }, 5000);
     const close = () => {
@@ -115,7 +116,10 @@ export function attachRealtime(server) {
       let packet;
       try { packet = JSON.parse(String(raw)); } catch { socket.close(1008); return; }
       if (!peer) {
+        // Serializa a primeira autenticação: mensagens concorrentes não podem criar peers órfãos.
+        if (authenticating) { socket.close(1008, "Auth already pending"); return; }
         if (packet?.type !== "auth" || typeof packet.token !== "string") { socket.close(1008); return; }
+        authenticating = true;
         try {
           const claims = verifyJwt(packet.token, "admin");
           const user = await AdminUser.findByPk(claims.sub);

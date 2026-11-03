@@ -3,7 +3,7 @@ import { resellerServerMonitor } from "../provider-monitor/visibility.routes.js"
 import { partnerNotificationRoutes } from "../notifications/notification.routes.js";
 import { z } from "zod";
 import { sequelize, Partner } from "../../db/models/index.js";
-import { validate } from "../../shared/validate.js";
+import { validate, partialInput } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { notFound } from "../../shared/errors.js";
 import { actorOf } from "../../shared/audit.js";
@@ -151,7 +151,7 @@ const providerOut = (p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, status
 const providerParams = z.object({ providerId: z.string().uuid() });
 router.post("/providers", macWriteLimiter, requireReseller, validate({ body: providerBody }), async (req, res) =>
   res.status(201).json(providerOut(await createProvider(req.user.partnerId, req.valid.body, actorOf(req), { max: MAX_PROVIDERS_PER_RESELLER }))));
-router.patch("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams, body: providerBody.partial() }), async (req, res) =>
+router.patch("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams, body: partialInput(providerBody) }), async (req, res) =>
   res.json(providerOut(await updateProvider(req.user.partnerId, req.valid.params.providerId, req.valid.body, actorOf(req)))));
 router.delete("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams }), async (req, res) => {
   await deleteProvider(req.user.partnerId, req.valid.params.providerId, actorOf(req));

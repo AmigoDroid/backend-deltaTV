@@ -32,6 +32,7 @@ export async function serversForCode(code, { bypassCache = false } = {}) {
     save(code.id,allowed);return allowed;
   }
   const rows = await PartnerProvider.findAll({where:{id:{[Op.in]:ids},partnerId:code.partnerId,status:"active"},raw:true});
+  rows.sort((a,b) => Number(b.id === code.providerId) - Number(a.id === code.providerId) || a.priority - b.priority || new Date(a.createdAt) - new Date(b.createdAt) || a.id.localeCompare(b.id));
   const allowed=plan.features.autoFailover ? (plan.features.maxServers === null ? rows : rows.slice(0,plan.features.maxServers)) : rows.filter(s=>s.id===code.providerId).slice(0,1);
   save(code.id,allowed);
   return allowed;

@@ -128,7 +128,7 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
     const a = await Activation.findOne({ where, transaction: t, lock: t.LOCK.UPDATE });
     if (!a) throw notFound("Ativação");
     if (!rule.from.includes(a.status)) {
-      throw new AppError(409, "INVALID_STATE", `Não é possível executar '${action}' em uma ativação '${a.status}'.`);
+      throw new AppError(409, "INVALID_STATE", "Esta ação não está disponível para o estado atual da ativação. Atualize a lista e tente novamente.");
     }
     if (action === "block" && !reason) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo do bloqueio.");
     // Remover apaga as credenciais do provedor: sem elas (e sem lista/licença própria) restaurar devolveria uma ativação que não toca nada.

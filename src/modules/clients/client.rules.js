@@ -31,7 +31,8 @@ export function parseDueDate(v) {
   if (v === undefined) return { value: undefined };
   if (v === null || v === "") return { value: null };
   const s = String(v);
-  const ok = /^\d{4}-\d{2}-\d{2}$/.test(s) && new Date(`${s}T00:00:00Z`).toISOString().slice(0, 10) === s;
+  const parsed = new Date(`${s}T00:00:00Z`);
+  const ok = /^\d{4}-\d{2}-\d{2}$/.test(s) && Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === s;
   if (!ok) return { error: "Data de vencimento inválida." };
   const year = Number(s.slice(0, 4));
   if (year < 2000 || year > 2100) return { error: "Data de vencimento fora do intervalo permitido." };

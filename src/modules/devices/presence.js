@@ -127,12 +127,11 @@ function prune(now = Date.now()) {
 /** Grava os sinais pendentes. Nunca lança: em falha, devolve os ids à fila para a próxima rodada. */
 export function flushPresence() {
   if (flushing) return flushing;
-  flushing = (async () => {
+  flushing = Promise.resolve().then(async () => {
     const ids = [...dirty];
     if (!ids.length) { prune(); return 0; }
     dirty.clear();
-    try {
-      for (let i = 0; i < ids.length; i += BATCH) {
+    for (let i = 0; i < ids.length; i += BATCH) {
         const part = ids.slice(i, i + BATCH);
         const stamps = part.map((id) => new Date(seen.get(id) ?? Date.now()).toISOString());
         try {
@@ -151,10 +150,7 @@ export function flushPresence() {
       }
       prune();
       return ids.length;
-    } finally {
-      flushing = null;
-    }
-  })();
+  }).finally(() => { flushing = null; });
   return flushing;
 }
 

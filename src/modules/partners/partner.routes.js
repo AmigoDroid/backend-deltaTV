@@ -1,7 +1,7 @@
 import { livePartnerIds } from "../../realtime/socket.js";
 import { Router } from "express";
 import { z } from "zod";
-import { validate } from "../../shared/validate.js";
+import { validate, partialInput } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
 import { requirePermission, can } from "../../middleware/authenticate.js";
@@ -167,7 +167,7 @@ router.post("/:id/codes/:codeId/revoke", requirePermission("partners:write"), va
 router.get("/:id/providers", requirePermission("partners:read"), validate({ params: id }), async (req, res) => res.json({ data: await providers.listProviders(req.valid.params.id) }));
 router.post("/:id/providers", requirePermission("partners:write"), validate({ params: id, body: providerBody }), async (req, res) =>
   res.status(201).json(await providers.createProvider(req.valid.params.id, req.valid.body, actorOf(req))));
-router.patch("/:id/providers/:providerId", requirePermission("partners:write"), validate({ params: prov, body: providerBody.partial() }), async (req, res) =>
+router.patch("/:id/providers/:providerId", requirePermission("partners:write"), validate({ params: prov, body: partialInput(providerBody) }), async (req, res) =>
   res.json(await providers.updateProvider(req.valid.params.id, req.valid.params.providerId, req.valid.body, actorOf(req))));
 router.delete("/:id/providers/:providerId", requirePermission("partners:write"), validate({ params: prov }), async (req, res) => {
   await providers.deleteProvider(req.valid.params.id, req.valid.params.providerId, actorOf(req));

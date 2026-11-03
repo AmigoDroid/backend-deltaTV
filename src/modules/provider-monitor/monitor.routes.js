@@ -7,7 +7,7 @@ import { Partner, PartnerCode, Activation, PartnerProvider, ProviderHealthEvent 
 import { Op, fn, col } from "sequelize";
 import { listCodeServerIds } from "./code-pool.service.js";
 import { AppError } from "../../shared/errors.js";
-import { validate } from "../../shared/validate.js";
+import { validate, partialInput } from "../../shared/validate.js";
 import { actorOf } from "../../shared/audit.js";
 import { listProviders,createProvider,updateProvider,deleteProvider } from "../providers/provider.service.js";
 import * as partners from "../partners/partner.service.js";
@@ -53,7 +53,7 @@ r.get("/codes",validate({query:z.object({q:z.string().trim().max(80).optional(),
   const page=req.valid.query.page;
   const q=(req.valid.query.q||"").replace(/[\\%_]/g,"\\$&");
   const where={partnerId:req.user.partnerId,...(q?{[Op.or]:[{code:{[Op.iLike]:`%${q}%`}},{label:{[Op.iLike]:`%${q}%`}}]}:{})};
-  const {rows,count}=await PartnerCode.findAndCountAll({where,attributes:["id","code","label","status","providerId","maxActivations","allowWebIssuance"],order:[["createdAt","DESC"]],limit:25,offset:(page-1)*25});
+  const {rows,count}=await PartnerCode.findAndCountAll({where,attributes:["id","code","label","status","providerId","maxActivations","allowWebIssuance","expiresAt"],order:[["createdAt","DESC"]],limit:25,offset:(page-1)*25});
   const pools=await listCodeServerIds(rows.map(c=>c.id));
   const balances=await commerce.balancesForCodes(rows.map(c=>c.id));
   const activationUsage=rows.length?await (async()=>{
@@ -65,7 +65,7 @@ r.get("/codes",validate({query:z.object({q:z.string().trim().max(80).optional(),
 });
 r.post("/servers",validate({body:srv}),async(req,res)=>res.status(201).json(await createProvider(req.user.partnerId,req.valid.body,actorOf(req),{max:50})));
 r.delete("/servers/:id",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{await deleteProvider(req.user.partnerId,req.valid.params.id,actorOf(req));res.status(204).end();});
-r.patch("/servers/:id",validate({params:z.object({id:z.string().uuid()}),body:srv.partial()}),async(req,res)=>res.json(await updateProvider(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req))));
+r.patch("/servers/:id",validate({params:z.object({id:z.string().uuid()}),body:partialInput(srv)}),async(req,res)=>res.json(await updateProvider(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req))));
 r.post("/codes",validate({body:z.object({code:z.string().trim().min(4).max(12).optional(),label:z.string().trim().max(120).optional(),providerId:z.string().uuid()})}),async(req,res)=>res.status(201).json(await partners.createCode(req.user.partnerId,req.valid.body,actorOf(req))));
 r.post("/codes/:id/revoke",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{await partners.revokeCode(req.user.partnerId,req.valid.params.id,actorOf(req));res.status(204).end();});
 r.put("/codes/:id/servers",validate({params:z.object({id:z.string().uuid()}),

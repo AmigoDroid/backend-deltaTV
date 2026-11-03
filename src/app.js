@@ -54,7 +54,7 @@ export function createApp() {
   // Notificar após respostas bem-sucedidas de operações autenticadas; a API continua sendo a fonte dos dados.
   app.use((req, res, next) => {
     if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
-    if (!/^\/api\/v1\/(admin|partner)\//.test(req.path)) return next();
+    if (!/^\/api\/v1\/(admin|partner|content-partner)\//.test(req.path)) return next();
     res.on("finish", () => {
       if (res.statusCode >= 200 && res.statusCode < 300 && req.user) {
         const isPartner = req.user.role === "partner";

@@ -89,11 +89,12 @@ function cacheSet(key, value, ttl, size) {
   const old = cache.get(key);
   if (old) cacheBytes -= old.size;
   cache.delete(key);
+  const max = env.xtreamCacheMaxBytes;
+  if (max <= 0 || size > max || ttl <= 0) return;
   cache.set(key, { value, at: Date.now(), ttl, size });
   cacheBytes += size;
-  const max = env.xtreamCacheMaxBytes;
   for (const [k, v] of cache) {
-    if (cacheBytes <= max || k === key) break;
+    if (cacheBytes <= max) break;
     cache.delete(k); // remove os mais antigos primeiro
     cacheBytes -= v.size;
   }

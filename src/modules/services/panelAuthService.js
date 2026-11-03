@@ -157,7 +157,4 @@ async function login({
   }
 }
 
-module.exports = {
-  login,
-  normalizeLoginResponse,
-};
+export { login, normalizeLoginResponse };

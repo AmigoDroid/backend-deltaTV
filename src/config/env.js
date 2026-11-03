@@ -97,7 +97,7 @@ export const env = Object.freeze({
   port: int("PORT", 3000),
   bindHost,
   trustProxy: resolveTrustProxy(e.TRUST_PROXY, { isProd, bindHost }),
-  corsOrigins: (e.CORS_ORIGINS || "http://localhost:5173,http://localhost:5174,http://localhost:5175")
+  corsOrigins: (e.CORS_ORIGINS || "http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:5176")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean),
@@ -145,7 +145,7 @@ export const env = Object.freeze({
   panelUrl: /^https?:\/\/[^\s"'<>]+$/.test(e.PANEL_URL || "") ? e.PANEL_URL : "",
   // Origem do portal público que recebe os convites de pré-cadastro.
   partnerPortalUrl: (() => {
-    const raw = (e.PARTNER_PORTAL_URL || (isProd ? "https://parceiro.deltatv.com.br" : "http://localhost:5175")).replace(/\/+$/, "");
+    const raw = (e.PARTNER_PORTAL_URL || (isProd ? "https://parceiro.deltatv.com.br" : "http://localhost:5176")).replace(/\/+$/, "");
     const url = new URL(raw);
     if (!["http:", "https:"].includes(url.protocol) || (isProd && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
       throw new Error("PARTNER_PORTAL_URL deve ser a origem pública do painel (HTTPS em produção).");

@@ -7,8 +7,8 @@ async function createCustomer({
   timeoutMs = 15000,
   token,
 }) {
-  if (!cookies) {
-    throw new Error("Os cookies da sessão são obrigatórios.");
+  if (!cookies && !token) {
+    throw new Error("Informe o token ou os cookies da sessão.");
   }
 
   if (!customer || typeof customer !== "object") {
@@ -51,16 +51,15 @@ async function createCustomer({
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(cookies ? { Cookie: cookies } : {}),
         "x-app-version": "3.94",
         locale: "pt",
         Origin: "https://imperiotv.sbs",
         Referer: "https://imperiotv.sbs/",
       },
 
-      if(cookies) {
-        headers.Cookie = cookies;
-      },
+      redirect: "error",
       body: JSON.stringify({
         bouquets: customer.bouquets ?? "",
         connections: customer.connections ?? 1,
@@ -107,4 +106,4 @@ async function createCustomer({
   }
 }
 
-module.exports = { createCustomer };
+export { createCustomer };

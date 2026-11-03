@@ -209,7 +209,7 @@ async function fulfil(chargeId, info, actor) {
       if (!c) throw notFound("Cobrança");
       if (c.status === "paid" || c.status === "refunded") return { already: true, reactivated: false };
       if (info.amountCents !== c.amountCents) {
-        throw new AppError(422, "AMOUNT_MISMATCH", `Valor pago (${info.amountCents} centavos) diferente do cobrado (${c.amountCents}).`);
+        throw new AppError(422, "AMOUNT_MISMATCH", `Valor pago (${(info.amountCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}) diferente do cobrado (${(c.amountCents / 100).toLocaleString("pt-BR", { style: "currency", currency: "BRL" })}).`);
       }
       const now = new Date();
       let paymentId = null;

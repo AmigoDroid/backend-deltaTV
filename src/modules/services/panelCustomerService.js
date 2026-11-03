@@ -175,6 +175,4 @@ async function listCustomers({
   }
 }
 
-module.exports = {
-  listCustomers,
-};
+export { listCustomers };

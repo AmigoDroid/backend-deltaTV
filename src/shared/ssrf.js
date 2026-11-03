@@ -112,8 +112,15 @@ export function safeGet(rawUrl, { headers = {}, signal, maxRedirects = 3, timeou
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
         res.resume();
         if (maxRedirects <= 0) return reject(new AppError(502, "TOO_MANY_REDIRECTS", "Redirecionamentos em excesso."));
-        const next = new URL(res.headers.location, url).href;
-        return safeGet(next, { headers, signal, maxRedirects: maxRedirects - 1, timeoutMs }).then(resolve, reject);
+        let next;
+        try { next = new URL(res.headers.location, url); }
+        catch { return reject(new AppError(502, "INVALID_REDIRECT", "A origem retornou um redirecionamento inválido.")); }
+        // Cabeçalhos de autenticação pertencem somente à origem que os recebeu.
+        const nextHeaders = { ...headers };
+        if (next.origin !== url.origin) for (const key of Object.keys(nextHeaders)) {
+          if (["authorization", "cookie", "proxy-authorization", "host"].includes(key.toLowerCase())) delete nextHeaders[key];
+        }
+        return safeGet(next.href, { headers: nextHeaders, signal, maxRedirects: maxRedirects - 1, timeoutMs }).then(resolve, reject);
       }
       res.finalUrl = url.href; // URL após os redirects (resolve URIs relativas de playlists HLS)
       return resolve(res);

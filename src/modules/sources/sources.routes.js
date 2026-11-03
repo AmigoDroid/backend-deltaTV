@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { validate } from "../../shared/validate.js";
+import { validate, partialInput } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
 import { requirePermission } from "../../middleware/authenticate.js";
@@ -30,7 +30,7 @@ router.post(
   async (req, res) => res.status(201).json(await svc.createSource(req.valid.body, actorOf(req))),
 );
 router.get("/:id", requirePermission("sources:read"), validate({ params: id }), async (req, res) => res.json(await svc.getSource(req.valid.params.id)));
-router.patch("/:id", requirePermission("sources:write"), validate({ params: id, body: sourceBase.partial().extend({ url: z.string().max(2000).optional(), status: z.enum(["active", "disabled"]).optional() }) }), async (req, res) =>
+router.patch("/:id", requirePermission("sources:write"), validate({ params: id, body: partialInput(sourceBase).extend({ url: z.string().max(2000).optional(), status: z.enum(["active", "disabled"]).optional() }) }), async (req, res) =>
   res.json(await svc.updateSource(req.valid.params.id, req.valid.body, actorOf(req))));
 router.delete("/:id", requirePermission("sources:write"), validate({ params: id }), async (req, res) => { await svc.deleteSource(req.valid.params.id, actorOf(req)); res.status(204).end(); });
 router.put("/:id/partners", requirePermission("sources:write"), validate({ params: id, body: z.object({ partnerIds: z.array(z.string().uuid()).max(500) }) }), async (req, res) => {
@@ -52,7 +52,7 @@ const channel = z.object({
 });
 router.get("/:id/channels", requirePermission("sources:read"), validate({ params: id, query: z.object({ ...pageQuery, q: z.string().max(100).optional() }) }), async (req, res) => res.json(await svc.listChannels(req.valid.params.id, req.valid.query)));
 router.post("/:id/channels", requirePermission("sources:write"), validate({ params: id, body: channel }), async (req, res) => res.status(201).json(await svc.createChannel(req.valid.params.id, req.valid.body, actorOf(req))));
-router.patch("/:id/channels/:childId", requirePermission("sources:write"), validate({ params: child, body: channel.partial() }), async (req, res) => res.json(await svc.updateChannel(req.valid.params.id, req.valid.params.childId, req.valid.body, actorOf(req))));
+router.patch("/:id/channels/:childId", requirePermission("sources:write"), validate({ params: child, body: partialInput(channel) }), async (req, res) => res.json(await svc.updateChannel(req.valid.params.id, req.valid.params.childId, req.valid.body, actorOf(req))));
 router.delete("/:id/channels/:childId", requirePermission("sources:write"), validate({ params: child }), async (req, res) => { await svc.deleteChannel(req.valid.params.id, req.valid.params.childId, actorOf(req)); res.status(204).end(); });
 
 export default router;
