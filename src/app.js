@@ -33,8 +33,9 @@ export function createApp() {
         if (!origin || env.corsOrigins.includes(origin)) return cb(null, true);
         return cb(new AppError(403, "CORS_NOT_ALLOWED", "Origem não permitida."));
       },
-      methods: ["GET", "POST", "PATCH", "PUT", "DELETE"],
-      allowedHeaders: ["Content-Type", "Authorization", "X-Webhook-Signature", "X-Webhook-Timestamp"],
+      methods: ["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE"],
+      exposedHeaders: ["Content-Range", "Accept-Ranges", "Content-Length"],
+      allowedHeaders: ["Content-Type", "Authorization", "Range", "X-Webhook-Signature", "X-Webhook-Timestamp"],
     }),
   );
   // rawBody é necessário para validar a assinatura HMAC dos webhooks.

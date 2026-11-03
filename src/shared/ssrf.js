@@ -97,7 +97,7 @@ export function safeLookup(hostname, options, callback) {
 }
 
 // GET com validação de destino a cada salto (até `maxRedirects`).
-export function safeGet(rawUrl, { headers = {}, signal, maxRedirects = 3, timeoutMs = 20000 } = {}) {
+export function safeGet(rawUrl, { headers = {}, signal, maxRedirects = 3, timeoutMs = 20000, method = "GET" } = {}) {
   return new Promise((resolve, reject) => {
     let url;
     try {
@@ -108,7 +108,10 @@ export function safeGet(rawUrl, { headers = {}, signal, maxRedirects = 3, timeou
       return reject(e);
     }
     const client = url.protocol === "https:" ? https : http;
-    const req = client.get(url, { headers, signal, lookup: safeLookup, timeout: timeoutMs }, (res) => {
+    if (!["GET", "HEAD"].includes(method)) return reject(new AppError(400, "INVALID_METHOD", "Método de origem inválido."));
+    const req = client.request(url, { method, headers, signal, lookup: safeLookup, timeout: timeoutMs }, (res) => {
+      // Guarda o IP realmente conectado antes de o socket HEAD encerrar.
+      res.connectedAddress = res.socket?.remoteAddress;
       if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
         res.resume();
         if (maxRedirects <= 0) return reject(new AppError(502, "TOO_MANY_REDIRECTS", "Redirecionamentos em excesso."));
@@ -120,12 +123,13 @@ export function safeGet(rawUrl, { headers = {}, signal, maxRedirects = 3, timeou
         if (next.origin !== url.origin) for (const key of Object.keys(nextHeaders)) {
           if (["authorization", "cookie", "proxy-authorization", "host"].includes(key.toLowerCase())) delete nextHeaders[key];
         }
-        return safeGet(next.href, { headers: nextHeaders, signal, maxRedirects: maxRedirects - 1, timeoutMs }).then(resolve, reject);
+        return safeGet(next.href, { headers: nextHeaders, signal, maxRedirects: maxRedirects - 1, timeoutMs, method }).then(resolve, reject);
       }
       res.finalUrl = url.href; // URL após os redirects (resolve URIs relativas de playlists HLS)
       return resolve(res);
     });
     req.on("timeout", () => req.destroy(new AppError(504, "ORIGIN_TIMEOUT", "Tempo esgotado ao acessar a origem.")));
     req.on("error", reject);
+    req.end();
   });
 }

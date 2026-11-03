@@ -2,6 +2,7 @@ import { Op } from "sequelize";
 import { sequelize, PartnerCode, PartnerProvider, CodeServerPool, ProviderHealth } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
+import { clearMediaResolutionCache } from "../../shared/nginx-media.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import {getServicePlan} from "../service-plans/plan.service.js";
 
@@ -11,6 +12,7 @@ const poolCache = new Map();
 export function invalidateServerPools(codeId) {
   if (codeId) poolCache.delete(codeId); else poolCache.clear();
   clearMirrorAuth();
+  clearMediaResolutionCache();
 }
 function save(key, rows) {
   poolCache.delete(key);

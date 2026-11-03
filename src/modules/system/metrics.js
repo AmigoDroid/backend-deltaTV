@@ -79,7 +79,7 @@ export function readHostMetrics() {
     ...memory,
     storage: rootStorage(),
     network: readNetworkMetrics(),
-    transmission: { nodeActiveStreams: relayStats().activeStreams, nodeStreamLimit: env.proxyMaxConcurrent, nginxAccelEnabled: env.accelOrigin },
+    transmission: { nodeActiveStreams: relayStats().activeStreams, nodeStreamLimit: env.proxyMaxConcurrent, nginxAccelEnabled: env.nginxMediaProxy || env.accelOrigin, mediaProxyEngine: env.nginxMediaProxy ? "nginx" : "node" },
     uptimeSeconds: Math.floor(os.uptime()),
     node: { rss: runtime.rss, heapUsed: runtime.heapUsed, heapTotal: runtime.heapTotal, uptimeSeconds: Math.floor(process.uptime()) },
   };

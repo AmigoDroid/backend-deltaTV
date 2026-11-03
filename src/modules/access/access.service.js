@@ -1,5 +1,5 @@
 import { Op } from "sequelize";
-import { sequelize, Activation, License, Partner, PartnerProvider, DeviceSession, ContentPartnerTerms, PartnerCode } from "../../db/models/index.js";
+import { sequelize, Activation, License, Partner, PartnerProvider, DeviceSession, ContentPartnerTerms, PartnerCode, Device } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
 import { signJwt, randomToken, sha256 } from "../../shared/crypto.js";
@@ -42,7 +42,7 @@ export async function overdueSinceFor(partnerId, transaction) {
 /** Carrega o estado ATUAL no banco e aplica a política. Chamado em toda requisição protegida. */
 export async function checkActivation(activationId, { now = new Date(), transaction } = {}) {
   const activation = await Activation.findByPk(activationId, {
-    include: [License, Partner, PartnerProvider, { model: License, as: "GrantedLicense" }], transaction,
+    include: [License, Partner, PartnerProvider, { model: License, as: "GrantedLicense" }, { model: Device, attributes: ["id", "platform"], required: false }], transaction,
   });
   if (!activation) return { activation: null, decision: evaluateAccess({ activation: null }) };
   // Com licença concedida pelo estoque do revendedor, o prazo é o da licença: a inadimplência do portal não é consultada.

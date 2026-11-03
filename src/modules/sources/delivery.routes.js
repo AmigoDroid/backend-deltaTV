@@ -1,5 +1,6 @@
-import { Router } from "express";
 import { pipeline } from "node:stream/promises";
+import { Router } from "express";
+import { relay } from "../../shared/relay.js";
 import { Readable } from "node:stream";
 import net from "node:net";
 import { env } from "../../config/env.js";
@@ -8,7 +9,7 @@ import { parseHttpUrl, isPrivateAddress, safeGet } from "../../shared/ssrf.js";
 import { requireDevice } from "../access/access.middleware.js";
 import { checkActivation } from "../access/access.service.js";
 import { decryptSecret, encryptSecret } from "../../shared/crypto.js";
-import { isPlaylistHead, rewritePlaylist } from "./hls-rewrite.js";
+import { isPlaylistHead, readMediaHead, rewritePlaylist } from "./hls-rewrite.js";
 import { liveVariantOrigin } from "./live-variant.js";
 import { repo as catalogRepo } from "../catalog/catalog.runtime.js";
 import { resolvePlayable, isUuid } from "../catalog/query.service.js";
@@ -79,7 +80,7 @@ router.get("/:sourceId/:ref", requireDevice("play"), async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer"); // não vaza o token de reprodução para a origem
 
-  if (deliveryMode === "proxy")
+  if (deliveryMode === "proxy" || env.nginxMediaProxy)
     return proxyStream(req, res, target, activation.id, hlsCtx(req));
 
   const url = parseHttpUrl(target);
@@ -122,6 +123,15 @@ const hlsCtx = (req) => ({
 });
 
 async function proxyStream(req, res, target, activationId, ctx) {
+  if (env.nginxMediaProxy) return relay(req, res, target, {
+    media: true,
+    hlsWrap: abs => `/api/v1/play/${ctx.sourceId}/_hls/${encryptSecret(abs)}?t=${encodeURIComponent(ctx.token)}`,
+    recheck: async () => (await checkActivation(activationId)).decision.allowed,
+  });
+  return nodeProxyStream(req, res, target, activationId, ctx);
+}
+
+async function nodeProxyStream(req, res, target, activationId, ctx) {
   if (env.proxyMaxConcurrent > 0 && activeProxies >= env.proxyMaxConcurrent)
     throw new AppError(
       503,
@@ -147,7 +157,7 @@ async function proxyStream(req, res, target, activationId, ctx) {
       !/^(video|audio)\//i.test(ct);
     if (inspect) {
       const it = upstream[Symbol.asyncIterator]();
-      const first = await it.next();
+      const first = await readMediaHead(it);
       if (first.done) {
         res.status(200);
         return res.end();

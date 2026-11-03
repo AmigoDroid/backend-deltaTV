@@ -158,7 +158,7 @@ export async function mediaStream(ctx, req, res, kind, file) {
 
   // Origem = baseUrl cadastrada: <baseUrl>/{live|movie|series}/<usuário>/<senha>/<id>.<ext>
   const url = playUrlFor(accountOf(ctx.cred), { kind, id, ext });
-  if (modeFor(ctx, kind) === "redirect") {
+  if (!env.nginxMediaProxy && modeFor(ctx, kind) === "redirect") {
     // Filme/série: a origem é http e o player é https (conteúdo misto). O Node só autoriza; o Nginx retransmite
     // (location interno /_origin/ em nginx/api-deltatv.conf), então o navegador nunca vê a URL da origem.
     if (kind !== "live" && env.accelOrigin) return accelTo(res, url);
@@ -167,6 +167,7 @@ export async function mediaStream(ctx, req, res, kind, file) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
   return relay(req, res, url, {
+    media: true,
     stream: true,
     sessionKey: kind === "live" ? ctx.token : undefined,
     hlsWrap: hlsWrapFor(ctx),
@@ -185,6 +186,7 @@ export async function hlsPart(ctx, req, res, blob) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer");
   return relay(req, res, target, {
+    media: true,
     hlsWrap: hlsWrapFor(ctx),
     recheck: ctx.recheck,
   });

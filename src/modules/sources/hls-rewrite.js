@@ -16,6 +16,29 @@ export function isPlaylistHead(buf) {
 }
 
 /**
+ * O cabeçalho pode chegar dividido entre chunks TCP. Leia somente até ser
+ * possível reconhecer #EXTM3U; mídia binária segue sem acumular o stream.
+ */
+export async function readMediaHead(iterator) {
+  const chunks = [];
+  let length = 0;
+  for (;;) {
+    const next = await iterator.next();
+    if (next.done) return { done: length === 0, value: Buffer.concat(chunks, length) };
+    const chunk = Buffer.from(next.value);
+    if (!chunk.length) continue;
+    chunks.push(chunk); length += chunk.length;
+    const prefix = Buffer.concat(chunks, length);
+    const bom = [0xef, 0xbb, 0xbf];
+    const partialBom = length < 3 && [...prefix].every((byte, i) => byte === bom[i]);
+    const head = prefix.subarray(0, 64).toString("utf8").replace(/^\uFEFF/, "").trimStart();
+    const partialMagic = head.length < 7 && "#EXTM3U".startsWith(head);
+    if (length < 64 && (partialBom || partialMagic)) continue;
+    return { done: false, value: prefix };
+  }
+}
+
+/**
  * @param {string} text   corpo da playlist
  * @param {string} base   URL final da origem (resolve URIs relativas)
  * @param {(absUrl:string)=>string} wrap  devolve a URI do gateway para uma URL absoluta http(s)

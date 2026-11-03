@@ -3,8 +3,9 @@ import { Readable } from "node:stream";
 import zlib from "node:zlib";
 import { env } from "../config/env.js";
 import { AppError } from "./errors.js";
+import { tryNginxMedia } from "./nginx-media.js";
 import { safeGet } from "./ssrf.js";
-import { isPlaylistHead, rewritePlaylist } from "../modules/sources/hls-rewrite.js";
+import { isPlaylistHead, readMediaHead, rewritePlaylist } from "../modules/sources/hls-rewrite.js";
 
 /**
  * Núcleo de retransmissão (modo PROXY): o servidor busca o conteúdo na origem e entrega ao cliente.
@@ -141,6 +142,7 @@ async function readAll(it, first, limit, tooBig) {
  */
 export async function relay(req, res, target, opts = {}) {
   const { stream = false, hlsWrap, transform, through, recheck, sessionKey, timeoutMs, gzip = false } = opts;
+  if (opts.media && env.nginxMediaProxy && await tryNginxMedia(req, res, target)) return;
   if (stream && env.proxyMaxConcurrent > 0 && activeStreams >= env.proxyMaxConcurrent) {
     throw new AppError(503, "PROXY_BUSY", "Capacidade de retransmissão esgotada.");
   }
@@ -188,7 +190,7 @@ export async function relay(req, res, target, opts = {}) {
     let body = upstream;
     if (wantsHls || wantsTransform) {
       const it = upstream[Symbol.asyncIterator]();
-      const first = await it.next();
+      const first = await readMediaHead(it);
       if (first.done) {
         res.statusCode = 200;
         res.end();

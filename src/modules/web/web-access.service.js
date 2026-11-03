@@ -1,3 +1,4 @@
+import { env } from "../../config/env.js";
 import { Op, UniqueConstraintError } from "sequelize";
 import {
   sequelize, Device, Activation, License, Partner, PartnerCode, PartnerProvider, WebAccess, Renewal, LicenseEvent, AdminUser,
@@ -95,7 +96,8 @@ async function serialize(wa) {
     license,
     access,
     // Efetivo (o que o espelho aplica) e o que foi sobrescrito neste acesso.
-    deliveryModes: activation ? deliveryModesOf(activation) : null,
+    deliveryModes: activation ? deliveryModesOf({ ...activation.toJSON(), Device: { platform: "web" } }) : null,
+    gatewayManaged: env.nginxMediaProxy,
     deliveryOverrides: sanitizeModes(activation?.deliveryModes),
   };
 }

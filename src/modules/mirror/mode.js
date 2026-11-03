@@ -7,6 +7,7 @@
  *  2. lista própria do cliente (URL cifrada na ativação): redirect — o app fala direto com o painel do provedor;
  *  3. parceria: o modo do provedor.
  */
+import { env } from "../../config/env.js";
 import { resolveModes, needsMirror, MODE_KINDS } from "../web/web-modes.js";
 
 export const MIRROR_PASS = "mirror"; // o "usuário" é o token; a senha é só um valor fixo para players que exigem os dois campos
@@ -40,7 +41,11 @@ export function describeDelivery(activation) {
  * Ordem: override por tipo da ativação (activations.delivery_modes) > modo único do superadmin > automático (deliveryModeOf).
  * Sem override, os quatro tipos valem o mesmo que deliveryModeOf (comportamento de sempre das TVs).
  */
-export const deliveryModesOf = (activation) =>
-  resolveModes({ deliveryModes: activation?.deliveryModes, forced: overrideOf(activation), fallback: deliveryModeOf(activation) });
+export const deliveryModesOf = (activation) => {
+  const web = activation?.Device?.platform === "web" || /^webtv-/i.test(activation?.installationId || "");
+  // HTTPS do Player Web: até acessos antigos com redirect passam pelo espelho.
+  if (env.nginxMediaProxy && web) return Object.fromEntries(MODE_KINDS.map(kind => [kind, "proxy"]));
+  return resolveModes({ deliveryModes: activation?.deliveryModes, forced: overrideOf(activation), fallback: deliveryModeOf(activation) });
+};
 
 export { needsMirror, MODE_KINDS };

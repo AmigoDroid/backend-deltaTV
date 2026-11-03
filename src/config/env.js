@@ -123,6 +123,8 @@ export const env = Object.freeze({
   proxyMaxConcurrent: int("PROXY_MAX_CONCURRENT", 20),
   // Filme/série em "redirect": o Nginx retransmite (X-Accel-Redirect) em vez de mandar o navegador à origem http.
   accelOrigin: e.ACCEL_ORIGIN === "1",
+  // Ativar somente após instalar o snippet Nginx incluído nesta versão.
+  nginxMediaProxy: e.NGINX_MEDIA_PROXY === "true",
   // Rota espelho Xtream (/player_api.php, /live, /movie, /series): validade da credencial entregue ao app.
   // Autorização da rota espelho em memória (modo proxy/redirect, credenciais, sessão e licença): 0 = consulta o banco a cada request.
   // Revogação/bloqueio valem em até este tempo (e na hora, neste processo, quando a sessão é revogada pelo próprio servidor).
