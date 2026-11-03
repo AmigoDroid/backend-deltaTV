@@ -13,12 +13,12 @@ test("somente hash SHA-256 do convite é persistido", () => {
   assert.equal(hashInviteToken(token), hashInviteToken(token));
   assert.ok(!hashInviteToken(token).includes(token));
 });
-test("link do convite usa querystring, preservável após redirecionamento de e-mail", () => {
+test("link do convite usa rota pública /convite/TOKEN, sem query ou hash", () => {
   const token = generateInviteToken();
   const url = new URL(inviteUrl("https://parceiro.deltatv.com.br", token));
-  assert.equal(url.searchParams.get("convite"), token);
+  assert.equal(url.search, "");
   assert.equal(url.hash, "");
-  assert.equal(url.pathname, "/");
+  assert.equal(url.pathname, `/convite/${token}`);
 });
 test("convites só são válidos se convidados e dentro do prazo", () => {
   const now = Date.now();
