@@ -9,6 +9,7 @@ import { hashPassword, verifyPassword } from "../../shared/crypto.js";
 import * as svc from "./auth.service.js";
 import history from "./login-history.routes.js";
 import { registerReseller } from "../partners/reseller-signup.service.js";
+import { verifyPreRegistration, completePreRegistration } from "../partners/partner-invite.service.js";
 
 const router = Router();
 router.use("/history", history);
@@ -38,6 +39,17 @@ router.post(
     res.status(202).json(SIGNUP_OK);
   },
 );
+
+// Endpoints públicos: o segredo viaja SOMENTE no corpo POST (nunca no log de URL).
+const invitationToken = z.string().min(32).max(100).regex(/^[A-Za-z0-9_-]+$/);
+router.post("/partner-invite/verify", loginLimiter,
+  validate({ body: z.object({ token: invitationToken }).strict() }),
+  async (req, res) => res.set("Cache-Control", "no-store").json(await verifyPreRegistration(req.valid.body.token)));
+router.post("/partner-invite/complete", signupLimiter,
+  validate({ body: z.object({
+    token: invitationToken, companyName: z.string().trim().min(2).max(160), password: z.string().min(12).max(128),
+  }).strict() }),
+  async (req, res) => res.set("Cache-Control", "no-store").json(await completePreRegistration(req.valid.body)));
 
 router.post(
   "/refresh", refreshLimiter,

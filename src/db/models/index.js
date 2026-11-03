@@ -35,6 +35,14 @@ export const AdminUser = def("AdminUser", "admin_users", {
   failedLogins: int(0), lockedUntil: ts(), tokenVersion: int(0), lastLoginAt: ts(), lastActivityAt: ts(),
 });
 
+// Registro de convite: ainda NÃO é uma conta ou uma parceria ativa.
+export const PartnerPreRegistration = def("PartnerPreRegistration", "partner_pre_registrations", {
+  name: str(160, { allowNull: false }), email: str(200, { allowNull: false }),
+  status: str(20, { allowNull: false, defaultValue: "draft" }),
+  tokenHash: { type: T.CHAR(64) }, expiresAt: ts(), emailSentAt: ts(),
+  completedAt: ts(), completedPartnerId: { type: T.UUID }, createdBy: { type: T.UUID },
+});
+
 export const LoginHistory = def("LoginHistory", "login_history", {
   adminUserId: { type: T.UUID }, userEmail: str(200), role: str(20), partnerId: { type: T.UUID },
   outcome: str(12, { allowNull: false }), reason: str(60), ip: str(64), isp: str(160),

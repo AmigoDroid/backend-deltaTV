@@ -143,6 +143,15 @@ export const env = Object.freeze({
   pairingTokenTtl: int("PAIRING_TOKEN_TTL_SECONDS", 900),
   // URL do painel do revendedor (opcional): a página do QR mostra um atalho "Abrir painel" se estiver definida (http/https).
   panelUrl: /^https?:\/\/[^\s"'<>]+$/.test(e.PANEL_URL || "") ? e.PANEL_URL : "",
+  // Origem do portal público que recebe os convites de pré-cadastro.
+  partnerPortalUrl: (() => {
+    const raw = (e.PARTNER_PORTAL_URL || (isProd ? "https://parceiro.deltatv.com.br" : "http://localhost:5175")).replace(/\/+$/, "");
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || (isProd && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+      throw new Error("PARTNER_PORTAL_URL deve ser a origem pública do painel (HTTPS em produção).");
+    }
+    return url.origin;
+  })(),
   // Lido a cada uso (getter) para permitir alternar em testes; em produção deve permanecer "false".
   get allowPrivateSources() {
     return !isProd && process.env.ALLOW_PRIVATE_SOURCES === "true";

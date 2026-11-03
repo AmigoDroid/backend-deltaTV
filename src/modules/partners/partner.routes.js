@@ -17,6 +17,7 @@ import {getServicePlan,updateServicePlan} from "../service-plans/plan.service.js
 import { contractOverview } from "./contract-overview.service.js";
 
 import { partnerDeletionPreview, deletePartnerAsSuper } from "../admin-deletion.service.js";
+import * as preReg from "./partner-invite.service.js";
 
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
@@ -64,6 +65,17 @@ router.post("/", requirePermission("partners:write"), validate({ body: createBod
   const p = await svc.createPartner(req.valid.body, actorOf(req));
   res.status(201).json(await svc.getPartner(p.id));
 });
+// Pré-cadastro por convite: registro independente, sem gerar parceiro antes da confirmação por e-mail.
+const preRegId = z.object({ preRegId: z.string().uuid() });
+router.get("/pre-registrations", requirePermission("partners:read"), async (_req, res) =>
+  res.set("Cache-Control", "no-store").json({ data: await preReg.listPreRegistrations() }));
+router.post("/pre-registrations", requirePermission("partners:write"), validate({ body: z.object({
+  name: z.string().trim().min(2).max(160), email: z.string().trim().email().max(200), sendEmail: z.boolean().default(false),
+}).strict() }), async (req, res) => res.status(201).json(await preReg.createPreRegistration(req.valid.body, actorOf(req))));
+router.post("/pre-registrations/:preRegId/send", requirePermission("partners:write"), validate({ params: preRegId }), async (req, res) =>
+  res.json(await preReg.sendPreRegistrationInvite(req.valid.params.preRegId, actorOf(req))));
+router.post("/pre-registrations/:preRegId/cancel", requirePermission("partners:write"), validate({ params: preRegId }), async (req, res) =>
+  res.json(await preReg.cancelPreRegistration(req.valid.params.preRegId, actorOf(req))));
 router.get("/codes/check", requirePermission("partners:read"), codeCheckLimiter, validate({ query: z.object({ code: z.string().max(40) }) }), async (req, res) => res.json(await svc.checkCode(req.valid.query.code)));
 router.get("/:id/deletion-preview", requirePermission("override"), validate({ params: id }), async (req, res) => res.set("Cache-Control", "no-store").json(await partnerDeletionPreview(req.valid.params.id, actorOf(req))));
 router.delete("/:id", requirePermission("override"), validate({ params: id, body: z.object({
