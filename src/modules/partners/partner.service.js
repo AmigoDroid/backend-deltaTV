@@ -48,7 +48,7 @@ export async function listPartners({ q, status, kind, page, pageSize }) {
   if (status === "expired") Object.assign(where, { status: "active", endsAt: { [Op.lte]: new Date() } });
   else if (status === "pending") Object.assign(where, { status: "suspended", statusReason: SIGNUP_PENDING_REASON }); // cadastros públicos aguardando aprovação
   else if (status) where.status = status;
-  if (q) where[Op.or] = [{ name: { [Op.iLike]: `%${q}%` } }, { slug: { [Op.iLike]: `%${q}%` } }];
+  if (q) where[Op.or] = ["name", "slug", "contactName", "contactEmail"].map((field) => ({ [field]: { [Op.iLike]: `%${q}%` } }));
   const { rows, count } = await Partner.findAndCountAll({
     where, attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"], [sequelize.literal(PORTAL_ACTIVITY), "lastPortalActivityAt"]] },
     order: [["name", "ASC"]], ...pageOf({ page, pageSize }),

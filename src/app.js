@@ -52,15 +52,16 @@ export function createApp() {
   app.use("/dl", appDownloadFiles);
 
   app.use(apiLimiter);
-  // Notificar após respostas bem-sucedidas de operações autenticadas; a API continua sendo a fonte dos dados.
+  // Notificar após respostas bem-sucedidas; o convite público também cria uma parceria.
   app.use((req, res, next) => {
     if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
-    if (!/^\/api\/v1\/(admin|partner|content-partner)\//.test(req.path)) return next();
+    const completesPartnerInvite = req.method === "POST" && req.path === "/api/v1/auth/partner-invite/complete";
+    if (!completesPartnerInvite && !/^\/api\/v1\/(admin|partner|content-partner)\//.test(req.path)) return next();
     res.on("finish", () => {
-      if (res.statusCode >= 200 && res.statusCode < 300 && req.user) {
-        const isPartner = req.user.role === "partner";
+      if (res.statusCode >= 200 && res.statusCode < 300 && (req.user || completesPartnerInvite)) {
+        const isPartner = req.user?.role === "partner";
         const segments = req.path.split("/").filter(Boolean);
-        const area = segments[3] || "data";  // /api/v1/admin/devices => devices
+        const area = completesPartnerInvite ? "partners" : segments[3] || "data";  // /api/v1/admin/devices => devices
         const topic = area === "app-downloads" ? "downloads" : area;
         // Em operações administrativas, apenas administradores recebem atualização global.
         // Parceiros só recebem eventos associados ao seu próprio cadastro.
