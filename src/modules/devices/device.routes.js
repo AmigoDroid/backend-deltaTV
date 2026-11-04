@@ -84,12 +84,17 @@ router.delete(
 router.get("/presence", requirePermission("devices:read"), async (_req, res) =>
   res.set("Cache-Control", "no-store").json({ online: await countOnline(), windowSeconds: env.presenceWindowSeconds }));
 
+router.get("/by-mac", requirePermission("devices:read"), validate({ query: z.object({
+  ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(),
+  status: z.enum(["active", "blocked", "revoked", "unlinked"]).optional(),
+}) }), async (req, res) => res.set("Cache-Control", "no-store").json(await svc.listDevices(req.valid.query)));
+
 router.get(
   "/", requirePermission("devices:read"),
   validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(), status: z.enum(["active", "blocked", "revoked"]).optional(), licenseId: z.string().uuid().optional(), partnerId: z.string().uuid().optional() }) }),
   async (req, res) => res.json(await svc.listActivations(req.valid.query)),
 );
-router.get("/history", requirePermission("devices:read"), validate({ query: z.object({ mac: z.string().min(11).max(20) }) }), async (req, res) => res.json(await svc.deviceHistory(req.valid.query.mac)));
+router.get("/history", requirePermission("devices:read"), validate({ query: z.object({ ...pageQuery, mac: z.string().min(11).max(20) }) }), async (req, res) => res.set("Cache-Control", "no-store").json(await svc.deviceHistory(req.valid.query.mac, req.valid.query)));
 router.get("/activations/:id", requirePermission("devices:read"), validate({ params: id }), async (req, res) => res.json(await svc.getActivation(req.valid.params.id)));
 router.get("/registrations/:id/attribution", requirePermission("devices:read"), validate({ params: id }), async (req, res) => res.json(await svc.deviceAttribution(req.valid.params.id)));
 

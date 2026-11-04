@@ -1,5 +1,5 @@
 import { Op, UniqueConstraintError } from "sequelize";
-import { sequelize, Activation, Device, License, Partner, PartnerProvider, Customer, AuditLog, AdminUser } from "../../db/models/index.js";
+import { sequelize, Activation, Device, License, Partner, PartnerProvider, Customer, AuditLog, AdminUser, WebAccess } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { macSearchSql, normalizeMac } from "../../shared/mac.js";
@@ -55,6 +55,41 @@ export async function listActivations({ q, status, licenseId, partnerId, online,
   return paged(rows.map((a) => serialize(a, { delivery: !scope.partnerId })), count, { page, pageSize });
 }
 
+/** Pagina aparelhos antes de carregar os vínculos: cada MAC ocupa exatamente uma linha. */
+export async function listDevices({ q, status, online, page, pageSize }) {
+  const conditions = [sequelize.literal('"Device"."mac" IS NOT NULL')];
+  if (q) conditions.push(sequelize.literal(macSearchSql("Device", q, value => sequelize.escape(value))));
+  const exists = clause => `EXISTS (SELECT 1 FROM activations a WHERE a.device_id = "Device".id ${clause})`;
+  if (status === "active") conditions.push(sequelize.literal(exists("AND a.status = 'active'")));
+  if (status === "blocked") conditions.push(sequelize.literal(`NOT (${exists("AND a.status = 'active'")}) AND ${exists("AND a.status = 'blocked'")}`));
+  if (status === "revoked") conditions.push(sequelize.literal(`${exists("")} AND NOT (${exists("AND a.status <> 'revoked'")})`));
+  if (status === "unlinked") conditions.push(sequelize.literal(`NOT (${exists("")})`));
+  if (online === "true" || online === "false") {
+    await flushPresence();
+    const recent = `"Device".last_seen_at >= now() - (${Math.trunc(env.presenceWindowSeconds)} * interval '1 second')`;
+    conditions.push(sequelize.literal(online === "true" ? recent : `("Device".last_seen_at IS NULL OR NOT (${recent}))`));
+  }
+  const total = state => `(SELECT count(*) FROM activations a WHERE a.device_id = "Device".id AND a.status = '${state}')`;
+  const { rows, count } = await Device.findAndCountAll({
+    where: conditions.length ? { [Op.and]: conditions } : {},
+    attributes: { include: [[sequelize.literal(total("active")), "activeCount"], [sequelize.literal(total("blocked")), "blockedCount"], [sequelize.literal(total("revoked")), "removedCount"]] },
+    order: [["updatedAt", "DESC"], ["id", "DESC"]], ...pageOf({ page, pageSize }),
+  });
+  const activations = rows.length ? await Activation.findAll({ where: { deviceId: { [Op.in]: rows.map(d => d.id) }, status: { [Op.ne]: "revoked" } }, include, order: [["activatedAt", "DESC"]] }) : [];
+  const grouped = new Map();
+  for (const a of activations) { if (!grouped.has(a.deviceId)) grouped.set(a.deviceId, []); grouped.get(a.deviceId).push(a); }
+  return paged(rows.map(device => {
+    const d = device.toJSON();
+    const activeCount = Number(d.activeCount || 0), blockedCount = Number(d.blockedCount || 0), removedCount = Number(d.removedCount || 0);
+    const current = grouped.get(d.id) || [];
+    return { id: d.id, deviceId: d.id, mac: d.mac, platform: d.platform, ...presenceOf(d.id, d.lastSeenAt),
+      createdAt: d.createdAt, updatedAt: d.updatedAt, activeCount, blockedCount, removedCount, currentCount: activeCount + blockedCount,
+      status: activeCount ? "active" : blockedCount ? "blocked" : removedCount ? "revoked" : "unlinked",
+      partners: [...new Set(current.map(a => a.Partner?.name).filter(Boolean))],
+    };
+  }), count, { page, pageSize });
+}
+
 // Acesso REAL (licença/parceria), sem consultar o banco de novo. Só não enxerga inadimplência (precisa de fatura): getActivation refaz com ela.
 const accessOf = (a) => {
   const d = evaluateAccess({ activation: a, license: a.License, grantedLicense: a.GrantedLicense, partner: a.Partner });
@@ -86,25 +121,30 @@ export async function getActivation(id, scope = {}) {
 }
 
 // Histórico completo do MAC: todas as ativações (inclusive revogadas) + trilha de auditoria.
-export async function deviceHistory(mac) {
+export async function deviceHistory(mac, { page = 1, pageSize = 20 } = {}) {
   const norm = normalizeMac(mac);
   if (!norm) throw new AppError(400, "INVALID_MAC", "Endereço MAC inválido.");
   const device = await Device.findOne({ where: { mac: norm } });
   if (!device) throw notFound("Dispositivo");
-  const activations = await Activation.findAll({ where: { deviceId: device.id }, include, order: [["activatedAt", "DESC"]] });
-  const ids = activations.map((a) => String(a.id));
-  // Eventos das ativações (bloquear/remover...) e do próprio dispositivo (lista configurada/removida). "register" (cada abertura
-  // do app) e "lookup" (consultas) ficam de fora: seriam ruído.
-  const events = await AuditLog.findAll({
-    where: {
-      [Op.or]: [
-        ...(ids.length ? [{ entityType: "activation", entityId: { [Op.in]: ids } }] : []),
-        { entityType: "device", entityId: String(device.id), action: { [Op.notIn]: ["device.register", "device.lookup"] } },
-      ],
-    },
-    order: [["createdAt", "DESC"]], limit: 200,
-  });
-  return { device: { id: device.id, mac: device.mac, ...presenceOf(device.id, device.lastSeenAt) }, activations: activations.map((a) => serialize(a, { delivery: true })), events };
+  const activations = await Activation.findAll({ where: { deviceId: device.id }, include, order: [["activatedAt", "DESC"], ["id", "DESC"]] });
+  const ids = activations.map(a => String(a.id));
+  const webAccesses = await WebAccess.findAll({ where: { deviceId: device.id }, attributes: ["id"] });
+  const where = { action: { [Op.notIn]: ["device.register", "device.lookup", "web_access.login"] }, [Op.or]: [
+    ...(ids.length ? [{ entityType: "activation", entityId: { [Op.in]: ids } }] : []),
+    { entityType: "device", entityId: String(device.id) },
+    ...(webAccesses.length ? [{ entityType: "web_access", entityId: { [Op.in]: webAccesses.map(w => String(w.id)) } }] : []),
+    // Mantém eventos de ativações excluídas e ciclos anteriores do mesmo MAC.
+    sequelize.where(sequelize.literal("metadata ->> 'mac'"), norm),
+  ] };
+  const { rows: events, count } = await AuditLog.findAndCountAll({ where, order: [["createdAt", "DESC"], ["id", "DESC"]], ...pageOf({ page, pageSize }) });
+  const peopleIds = [...new Set(events.filter(e => ["admin", "partner"].includes(e.actorType) && /^[0-9a-f-]{36}$/i.test(e.actorId || "")).map(e => e.actorId))];
+  const people = peopleIds.length ? await AdminUser.findAll({ where: { id: { [Op.in]: peopleIds } }, attributes: ["id", "name"] }) : [];
+  const byId = new Map(people.map(user => [String(user.id), user.name]));
+  return { device: { id: device.id, deviceId: device.id, mac: device.mac, platform: device.platform, ...presenceOf(device.id, device.lastSeenAt) },
+    activations: activations.map(a => serialize(a, { delivery: true })),
+    events: events.map(event => ({ ...event.toJSON(), actorName: event.metadata?.actorName || byId.get(String(event.actorId)) || ({device:"Próprio dispositivo",anonymous:"Acesso público",system:"Sistema"}[event.actorType] ?? "Não identificado") })),
+    eventsMeta: paged([], count, { page, pageSize }).meta,
+  };
 }
 
 const ACTIONS = {
