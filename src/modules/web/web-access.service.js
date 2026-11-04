@@ -98,6 +98,7 @@ async function serialize(wa) {
     // Efetivo (o que o espelho aplica) e o que foi sobrescrito neste acesso.
     deliveryModes: activation ? deliveryModesOf({ ...activation.toJSON(), Device: { platform: "web" } }) : null,
     gatewayManaged: env.nginxMediaProxy,
+    webAutoHttps: activation?.webAutoHttps !== false,
     deliveryOverrides: sanitizeModes(activation?.deliveryModes),
   };
 }
@@ -213,7 +214,7 @@ async function grantCourtesyLicense({ partner, actor, device, months }) {
  *  - `useStock`: consome 1 licença do estoque do `partner` (revendedor). Admin pode desmarcar (cortesia).
  *  - `modes`: override de proxy/redirect por tipo; o restante segue os padrões do web.
  */
-export async function createWebAccess({ partner = null, actor, label, config, months, useStock = true, modes }) {
+export async function createWebAccess({ partner = null, actor, label, config, months, useStock = true, modes, webAutoHttps = true }) {
   if (!config) throw new AppError(422, "CONFIG_REQUIRED", "Informe a lista (servidor ou link) deste acesso.");
   if (config.mode === "playlist") {
     if (!months) throw new AppError(422, "MONTHS_REQUIRED", "Informe a duração da licença.");
@@ -232,13 +233,13 @@ export async function createWebAccess({ partner = null, actor, label, config, mo
     } else {
       // O servidor do parceiro valida o código + usuário/senha no provedor; a licença (se houver) é a do código.
       await registration.configureDeviceByAdmin(device.id, {
-        mode: "partner", confirm: true, code: config.code, username: config.username, password: config.password,
+        mode: "partner", confirm: true, code: config.code, username: config.username, password: config.password, webAutoHttps,
       }, actor);
       licenseSpent = true; // pode ter consumido o estoque do código: não apaga o acesso se algo falhar depois
     }
     const activation = await liveActivationOf(device.id);
     if (!activation) throw new AppError(500, "ACTIVATION_MISSING", "A lista não foi vinculada. Tente novamente.");
-    await activation.update({ deliveryModes: { ...defaultModes(), ...sanitizeModes(modes) } });
+    await activation.update({ deliveryModes: { ...defaultModes(), ...sanitizeModes(modes) }, webAutoHttps });
     dropMirrorAuth(activation.id);
   } catch (e) {
     if (!licenseSpent) {
@@ -282,7 +283,7 @@ export async function issueWebByPartnershipCode({issuerPartnerId,actor,code:rawC
   if(!decision.allowed)
     throw new AppError(403,"WEB_ISSUANCE_UNAVAILABLE","Este código não está habilitado para emissão de Player Web por esta revenda.");
   // Provider credential check is outside DB transactions. The code itself has no Xtream password.
-  const prepared=await preparePartnerActivation({code,username,password});
+  const prepared=await preparePartnerActivation({code,username,password,webAutoHttps:true});
   if(prepared.pc.id!==source.id || prepared.partner.id!==owner.id)
     throw new AppError(409,"SOURCE_CHANGED","O código mudou durante a verificação; tente novamente.");
   const {wa,device,reused}=await createRecord({partner:issuer,actor,label,contentOwnerPartnerId:owner.id,sourcePartnerCodeId:source.id,issuanceKey:requestKey});
@@ -410,18 +411,20 @@ export async function renew(id, { months, actor, scope = {}, useStock = true }) 
 }
 
 /** Nome do acesso e/ou modo de entrega por tipo. `deliveryModes: null` volta aos padrões do web. */
-export async function updateWebAccess(id, { label, deliveryModes }, { actor, scope = {} }) {
+export async function updateWebAccess(id, { label, deliveryModes, webAutoHttps }, { actor, scope = {} }) {
   const wa = await loadOwned(id, scope);
   if (wa.status === "revoked") throw new AppError(409, "INVALID_STATE", "Este acesso foi removido.");
   const changes = {};
   if (label !== undefined) { await wa.update({ label }); changes.label = label; }
-  if (deliveryModes !== undefined) {
+  if (deliveryModes !== undefined || webAutoHttps !== undefined) {
     const activation = await liveActivationOf(wa.deviceId);
     if (!activation) throw new AppError(409, "NOT_CONFIGURED", "Este acesso ainda não tem lista configurada.");
-    const next = deliveryModes === null ? { ...defaultModes() } : { ...defaultModes(), ...sanitizeModes(deliveryModes) };
-    await activation.update({ deliveryModes: next });
+    const patch = {};
+    if (deliveryModes !== undefined) patch.deliveryModes = deliveryModes === null ? { ...defaultModes() } : { ...defaultModes(), ...sanitizeModes(deliveryModes) };
+    if (webAutoHttps !== undefined) patch.webAutoHttps = webAutoHttps;
+    await activation.update(patch);
     dropMirrorAuth(activation.id);
-    changes.deliveryModes = next;
+    Object.assign(changes, patch);
   }
   if (!Object.keys(changes).length) throw new AppError(422, "NOTHING_TO_CHANGE", "Nenhuma alteração informada.");
   await audit({ actor, action: "web_access.update", entityType: "web_access", entityId: wa.id, metadata: changes });

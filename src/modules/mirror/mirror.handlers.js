@@ -1,3 +1,4 @@
+import { webHlsTarget } from "../web/web-https.js";
 import crypto from "node:crypto";
 import net from "node:net";
 import { env } from "../../config/env.js";
@@ -64,7 +65,7 @@ const accountOf = (cred) => ({
 });
 
 const hlsWrapFor = (ctx) => (abs) =>
-  `/hls/${encodeURIComponent(ctx.token)}/${encryptSecret(abs)}`;
+  `/hls/${encodeURIComponent(ctx.token)}/${encryptSecret(webHlsTarget(abs, ctx.cred))}`;
 
 /** Troca, na resposta de autenticação do painel, os dados reais pelos do espelho. */
 export function rewriteAuthJson(buf, ctx) {
@@ -179,7 +180,7 @@ export async function mediaStream(ctx, req, res, kind, file) {
 export async function hlsPart(ctx, req, res, blob) {
   let target;
   try {
-    target = decryptSecret(blob);
+    target = webHlsTarget(decryptSecret(blob), ctx.cred);
   } catch {
     throw new AppError(404, "NOT_FOUND", "Item não encontrado.");
   }

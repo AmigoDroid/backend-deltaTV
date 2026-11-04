@@ -180,6 +180,7 @@ export const Activation = def("Activation", "activations", {
   deliveryMode: str(20),
   // Modo de entrega POR TIPO ({api, live, movie, series} -> proxy|redirect), migration 20261105000001. NULL = automático.
   deliveryModes: { type: T.JSONB },
+  webAutoHttps: { type: T.BOOLEAN, allowNull: false, defaultValue: true },
 });
 
 // Acesso ao Player Web (migration 20261105000001): código AB123456 -> dispositivo web com ativação e licença próprias.

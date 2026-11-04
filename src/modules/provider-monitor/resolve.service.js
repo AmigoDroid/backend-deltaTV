@@ -1,3 +1,4 @@
+import { webProvider } from "../web/web-https.js";
 import { selectHealthy } from "./ranking.js";
 import { xtreamApiUrl } from "./url-utils.js";
 import { freshnessWindowSeconds } from "./visibility.service.js";
@@ -62,13 +63,14 @@ async function verifyAlternative(server, username, password) {
 
 /** Escolhe um servidor seguro para as credenciais de UMA ativação, sem mudar seu vínculo no banco. */
 export async function resolveForActivation(activation, original, credentials) {
+  original = webProvider(original, activation);
   if (!enabled() || !activation.partnerCodeId || !activation.partnerId || activation.playlistUrlEnc) return {provider:original, verified:false};
   try {
     const code=await PartnerCode.findByPk(activation.partnerCodeId,{attributes:["id","partnerId","providerId","status","expiresAt"]});
     if(!code || code.partnerId!==activation.partnerId || code.status!=="active" || (code.expiresAt && code.expiresAt<=new Date()))return {provider:original,verified:false};
     const plan=await getServicePlan(code.partnerId);
     if(!plan.features.autoFailover)return {provider:original,verified:false};
-    const servers=await serversForCode(code);
+    const servers=(await serversForCode(code)).map(server => webProvider(server, activation));
     if(!servers.length)return {provider:original,verified:false};
     // Se o parceiro removeu explicitamente a origem antiga do pool, ela NÃO pode ser entregue novamente.
     const fallback={provider:servers.some(s=>s.id===original?.id)?original:null,verified:false};

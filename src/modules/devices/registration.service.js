@@ -356,7 +356,7 @@ export async function configureDeviceByAdmin(deviceId, input, actor) {
 
 async function configurePartnerList(device, input, actor) {
   // Valida código + usuário/senha no provedor (rede) e identifica o parceiro. Sem travas.
-  const prepared = await preparePartnerActivation(input);
+  const prepared = await preparePartnerActivation({ ...input, webAutoHttps: device.platform === "web" && input.webAutoHttps !== false });
   const existing = await Activation.findOne({
     where: { deviceId: device.id, partnerId: prepared.partner.id, status: live },
   });

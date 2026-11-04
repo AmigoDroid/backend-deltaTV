@@ -1,3 +1,4 @@
+import { withHttps } from "../web/web-https.js";
 import { Op, UniqueConstraintError } from "sequelize";
 import {
   sequelize, License, Plan, Partner, PartnerCode, PartnerProvider, Device, Activation,
@@ -253,7 +254,7 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
   });
 }
 
-export async function preparePartnerActivation({ code, username, password }) {
+export async function preparePartnerActivation({ code, username, password, webAutoHttps = false }) {
   // ---- Fase 1 (sem travas): triagem + validação das credenciais no provedor (rede lenta) ----
   const shortCode = normalizeShortCode(code);
   const pc = shortCodeProblem(shortCode) ? null : await PartnerCode.findOne({ where: { code: shortCode } });
@@ -273,7 +274,8 @@ export async function preparePartnerActivation({ code, username, password }) {
   let refused = false;
   let unverified = null; // painel que bloqueou a checagem do servidor (401/403 sem corpo): senha não provada errada
   for (const p of (pc.providerId ? providers.slice(0,4) : providers)) {
-    const r = await probeCredentials(p, { username, password });
+    const probeProvider = webAutoHttps ? { ...(p.toJSON ? p.toJSON() : p), baseUrl: withHttps(p.baseUrl) } : p;
+    const r = await probeCredentials(probeProvider, { username, password });
     if (r.ok) { chosen = p; break; }
     if (r.reason === "invalid") refused = true;
     else if (r.reason === "unverified") unverified ??= p;
