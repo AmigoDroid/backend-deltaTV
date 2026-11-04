@@ -40,7 +40,7 @@ export const PartnerPreRegistration = def("PartnerPreRegistration", "partner_pre
   name: str(160, { allowNull: false }), email: str(200, { allowNull: false }),
   status: str(20, { allowNull: false, defaultValue: "draft" }),
   tokenHash: { type: T.CHAR(64) }, expiresAt: ts(), emailSentAt: ts(),
-  completedAt: ts(), completedPartnerId: { type: T.UUID }, createdBy: { type: T.UUID },
+  completedAt: ts(), configuredAt: ts(), completedPartnerId: { type: T.UUID }, createdBy: { type: T.UUID },
 });
 
 export const LoginHistory = def("LoginHistory", "login_history", {

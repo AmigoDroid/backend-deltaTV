@@ -67,8 +67,11 @@ router.post("/", requirePermission("partners:write"), validate({ body: createBod
 });
 // Pré-cadastro por convite: registro independente, sem gerar parceiro antes da confirmação por e-mail.
 const preRegId = z.object({ preRegId: z.string().uuid() });
-router.get("/pre-registrations", requirePermission("partners:read"), async (_req, res) =>
-  res.set("Cache-Control", "no-store").json({ data: await preReg.listPreRegistrations() }));
+router.get("/pre-registrations", requirePermission("partners:read"), validate({ query: z.object({
+  ...pageQuery, view: z.enum(["pending", "history"]).default("pending"),
+}) }), async (req, res) => res.set("Cache-Control", "no-store").json(await preReg.listPreRegistrations(req.valid.query)));
+router.post("/pre-registrations/:preRegId/finish", requirePermission("partners:write"), validate({ params: preRegId }), async (req, res) =>
+  res.json(await preReg.finishPreRegistration(req.valid.params.preRegId, actorOf(req))));
 router.post("/pre-registrations", requirePermission("partners:write"), validate({ body: z.object({
   name: z.string().trim().min(2).max(160), email: z.string().trim().email().max(200), sendEmail: z.boolean().default(false),
 }).strict() }), async (req, res) => res.status(201).json(await preReg.createPreRegistration(req.valid.body, actorOf(req))));

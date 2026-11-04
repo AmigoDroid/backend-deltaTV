@@ -1,35 +1,37 @@
-# Correção de parceiros cadastrados por convite
+# Parceiros: pendências, configuração e histórico
 
-## O que foi encontrado
-O cadastro pelo convite já cria a parceria de conteúdo, o usuário do portal e o vínculo do pré-cadastro na mesma transação. Porém, a conclusão usa uma rota pública que não avisava o painel administrativo para atualizar a lista. O bloco de pré-cadastros também não acompanhava atualizações e só mostrava o status, sem acesso às configurações.
-A busca procurava apenas nome da empresa e identificador: o nome do responsável e o e-mail do convite não encontravam o cadastro quando a empresa tinha outro nome.
+## Comportamento
+A lista principal de parceiros permanece em destaque. O antigo bloco grande foi substituído por um resumo compacto com quantidade de pendências e os botões Gerenciar convites e Pré-cadastro.
 
-## Alterações
-- Conclusão bem-sucedida do convite avisa os administradores para atualizar Parceiros e invalida o resumo do dashboard.
-- Convites e lista atualizam ao retornar à aba, na reconexão e periodicamente. Há também botões Atualizar.
-- Pré-cadastros concluídos com vínculo mostram Configurar parceria. O botão abre a mesma janela usada no cadastro manual, mesmo quando a parceria está em outra página ou fora do filtro atual.
-- Busca permite empresa, identificador, responsável e e-mail.
-- Convites já concluídos aproveitam o completedPartnerId que já existe. Não é preciso cadastrar novamente.
+Gerenciar convites abre uma janela com Pendentes e Histórico, com oito registros por página e rolagem interna. Convites cancelados ficam no histórico. Um cadastro concluído pelo parceiro fica pendente apenas enquanto falta a configuração administrativa.
 
-## Aplicar na VPS
-1. Substitua os arquivos das respectivas pastas backend e admin pelos pacotes corrigidos. Preserve os arquivos .env e a configuração de produção.
-2. Reinicie o processo do backend pelo gerenciador usado na VPS (por exemplo, PM2).
-3. Na pasta do admin, rode npm ci e npm run build com o .env de produção existente. Publique o dist gerado no diretório servido pelo Nginx.
-4. Recarregue o painel com Ctrl+Shift+R para carregar o JavaScript novo.
+Ao salvar Editar condições ou Contrato de conteúdo, o pré-cadastro é marcado como configurado na mesma transação e sai das pendências. O parceiro e seu acesso continuam disponíveis na lista principal. Abrir a parceria ou fechar a janela sem salvar não finaliza a configuração.
 
-Esta correção não exige nova migration ou alteração no .env.
-Os ZIPs contêm código-fonte. Compile o admin na VPS com sua configuração da API.
+Para parceiros já configurados, use Concluir configuração na lista de pendências. Esse botão apenas registra que a configuração terminou; não altera valores, contrato, servidores, códigos ou usuário. O registro continua acessível no Histórico, com Abrir parceria.
 
-## Conferir após aplicar
-- Abra Parceiros e clique Atualizar no bloco Pré-cadastro.
-- No convite já concluído, clique Configurar parceria: devem abrir as condições, contrato, servidores, códigos e usuário do portal, conforme o cadastro manual.
-- Para localizar na tabela, selecione Todos os status, busque pelo e-mail do convite ou pelo nome da empresa informado pelo parceiro e confira a paginação.
-- Um novo convite concluído deve atualizar a tabela e o bloco de pré-cadastro sem recarregar a página quando o WebSocket estiver conectado. Sem conexão em tempo real, há atualização periódica e manual.
+A migration reconhece também configurações antigas quando há auditoria de partner.update ou content.terms.update por administrador com sucesso após a conclusão do convite. Sem essa evidência, o item aguarda a ação Concluir configuração ou um novo salvamento administrativo. Nenhum parceiro é apagado.
 
-## Validação local
-- Build de produção do admin: passou.
-- Quatro testes automatizados: passaram, com persistência simulada e sem banco/SMTP de produção. Cobrem criação e localização por empresa/responsável/e-mail, vínculo para configuração, reutilização, expiração, rollback simulado e notificação da conclusão pela rota HTTP pública.
-- Rodar no backend com Node 22 ou superior:
+## Aplicação — esta versão exige migration
+1. Preserve os .env existentes e substitua o código-fonte do backend e do admin pelos respectivos pacotes.
+2. Na pasta do backend, rode:
+
+   npm run db:migrate
+
+   Isso adiciona configured_at ao pré-cadastro, cria um índice e reconhece configurações antigas pela auditoria. Se o processo estiver em modo de reinício automático ao alterar arquivos, pare-o durante a substituição e a migration.
+3. Reinicie o backend usando o gerenciador da VPS.
+4. Na pasta do admin, rode npm ci e npm run build com o .env de produção existente. Publique o dist gerado no diretório servido pelo Nginx.
+5. Recarregue o painel com Ctrl+Shift+R.
+
+Não é necessário alterar o .env nem cadastrar novamente os parceiros. Os ZIPs contêm código-fonte, sem node_modules ou dist de testes.
+
+## Validação
+- Compilação de produção do admin aprovada.
+- Oito testes de regressão com persistência simulada aprovados: criação, localização, convite reutilizado/expirado, falha de cadastro, notificação HTTP, saída das pendências ao salvar condições/contrato, conclusão manual idempotente e paginação.
+- Migration validada em PostgreSQL embarcado (PGlite), incluindo backfill e reversão, sem acessar a VPS.
+
+Comandos no backend (Node 22 ou superior):
+
   NODE_ENV=test node --experimental-test-module-mocks --test tests/regression/partner-invite.mjs
+  node --test tests/regression/partner-onboarding-migration.mjs
 
-Não houve acesso à VPS ou ao PostgreSQL real. Os testes não demonstram o estado atual dos registros de produção. Se o vínculo de um convite já concluído apontar para um cadastro ausente, será necessário investigar esse registro no banco antes de qualquer reparo.
+As correções anteriores de atualização em tempo real, busca por responsável/e-mail e acesso direto à parceria estão preservadas. A aplicação em produção ainda deve ser feita na VPS.

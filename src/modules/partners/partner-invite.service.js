@@ -1,3 +1,5 @@
+import { markPartnerConfigured } from "./partner-onboarding.service.js";
+import { pageOf, paged } from "../../shared/pagination.js";
 import crypto from "node:crypto";
 import { Op } from "sequelize";
 import { sequelize, PartnerPreRegistration, Partner, AdminUser } from "../../db/models/index.js";
@@ -11,7 +13,7 @@ import { INVITE_LIFETIME_MS, normalizeInviteEmail, hashInviteToken, generateInvi
 const present = (r) => ({
   id: r.id, name: r.name, email: r.email, status: r.status,
   createdAt: r.createdAt, updatedAt: r.updatedAt, emailSentAt: r.emailSentAt,
-  expiresAt: r.expiresAt, completedAt: r.completedAt, completedPartnerId: r.completedPartnerId,
+  expiresAt: r.expiresAt, completedAt: r.completedAt, configuredAt: r.configuredAt, completedPartnerId: r.completedPartnerId,
 });
 async function emailExists(email, transaction) {
   const user = await AdminUser.findOne({ where: sequelize.where(sequelize.fn("lower", sequelize.col("email")), email), attributes: ["id"], transaction });
@@ -21,9 +23,31 @@ async function emailExists(email, transaction) {
   }, attributes: ["id"], transaction }));
 }
 
-export async function listPreRegistrations() {
-  const rows = await PartnerPreRegistration.findAll({ order: [["createdAt", "DESC"]], limit: 200 });
-  return rows.map(present);
+export async function listPreRegistrations({ view = "pending", page = 1, pageSize = 8 } = {}) {
+  const pending = { configuredAt: null, status: { [Op.ne]: "cancelled" } };
+  const history = { [Op.or]: [{ configuredAt: { [Op.ne]: null } }, { status: "cancelled" }] };
+  const [{ rows, count }, pendingCount, historyCount, readyCount] = await Promise.all([
+    PartnerPreRegistration.findAndCountAll({ where: view === "history" ? history : pending,
+      order: [["createdAt", "DESC"], ["id", "DESC"]], ...pageOf({ page, pageSize }) }),
+    PartnerPreRegistration.count({ where: pending }), PartnerPreRegistration.count({ where: history }),
+    PartnerPreRegistration.count({ where: { configuredAt: null, status: "completed" } }),
+  ]);
+  return { ...paged(rows.map(present), count, { page, pageSize }),
+    summary: { pending: pendingCount, history: historyCount, ready: readyCount } };
+}
+
+export async function finishPreRegistration(id, actor) {
+  return sequelize.transaction(async (t) => {
+    // Mesma ordem de locks das alterações de contrato: parceiro antes do convite.
+    const candidate = await PartnerPreRegistration.findByPk(id, { transaction: t });
+    if (!candidate) throw notFound("Pré-cadastro");
+    if (candidate.status !== "completed" || !candidate.completedPartnerId)
+      throw new AppError(409, "REGISTRATION_NOT_COMPLETED", "O parceiro precisa concluir o cadastro antes de finalizar a configuração.");
+    const partner = await Partner.findByPk(candidate.completedPartnerId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!partner || partner.status === "deleted") throw notFound("Parceiro");
+    await markPartnerConfigured(partner.id, actor, t);
+    return present(await PartnerPreRegistration.findByPk(id, { transaction: t }));
+  });
 }
 
 export async function createPreRegistration({ name, email, sendEmail }, actor) {

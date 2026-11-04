@@ -1,3 +1,4 @@
+import { markPartnerConfigured } from "../partners/partner-onboarding.service.js";
 import { Op, QueryTypes } from "sequelize";
 import { sequelize, Partner, PartnerCode, Activation, ContentPartnerTerms, ContentCodeBalance, ContentActivationCharge } from "../../db/models/index.js";
 import { clearResolutionCache } from "../provider-monitor/resolve.service.js";
@@ -49,6 +50,7 @@ export async function saveTerms(partnerId,input,actor) {
     // Mesma mensalidade do mecanismo de faturas já existente, sem segundo sistema de cobrança.
     if(input.mode.startsWith("fixed_")) await partner.update({billingModel:"fixed",monthlyFeeCents:input.fixedFeeCents},{transaction:t});
     if(input.mode==="credits") await partner.update({billingModel:"none"},{transaction:t});
+    await markPartnerConfigured(partnerId,actor,t);
     await audit({actor,action:"content.terms.update",entityType:"partner",entityId:partnerId,metadata:{before,after:termsOf(row)},transaction:t});
     return termsOf(row);
   });

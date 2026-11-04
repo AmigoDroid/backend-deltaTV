@@ -1,3 +1,4 @@
+import { markPartnerConfigured } from "./partner-onboarding.service.js";
 import { isPartnerConnected } from "../../realtime/socket.js";
 import { Op, UniqueConstraintError } from "sequelize";
 import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, Invoice, AdminUser, ContentPartnerTerms } from "../../db/models/index.js";
@@ -118,6 +119,7 @@ export async function updatePartner(id, input, actor) {
       if (input.deviceLimit < used && actor?.role !== "superadmin") throw new AppError(409, "LIMIT_BELOW_USAGE", `Existem ${used} dispositivos ativos; reduza-os antes de baixar o limite.`);
     }
     await p.update(input, { transaction: t });
+    if (Object.keys(input).length) await markPartnerConfigured(id, actor, t);
     await audit({ actor, action: "partner.update", entityType: "partner", entityId: id, metadata: input, transaction: t });
     return p;
   });
