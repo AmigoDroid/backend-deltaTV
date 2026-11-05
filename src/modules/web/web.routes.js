@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { z } from "zod";
-import { Device, Partner, PartnerCode } from "../../db/models/index.js";
+import { Device, Partner, PartnerCode, Activation, WebAccess } from "../../db/models/index.js";
 import { Op } from "sequelize";
 import { validate } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
@@ -142,6 +142,14 @@ for (const action of ["block", "unblock", "revoke"]) {
 adminRouter.post("/:id/renew", requirePermission("web:write"), validate({ params: id, body: z.object({ months: months.default(1), useStock: z.boolean().default(false) }) }), async (req, res) =>
   res.json(await svc.renew(req.valid.params.id, { months: req.valid.body.months, actor: actorOf(req), useStock: req.valid.body.useStock })));
 
+adminRouter.post("/:id/credentials",requirePermission("override"),macWriteLimiter,validate({params:id}),async(req,res)=>{
+ const wa=await WebAccess.findByPk(req.valid.params.id);
+ if(!wa)throw notFound("Acesso web");
+ const a=await Activation.findOne({where:{deviceId:wa.deviceId,status:{[Op.ne]:"revoked"}}});
+ if(!a)throw notFound("Ativação");
+ const {credentialsOf}=await import("../clients/client.service.js");
+ res.set("Cache-Control","no-store").json(await credentialsOf({partnerId:a.partnerId,activationId:a.id,actor:actorOf(req)}));
+});
 /* ---------------------------------------------------------------- cliente do player */
 export const clientRouter = Router();
 clientRouter.post("/login", webLoginIpLimiter, webLoginCodeLimiter, validate({ body: z.object({ code: z.string().trim().min(6).max(20) }) }), async (req, res) =>

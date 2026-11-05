@@ -287,7 +287,7 @@ export async function updateCode(partnerId, codeId, input, actor) {
     if (!partner || !c) throw notFound("Código");
     const patch = {};
     for (const k of ["label", "maxActivations", "expiresAt", "allowWebIssuance"]) if (input[k] !== undefined) patch[k] = input[k];
-    if (input.providerId !== undefined) {
+    if (input.providerId !== undefined && input.providerId !== c.providerId) {
       patch.providerId = await resolveProviderId(partnerId, input.providerId, t);
       // Alteração manual do destino principal tem precedência sobre o pool anterior.
       await CodeServerPool.destroy({where:{codeId},transaction:t});

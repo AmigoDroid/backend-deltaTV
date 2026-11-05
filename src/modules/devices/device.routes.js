@@ -14,6 +14,9 @@ import { env } from "../../config/env.js";
 
 import { activationDeletionPreview, deviceDeletionPreview, deleteActivationAsSuper, deleteDeviceAsSuper } from "../admin-deletion.service.js";
 
+import { Activation } from "../../db/models/index.js";
+import { credentialsOf } from "../clients/client.service.js";
+import { notFound } from "../../shared/errors.js";
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
 
@@ -128,4 +131,8 @@ for (const action of ["block", "unblock", "revoke", "restore"]) {
   });
 }
 
+router.post("/activations/:id/credentials",requirePermission("override"),macWriteLimiter,validate({params:id}),async(req,res)=>{
+ const a=await Activation.findByPk(req.valid.params.id);if(!a)throw notFound("Ativação");
+ res.set("Cache-Control","no-store").json(await credentialsOf({partnerId:a.partnerId,activationId:a.id,actor:actorOf(req)}));
+});
 export default router;

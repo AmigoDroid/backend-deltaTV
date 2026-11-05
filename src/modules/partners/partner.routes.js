@@ -19,6 +19,10 @@ import { contractOverview } from "./contract-overview.service.js";
 import { partnerDeletionPreview, deletePartnerAsSuper } from "../admin-deletion.service.js";
 import * as preReg from "./partner-invite.service.js";
 
+import { setCodeServers, listCodeServerIds, invalidateServerPools } from "../provider-monitor/code-pool.service.js";
+import { PartnerCode, Partner, sequelize } from "../../db/models/index.js";
+import { audit } from "../../shared/audit.js";
+import { AppError, notFound } from "../../shared/errors.js";
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
 const cents = z.number().int().min(0).max(100_000_000);
@@ -147,7 +151,7 @@ const codeBody = z.object({
   // Duração (meses) da licença do ESTOQUE do revendedor que o código consome ao ativar um dispositivo.
   licenseMonths: z.number().int().min(1).max(120).nullable().optional(),
 });
-const codeUpdateBody = codeBody.omit({ code: true }).partial();
+const codeUpdateBody = codeBody.omit({ code: true }).partial().extend({ allowWebIssuance: z.boolean().optional() });
 const providerBody = z.object({
   name: z.string().trim().min(2).max(120),
   baseUrl: z.string().trim().max(500),
@@ -200,4 +204,26 @@ router.post("/:id/invoices", requirePermission("billing:write"), validate({ para
   res.status(r.created ? 201 : 200).json(r);
 });
 
+const codeParams = z.object({ id: z.string().uuid(), codeId: z.string().uuid() });
+router.get("/:id/codes/:codeId/management", requirePermission("override"), validate({params:codeParams}), async(req,res)=>{
+ const {id,codeId}=req.valid.params;
+ const code=await PartnerCode.findOne({where:{id:codeId,partnerId:id}});
+ if(!code)throw notFound("Código");
+ const [pools,balances]=await Promise.all([listCodeServerIds([codeId]),commerce.balancesForCodes([codeId])]);
+ res.set("Cache-Control","no-store").json({serverIds:pools.get(codeId)||(code.providerId?[code.providerId]:[]),credits:balances.get(codeId)||{allocated:0,spent:0,available:0}});
+});
+router.put("/:id/codes/:codeId/servers", requirePermission("override"), validate({params:codeParams,body:z.object({serverIds:z.array(z.string().uuid()).min(1)})}),async(req,res)=>res.json(await setCodeServers(req.valid.params.id,req.valid.params.codeId,req.valid.body.serverIds,actorOf(req))));
+router.post("/:id/codes/:codeId/credits", requirePermission("override"), validate({params:codeParams,body:z.object({quantity:z.number().int().min(-100000).max(100000).refine(n=>n!==0)})}),async(req,res)=>res.json(await commerce.allocate(req.valid.params.id,req.valid.params.codeId,req.valid.body,actorOf(req))));
+router.post("/:id/codes/:codeId/restore",requirePermission("override"),validate({params:codeParams}),async(req,res)=>{
+ const {id,codeId}=req.valid.params;
+ await sequelize.transaction(async t=>{
+ const partner=await Partner.findByPk(id,{transaction:t,lock:t.LOCK.UPDATE});
+ if(!partner||partner.status!=="active")throw new AppError(409,"PARTNER_INACTIVE","Ative a parceria antes de restaurar o código.");
+ const code=await PartnerCode.findOne({where:{id:codeId,partnerId:id},transaction:t,lock:t.LOCK.UPDATE});
+ if(!code)throw notFound("Código");
+ if(code.expiresAt&&new Date(code.expiresAt)<=new Date())throw new AppError(409,"CODE_EXPIRED","Altere o vencimento antes de restaurar.");
+ await code.update({status:"active"},{transaction:t});
+ await audit({actor:actorOf(req),action:"partner.code.restore",entityType:"partner_code",entityId:codeId,transaction:t});
+ });invalidateServerPools(codeId);res.json({ok:true});
+});
 export default router;
