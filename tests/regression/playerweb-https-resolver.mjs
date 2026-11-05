@@ -2,7 +2,7 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { PartnerCode, ProviderHealth } from '../../src/db/models/index.js';
+import { PartnerCode, ProviderHealth, PlatformSetting } from '../../src/db/models/index.js';
 const original={id:'original',baseUrl:'http://original.example',status:'active',priority:1};
 const alternative={id:'alternative',baseUrl:'http://alternative.example',status:'active',priority:2};
 let requests=[],pool=[original,alternative];
@@ -13,7 +13,10 @@ const ssrf=await import('../../src/shared/ssrf.js');
 mock.module('../../src/shared/ssrf.js',{namedExports:{...ssrf,safeGet:async url=>{requests.push(url);const stream=Readable.from([Buffer.from(JSON.stringify({user_info:{auth:1,status:'Active'}}))]);stream.statusCode=200;return stream}}});
 mock.method(PartnerCode,'findByPk',async()=>({id:'code',partnerId:'partner',status:'active'}));
 mock.method(ProviderHealth,'findAll',async()=>pool.map(p=>({providerId:p.id,state:'healthy',latencyMs:p.id==='alternative'?10:100,lastCheckedAt:new Date()})));
+let globalHttps=true;
+mock.method(PlatformSetting,'findByPk',async()=>({value:{web:{autoHttps:globalHttps}}}));
 const {resolveForActivation,clearResolutionCache}=await import('../../src/modules/provider-monitor/resolve.service.js');
+const {clearSettingsCache}=await import('../../src/modules/settings/platform-settings.service.js');
 const activation={id:'web',partnerCodeId:'code',partnerId:'partner',installationId:'webtv-AABBCCDDEEFF'};
 process.env.PROVIDER_MONITOR_ENABLED='true';
 
@@ -26,13 +29,13 @@ test('smart selection verifies and returns the selected alternative using HTTPS 
 });
 
 test('disabled HTTPS selection uses the original HTTP schemes even for failover verification',async()=>{
- clearResolutionCache();requests=[];
- const result=await resolveForActivation({...activation,webAutoHttps:false},original,{username:'u',password:'p'});
+ globalHttps=false;clearSettingsCache(); clearResolutionCache();requests=[];
+ const result=await resolveForActivation({...activation,webAutoHttps:true},original,{username:'u',password:'p'});
  assert.equal(result.provider.baseUrl,'http://alternative.example');assert.ok(requests[0].startsWith('http://alternative.example/player_api.php?'));
 });
 
 test('web HTTPS conversion also applies when automatic failover is disabled',async()=>{
- process.env.PROVIDER_MONITOR_ENABLED='false';
+ globalHttps=true;clearSettingsCache();process.env.PROVIDER_MONITOR_ENABLED='false';
  const result=await resolveForActivation(activation,original,{username:'u',password:'p'});
  assert.equal(result.provider.baseUrl,'https://original.example/');
  assert.equal(result.verified,false);

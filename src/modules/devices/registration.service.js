@@ -1,3 +1,4 @@
+import { grantNewDeviceTrial } from "./device-trial.service.js";
 import { isCodeServerAllowed } from "../provider-monitor/code-pool.service.js";
 import { Op } from "sequelize";
 import {
@@ -47,6 +48,7 @@ async function summarizeActivation(activationId) {
     code: status === "error" ? "PROVIDER_UNAVAILABLE" : decision.code,
     message: status === "error" ? "Serviço indisponível. Contate seu fornecedor." : decision.message,
     expiresAt: decision.expiresAt ?? null,
+    trial: activation.License?.isTrial ? { active: !!decision.allowed, expiresAt: activation.License.expiresAt } : null,
   };
 }
 
@@ -84,6 +86,7 @@ async function stateOf(device) {
     code: primary?.code ?? "AWAITING_CONFIGURATION",
     message: primary?.message ?? "Configure a lista para continuar.",
     expiresAt: primary?.expiresAt ?? null,
+    trial: lists.find(list => list.trial)?.trial ?? null,
     activations: lists,
   };
 }
@@ -122,12 +125,13 @@ export async function registerDevice({ mac: macInput, installationId }) {
   const expiresAt = new Date(Date.now() + env.pairingTokenTtl * 1000);
 
   const result = await sequelize.transaction(async (transaction) => {
-    const [device] = await Device.findOrCreate({
+    const [device, created] = await Device.findOrCreate({
       where: { mac: normalized.mac },
       defaults: { mac: normalized.mac, ...platformFields(normalized) },
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
+    const trialGrant = await grantNewDeviceTrial(device, created, { transaction, installationId: normalized.installationId });
     // Um MAC pode ter várias ativações vivas (uma por parceiro): nenhuma delas pode pertencer a outra instalação.
     const actives = await Activation.findAll({
       where: { deviceId: device.id, status: live },
@@ -175,7 +179,7 @@ export async function registerDevice({ mac: macInput, installationId }) {
       metadata: { mac: device.mac, installationId: normalized.installationId, pairingId: pairing?.id ?? null, recoverable, liveActivations: actives.length },
       transaction,
     });
-    return { device, pairing, recoverable };
+    return { device, pairing, recoverable, trial: trialGrant ? { active: true, expiresAt: trialGrant.license.expiresAt } : null };
   });
 
   if (!result.pairing) {
@@ -193,7 +197,7 @@ export async function registerDevice({ mac: macInput, installationId }) {
   };
   if (result.recoverable) {
     // Resposta mínima: quem só conhece o MAC não vê lista, parceiro nem estado da licença. A sessão sai no /register/status.
-    return { registered: true, status: "awaiting_configuration", configured: false, message: "Restaurando o acesso deste dispositivo.", pairing: pairingOut };
+    return { registered: true, status: "awaiting_configuration", configured: false, message: "Restaurando o acesso deste dispositivo.", trial: result.trial, pairing: pairingOut };
   }
   const state = await stateOf(result.device);
   return { ...state, pairing: pairingOut };
@@ -257,7 +261,7 @@ export async function pollRegistration({ mac: macInput, installationId, registra
     throw new AppError(409, "REGISTRATION_TOKEN_USED", "O registro já foi concluído neste dispositivo.");
   }
   const state = await stateOf(pairing.Device);
-  if (!state.activationId || !state.allowed) return state;
+  if (!state.activationId || !state.allowed || !state.configured) return state;
 
   return sequelize.transaction(async (transaction) => {
     const locked = await DevicePairingToken.findByPk(pairing.id, { transaction, lock: transaction.LOCK.UPDATE });
@@ -356,7 +360,7 @@ export async function configureDeviceByAdmin(deviceId, input, actor) {
 
 async function configurePartnerList(device, input, actor) {
   // Valida código + usuário/senha no provedor (rede) e identifica o parceiro. Sem travas.
-  const prepared = await preparePartnerActivation({ ...input, webAutoHttps: device.platform === "web" && input.webAutoHttps !== false });
+  const prepared = await preparePartnerActivation({ ...input, web: device.platform === "web" });
   const existing = await Activation.findOne({
     where: { deviceId: device.id, partnerId: prepared.partner.id, status: live },
   });

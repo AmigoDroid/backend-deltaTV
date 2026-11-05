@@ -1,3 +1,5 @@
+import { grantNewDeviceTrial } from "../devices/device-trial.service.js";
+import { getPlatformSettings } from "../settings/platform-settings.service.js";
 import { withHttps } from "../web/web-https.js";
 import { Op, UniqueConstraintError } from "sequelize";
 import {
@@ -86,7 +88,17 @@ async function activateLicenseOnce({ code, licenseId, mac, installationId, idemp
     let activation = await Activation.findOne({ where: { mac, partnerId: null, status: live }, transaction: t });
     let reused = false;
     if (activation) {
-      if (activation.licenseId !== license.id) throw new AppError(409, "MAC_IN_USE", "Este dispositivo já está ativado em outra licença.");
+      if (activation.licenseId !== license.id) {
+        const previous = await License.findByPk(activation.licenseId, { transaction: t });
+        if (!previous?.isTrial) throw new AppError(409, "MAC_IN_USE", "Este dispositivo já está ativado em outra licença.");
+        installationCheck(activation, installationId);
+        const used = await Activation.count({ where: { licenseId: license.id, status: live }, transaction: t });
+        if (used >= license.maxDevices) throw new AppError(409, "DEVICE_LIMIT_REACHED", "Limite de dispositivos da licença atingido.");
+        await activation.update({ licenseId: license.id }, { transaction: t });
+        await previous.update({ status: "cancelled", statusReason: "Substituída por licença paga" }, { transaction: t });
+        await audit({ actor: { type: "device", id: activation.id }, action: "device.trial.replaced", entityType: "activation", entityId: activation.id,
+          metadata: { mac, previousLicenseId: previous.id, licenseId: license.id }, transaction: t });
+      }
       installationCheck(activation, installationId);
       reused = true;
     } else if (idemKey) {
@@ -102,8 +114,9 @@ async function activateLicenseOnce({ code, licenseId, mac, installationId, idemp
       const used = await Activation.count({ where: { licenseId: license.id, status: live }, transaction: t });
       if (used >= license.maxDevices) throw new AppError(409, "DEVICE_LIMIT_REACHED", "Limite de dispositivos da licença atingido.");
       await siblingsInstallationCheck(mac, installationId, t);
-      const [device] = await Device.findOrCreate({ where: { mac }, defaults: { mac }, transaction: t });
+      const [device, created] = await Device.findOrCreate({ where: { mac }, defaults: { mac }, transaction: t });
       await device.update({ lastInstallationId: installationId ?? null, lastSeenAt: new Date() }, { transaction: t });
+      await grantNewDeviceTrial(device, created, { transaction: t, installationId, paid: true });
       activation = await Activation.create(
         { deviceId: device.id, mac, installationId: installationId ?? null, licenseId: license.id, idempotencyKey: idemKey },
         { transaction: t },
@@ -195,8 +208,9 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
         throw new AppError(409, "DEVICE_LIMIT_REACHED", "Limite de dispositivos atingido.");
       }
       await siblingsInstallationCheck(mac, installationId, t);
-      const [device] = await Device.findOrCreate({ where: { mac }, defaults: { mac }, transaction: t });
+      const [device, created] = await Device.findOrCreate({ where: { mac }, defaults: { mac }, transaction: t });
       await device.update({ lastInstallationId: installationId ?? null, lastSeenAt: new Date() }, { transaction: t });
+      await grantNewDeviceTrial(device, created, { transaction: t, installationId });
       activation = await Activation.create(
         {
           deviceId: device.id, mac, installationId: installationId ?? null, partnerId: partner.id, partnerCodeId: code.id,
@@ -254,7 +268,7 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
   });
 }
 
-export async function preparePartnerActivation({ code, username, password, webAutoHttps = false }) {
+export async function preparePartnerActivation({ code, username, password, web = false }) {
   // ---- Fase 1 (sem travas): triagem + validação das credenciais no provedor (rede lenta) ----
   const shortCode = normalizeShortCode(code);
   const pc = shortCodeProblem(shortCode) ? null : await PartnerCode.findOne({ where: { code: shortCode } });
@@ -270,11 +284,12 @@ export async function preparePartnerActivation({ code, username, password, webAu
     ? await rankedServersForCode(pc) : await serversForCode(pc);
   if (providers.length === 0) throw new AppError(503, "PROVIDER_NOT_CONFIGURED", "Serviço indisponível. Contate seu fornecedor.");
 
+  const useHttps = web && (await getPlatformSettings()).web.autoHttps;
   let chosen = null;
   let refused = false;
   let unverified = null; // painel que bloqueou a checagem do servidor (401/403 sem corpo): senha não provada errada
   for (const p of (pc.providerId ? providers.slice(0,4) : providers)) {
-    const probeProvider = webAutoHttps ? { ...(p.toJSON ? p.toJSON() : p), baseUrl: withHttps(p.baseUrl) } : p;
+    const probeProvider = useHttps ? { ...(p.toJSON ? p.toJSON() : p), baseUrl: withHttps(p.baseUrl) } : p;
     const r = await probeCredentials(probeProvider, { username, password });
     if (r.ok) { chosen = p; break; }
     if (r.reason === "invalid") refused = true;

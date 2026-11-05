@@ -47,7 +47,7 @@ const createFields = {
   months: months.optional(),
   modes: modesSchema.optional(),
 };
-const patchBody = z.object({ label: z.string().trim().min(1).max(160).optional(), deliveryModes: modesSchema.nullable().optional(), webAutoHttps: z.boolean().optional() });
+const patchBody = z.object({ label: z.string().trim().min(1).max(160).optional(), deliveryModes: modesSchema.nullable().optional() });
 // Revendedor NÃO altera o modo de entrega (proxy/redirect): isso é só do admin. O acesso nasce com o padrão do web.
 const { modes: _noModes, ...partnerCreateFields } = createFields;
 const partnerPatchBody = z.object({ label: z.string().trim().min(1).max(160).optional() });
@@ -71,6 +71,7 @@ const issueBody = z.object({
   requestKey:z.string().uuid(),
 }).strict();
 
+partnerRouter.get("/defaults", async (_req,res) => res.json(await svc.playerWebDefaults()));
 partnerRouter.get("/", validate({ query: listQuery }), async (req, res) => res.json(await svc.listWebAccesses(req.valid.query, scope(req))));
 partnerRouter.get("/:id", validate({ params: id }), async (req, res) => res.json(await svc.getWebAccess(req.valid.params.id, scope(req))));
 
@@ -109,14 +110,15 @@ partnerRouter.post("/:id/renew", stockWriteLimiter, validate({ params: id, body:
 export const adminRouter = Router();
 adminRouter.use(noStore);
 
+adminRouter.get("/defaults", requirePermission("web:read"), async (_req,res) => res.json(await svc.playerWebDefaults()));
 adminRouter.get("/", requirePermission("web:read"), validate({ query: listQuery.extend({ partnerId: z.string().uuid().optional() }) }), async (req, res) =>
   res.json(await svc.listWebAccesses(req.valid.query)));
 adminRouter.get("/:id", requirePermission("web:read"), validate({ params: id }), async (req, res) => res.json(await svc.getWebAccess(req.valid.params.id)));
 
 adminRouter.post("/", requirePermission("web:write"), macWriteLimiter,
-  validate({ body: z.object({ ...createFields, webAutoHttps: z.boolean().optional(), partnerId: z.string().uuid().optional(), useStock: z.boolean().optional() }).refine(sourceOk, sourceMsg) }),
+  validate({ body: z.object({ ...createFields, partnerId: z.string().uuid().optional(), useStock: z.boolean().optional() }).refine(sourceOk, sourceMsg) }),
   async (req, res) => {
-    const { mac, activationId, config: given, months: m, label, modes, partnerId, useStock, webAutoHttps } = req.valid.body;
+    const { mac, activationId, config: given, months: m, label, modes, partnerId, useStock } = req.valid.body;
     const actor = actorOf(req);
     const partner = partnerId ? await Partner.findByPk(partnerId) : null;
     if (partnerId && !partner) throw notFound("Revendedor");
@@ -128,7 +130,7 @@ adminRouter.post("/", requirePermission("web:write"), macWriteLimiter,
       if (!device) throw new AppError(404, "DEVICE_NOT_FOUND", "MAC não encontrado.");
       config = await svc.configFromActivation(await reseller.selectLiveActivation(device.id, activationId));
     }
-    res.status(201).json(await svc.createWebAccess({ partner, actor, label, config, months: m, useStock: useStock ?? !!partner, modes, webAutoHttps }));
+    res.status(201).json(await svc.createWebAccess({ partner, actor, label, config, months: m, useStock: useStock ?? !!partner, modes }));
   });
 
 adminRouter.patch("/:id", requirePermission("web:write"), validate({ params: id, body: patchBody }), async (req, res) =>

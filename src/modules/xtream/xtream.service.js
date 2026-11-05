@@ -1,4 +1,3 @@
-import { webBaseUrl, usesWebHttps } from "../web/web-https.js";
 import { createHash } from "node:crypto";
 import { resolveForActivation } from "../provider-monitor/resolve.service.js";
 import { PartnerProvider } from "../../db/models/index.js";
@@ -78,8 +77,8 @@ export async function xtreamCredentialsOf(activation) {
   if (resolved.provider?.status !== "active") {
     throw new AppError(503,"PROVIDER_UNAVAILABLE","Nenhum servidor ativo disponível para esta lista.");
   }
-  return { baseUrl: xtreamOrigin(webBaseUrl(resolved.provider.baseUrl, activation)), username, password,
-    webAutoHttps: usesWebHttps(activation),
+  return { baseUrl: xtreamOrigin(resolved.provider.baseUrl), username, password,
+    webAutoHttps: resolved.provider.webAutoHttps === true,
     verifiedAlternative: resolved.verified, selectedProvider: resolved.provider };
 }
 

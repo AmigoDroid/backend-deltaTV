@@ -1,3 +1,4 @@
+import { grantNewDeviceTrial } from "./device-trial.service.js";
 import { Op } from "sequelize";
 import { sequelize, Activation, Device, DevicePairingToken } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
@@ -113,6 +114,7 @@ export async function registerDeviceFromPanel({ mac: macInput, ...credentials },
     if (created) await discardIfUnused(device.id);
     throw e;
   }
+  await grantNewDeviceTrial(device, created);
   await audit({ actor, action: "device.register.admin", entityType: "device", entityId: device.id, metadata: { mac, created } });
   return { created, ...state };
 }

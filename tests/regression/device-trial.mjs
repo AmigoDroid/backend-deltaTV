@@ -1,0 +1,38 @@
+import { test, before, after, mock } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { PGlite } from '@electric-sql/pglite';
+import Sequelize from 'sequelize';
+import { sequelize, Device, DeviceTrial, Plan, License, Activation, AuditLog, PlatformSetting } from '../../src/db/models/index.js';
+import { grantNewDeviceTrial } from '../../src/modules/devices/device-trial.service.js';
+import { clearSettingsCache } from '../../src/modules/settings/platform-settings.service.js';
+import { evaluateAccess } from '../../src/modules/access/access.policy.js';
+import migration from '../../src/db/migrations/20261125000001-platform-defaults-device-trial.cjs';
+const db=new PGlite(), gen=sequelize.getQueryInterface().queryGenerator;
+const run=(sql,args=[],t)=>(t||db).query(sql,args);
+let failActivation=false;
+mock.method(sequelize,'transaction',fn=>db.transaction(async t=>{t.LOCK={UPDATE:'UPDATE'};return fn(t)}));
+mock.method(Device,'findByPk',async(id,{transaction}={})=>(await run('SELECT * FROM devices WHERE id=$1',[id],transaction)).rows[0]);
+mock.method(PlatformSetting,'findByPk',async(_,{transaction}={})=>(await run("SELECT value FROM platform_settings WHERE key='defaults'",[],transaction)).rows[0]);
+const ledgerRow=r=>r&&({...r,async update(v,{transaction}){await run('UPDATE device_trials SET status=$1,license_id=$2,starts_at=$3,expires_at=$4 WHERE mac=$5',[v.status,v.licenseId,v.startsAt,v.expiresAt,r.mac],transaction);Object.assign(this,v)}});
+mock.method(DeviceTrial,'findByPk',async(mac,{transaction}={})=>ledgerRow((await run('SELECT * FROM device_trials WHERE mac=$1',[mac],transaction)).rows[0]));
+mock.method(DeviceTrial,'findOrCreate',async({where,defaults,transaction})=>{const result=await run('INSERT INTO device_trials(mac,status) VALUES($1,$2) ON CONFLICT DO NOTHING RETURNING *',[where.mac,defaults.status],transaction);return[ledgerRow(result.rows[0]||(await run('SELECT * FROM device_trials WHERE mac=$1',[where.mac],transaction)).rows[0]),!!result.rows.length]});
+mock.method(Plan,'findOne',async({where,transaction})=>(await run('SELECT id FROM plans WHERE code=$1',[where.code],transaction)).rows[0]);
+mock.method(License,'create',async(v,{transaction})=>{const id=randomUUID();await run('INSERT INTO licenses(id,is_trial,starts_at,expires_at,status,plan_id) VALUES($1,$2,$3,$4,$5,$6)',[id,v.isTrial,v.startsAt,v.expiresAt,v.status,v.planId],transaction);return{id,...v}});
+mock.method(Activation,'create',async(v,{transaction})=>{if(failActivation)throw Error('simulated activation failure');const id=randomUUID();await run('INSERT INTO activations(id,device_id,license_id,mac,status) VALUES($1,$2,$3,$4,$5)',[id,v.deviceId,v.licenseId,v.mac,v.status],transaction);return{id,...v}});
+mock.method(AuditLog,'create',async(v,{transaction}={})=>{await run('INSERT INTO audit_events(action,metadata) VALUES($1,$2)',[v.action,JSON.stringify(v.metadata)],transaction);return v});
+const qi={sequelize:{transaction:fn=>db.transaction(fn),query:(sql,{transaction})=>transaction.exec(sql)},
+ createTable:(name,attrs,{transaction})=>transaction.exec(gen.createTableQuery(name,gen.attributesToSQL(Object.fromEntries(Object.entries(attrs).map(([k,v])=>[k,sequelize.normalizeAttribute(v)])),{context:'createTable',table:name}))),
+ bulkInsert:(name,records,{transaction})=>transaction.exec(gen.bulkInsertQuery(name,records,{})),addColumn:(name,key,attr,{transaction})=>transaction.exec(gen.addColumnQuery(name,key,sequelize.normalizeAttribute(attr))),dropTable:(name,{transaction})=>transaction.exec(gen.dropTableQuery(name)),removeColumn:(name,key,{transaction})=>transaction.exec(`ALTER TABLE ${name} DROP COLUMN ${key}`)};
+before(async()=>{await db.exec(`CREATE TABLE devices(id uuid PRIMARY KEY,mac text UNIQUE); CREATE TABLE licenses(id uuid PRIMARY KEY,starts_at timestamptz,expires_at timestamptz,status text,plan_id uuid);
+ CREATE TABLE activations(id uuid PRIMARY KEY,device_id uuid,license_id uuid,mac text,status text); CREATE UNIQUE INDEX ux_own ON activations(mac) WHERE status<>'revoked';
+ CREATE TABLE plans(id uuid PRIMARY KEY,code text UNIQUE,name text,duration_months int,max_devices int,price_cents int,active boolean,created_at timestamptz,updated_at timestamptz);
+ CREATE TABLE audit_events(action text,metadata jsonb); INSERT INTO devices VALUES('${randomUUID()}','AA:BB:CC:DD:EE:99');`);await migration.up(qi,Sequelize)});
+after(()=>db.close());
+const newDevice=async mac=>{const id=randomUUID();await db.query('INSERT INTO devices VALUES($1,$2)',[id,mac]);return{id,mac,lastInstallationId:'roku-'+mac.replaceAll(':','')}};
+const settings=async trial=>{clearSettingsCache();await db.query("UPDATE platform_settings SET value=jsonb_set(value,'{trial}',$1::jsonb)",[JSON.stringify(trial)])};
+test('migration enables 30 days and excludes pre-existing devices',async()=>{const cfg=(await db.query('SELECT value FROM platform_settings')).rows[0].value;assert.deepEqual(cfg.trial,{enabled:true,days:30});const old=(await db.query("SELECT * FROM devices WHERE mac='AA:BB:CC:DD:EE:99'")).rows[0];assert.equal(await grantNewDeviceTrial(old,true),null)});
+test('new device receives exactly 30 days and normal license policy enforces expiry',async()=>{const device=await newDevice('AA:BB:CC:DD:EE:01'),result=await grantNewDeviceTrial(device,true);assert.equal(result.license.expiresAt-result.license.startsAt,30*86400000);assert.equal(result.license.isTrial,true);assert.equal(evaluateAccess({activation:result.activation,license:result.license}).allowed,true);assert.equal(evaluateAccess({activation:result.activation,license:result.license,now:new Date(result.license.expiresAt.getTime()+1)}).code,'LICENSE_EXPIRED')});
+test('reinstallation and deleting/recreating same MAC cannot renew the trial',async()=>{const found=(await db.query("SELECT * FROM devices WHERE mac='AA:BB:CC:DD:EE:01'")).rows[0];assert.equal(await grantNewDeviceTrial(found,false),null);assert.equal(await grantNewDeviceTrial(found,true),null);await db.query('DELETE FROM activations WHERE device_id=$1',[found.id]);await db.query('DELETE FROM devices WHERE id=$1',[found.id]);assert.equal(await grantNewDeviceTrial(await newDevice(found.mac),true),null);assert.equal((await db.query('SELECT count(*)::int n FROM licenses')).rows[0].n,1)});
+test('disabled policy and paid setup issue no extra trial; changed duration applies to next new MAC',async()=>{await settings({enabled:false,days:30});const disabled=await newDevice('AA:BB:CC:DD:EE:02');assert.equal(await grantNewDeviceTrial(disabled,true),null);await settings({enabled:true,days:7});assert.equal(await grantNewDeviceTrial(disabled,true),null);assert.equal(await grantNewDeviceTrial(await newDevice('AA:BB:CC:DD:EE:03'),true,{paid:true}),null);const result=await grantNewDeviceTrial(await newDevice('AA:BB:CC:DD:EE:04'),true);assert.equal(result.license.expiresAt-result.license.startsAt,7*86400000)});
+test('failure rolls back license and eligibility record; clean retry grants once',async()=>{const device=await newDevice('AA:BB:CC:DD:EE:05'),before=(await db.query('SELECT count(*)::int n FROM licenses')).rows[0].n;failActivation=true;await assert.rejects(grantNewDeviceTrial(device,true),/simulated activation failure/);failActivation=false;assert.equal((await db.query('SELECT * FROM device_trials WHERE mac=$1',[device.mac])).rows.length,0);assert.equal((await db.query('SELECT count(*)::int n FROM licenses')).rows[0].n,before);assert.ok(await grantNewDeviceTrial(device,true))});

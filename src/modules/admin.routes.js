@@ -1,3 +1,4 @@
+import platformSettings from "./settings/platform-settings.routes.js";
 import { Router } from "express";
 import { systemRoutes } from "./system/system.routes.js";
 import { adminServerMonitor } from "./provider-monitor/visibility.routes.js";
@@ -22,6 +23,7 @@ import { adminRouter as appDownloads } from "./downloads/download.routes.js";
 // Tudo em /api/v1/admin exige autenticação; cada rota exige a permissão correspondente.
 const router = Router();
 router.use(authenticate);
+router.use("/platform-settings", platformSettings);
 router.use("/notifications", adminNotificationRoutes);
 router.use("/system", systemRoutes);
 router.use("/licenses", licenses);

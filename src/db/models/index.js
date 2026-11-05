@@ -76,6 +76,7 @@ export const License = def("License", "licenses", {
   codeHash: { type: T.CHAR(64), allowNull: false }, codeLast4: str(4, { allowNull: false }),
   planId: { type: T.UUID, allowNull: false }, customerId: { type: T.UUID },
   status: str(20, { allowNull: false, defaultValue: "active" }), statusReason: str(500),
+  isTrial: { type: T.BOOLEAN, allowNull: false, defaultValue: false },
   startsAt: ts(), expiresAt: ts(), maxDevices: int(1), notes: T.TEXT, createdBy: { type: T.UUID },
   // Revendedor dono do estoque (NULL = licença da plataforma). Migration 20261018000004.
   ownerPartnerId: { type: T.UUID }, assignedAt: ts(),
@@ -423,3 +424,11 @@ ContentSource.belongsToMany(Partner, { through: PartnerSource, foreignKey: "sour
 Partner.belongsToMany(ContentSource, { through: PartnerSource, foreignKey: "partnerId", otherKey: "sourceId" });
 
 export { sequelize };
+
+export const PlatformSetting = sequelize.define("PlatformSetting", {
+  key: { type: T.STRING(80), primaryKey: true }, value: { type: T.JSONB, allowNull: false },
+}, { tableName: "platform_settings", timestamps: false });
+export const DeviceTrial = sequelize.define("DeviceTrial", {
+  mac: { type: T.STRING(17), primaryKey: true }, licenseId: { type: T.UUID },
+  status: { type: T.STRING(30), allowNull: false }, startsAt: ts(), expiresAt: ts(),
+}, { tableName: "device_trials", timestamps: false });

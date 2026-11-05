@@ -173,7 +173,7 @@ export async function renewLicense(id, input, actor) {
     const next = addLicenseMonthsUTC(base, plan.durationMonths);
     await l.update(
       {
-        planId: plan.id, expiresAt: next, startsAt: l.startsAt ?? now,
+        planId: plan.id, expiresAt: next, startsAt: l.startsAt ?? now, isTrial: false,
         status: l.status === "pending" || (actor?.role === "superadmin" && ["cancelled", "blocked"].includes(l.status)) ? "active" : l.status,
         ...(input.planId ? { maxDevices: plan.maxDevices } : {}),
       },

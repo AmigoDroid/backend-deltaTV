@@ -1,4 +1,3 @@
-import { webBaseUrl } from "../web/web-https.js";
 import { Op } from "sequelize";
 import {
   sequelize,
@@ -485,7 +484,7 @@ export async function playlistUrlForActivation(activation) {
   const { resolveForActivation } = await import("../provider-monitor/resolve.service.js");
   const resolved=await resolveForActivation(activation,provider,credentials);
   if(resolved.provider?.status!=="active")throw new AppError(503,"PROVIDER_UNAVAILABLE","Nenhum servidor ativo disponível para esta lista.");
-  return buildPlaylistUrl(webBaseUrl(resolved.provider.baseUrl, activation), resolved.provider.playlistTemplate, credentials);
+  return buildPlaylistUrl(resolved.provider.baseUrl, resolved.provider.playlistTemplate, credentials);
 }
 
 /** Abre o corpo da playlist M3U na origem (SSRF/redirects tratados por safeGet), cortando acima de `maxBytes` (0 = sem limite). */

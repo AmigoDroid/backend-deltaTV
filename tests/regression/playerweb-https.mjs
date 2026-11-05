@@ -5,12 +5,15 @@ import { PGlite } from '@electric-sql/pglite';
 import Sequelize from 'sequelize';
 import { withHttps, usesWebHttps, webBaseUrl, webProvider, webHlsTarget } from '../../src/modules/web/web-https.js';
 import migration from '../../src/db/migrations/20261123000001-playerweb-auto-https.cjs';
-import { PartnerProvider } from '../../src/db/models/index.js';
+import { PartnerProvider, PlatformSetting } from '../../src/db/models/index.js';
 import { encryptSecret } from '../../src/shared/crypto.js';
 import { xtreamCredentialsOf } from '../../src/modules/xtream/xtream.service.js';
 import { playlistUrlForActivation } from '../../src/modules/sources/sources.service.js';
 import { playerApi, mediaStream, xmltv } from '../../src/modules/mirror/mirror.handlers.js';
 
+const defaults = { trial: { enabled: true, days: 30 }, web: { autoHttps: true, deliveryModes: {} } };
+mock.method(PlatformSetting, 'findByPk', async () => ({ value: defaults }));
+const { clearSettingsCache } = await import('../../src/modules/settings/platform-settings.service.js');
 const provider = { id: 'provider-1', status: 'active', baseUrl: 'http://provider.example:8080', playlistTemplate: '/get.php?username={username}&password={password}', toJSON() { const {toJSON,...values}=this;return values; } };
 const web = { id:'activation-1',providerId:provider.id,partnerId:'partner-1',installationId:'webtv-AABBCCDDEEFF',credentialsEnc:encryptSecret(JSON.stringify({username:'user',password:'pass'})) };
 mock.method(PartnerProvider,'findByPk',async()=>provider);
@@ -38,8 +41,11 @@ test('Xtream configuration and M3U source both use HTTPS, and disabling restores
   const credentials=await xtreamCredentialsOf(web);
   assert.equal(credentials.baseUrl,'https://provider.example:8080');
   assert.equal(credentials.webAutoHttps,true);
+  assert.equal((await xtreamCredentialsOf({...web,webAutoHttps:false})).baseUrl,'https://provider.example:8080');
   assert.ok((await playlistUrlForActivation(web)).startsWith('https://provider.example:8080/get.php?'));
-  assert.equal((await xtreamCredentialsOf({...web,webAutoHttps:false})).baseUrl,'http://provider.example:8080');
+  defaults.web.autoHttps=false; clearSettingsCache();
+  assert.equal((await xtreamCredentialsOf({...web,webAutoHttps:true})).baseUrl,'http://provider.example:8080');
+  defaults.web.autoHttps=true; clearSettingsCache();
   assert.equal((await xtreamCredentialsOf({...web,installationId:'roku-installation'})).baseUrl,'http://provider.example:8080');
 });
 

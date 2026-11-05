@@ -226,6 +226,7 @@ const statusOf = (req) => {
     expiresAt: decision.expiresAt,
     configurationStatus: configurationStatusOf(activation, decision),
     listName: activation.playlistName ?? null,
+    trial: activation.License?.isTrial ? { active: !!decision.allowed, expiresAt: activation.License.expiresAt } : null,
   };
 };
 router.get("/status", requireDevice("device", { enforce: false }), (req, res) =>

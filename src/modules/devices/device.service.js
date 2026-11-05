@@ -17,7 +17,7 @@ import { presenceOf, flushPresence } from "./presence.js";
 import { env } from "../../config/env.js";
 
 const include = [
-  { model: License, attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4"], include: [{ model: Customer, attributes: ["name", "email"] }] },
+  { model: License, attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4", "isTrial"], include: [{ model: Customer, attributes: ["name", "email"] }] },
   { model: License, as: "GrantedLicense", attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4"], required: false },
   { model: Partner, attributes: ["id", "name", "slug", "status", "statusReason", "startsAt", "endsAt", "suspendPolicy", "graceDays"] },
   { model: PartnerProvider, attributes: ["id", "name", "deliveryMode", "status"] },
@@ -101,7 +101,7 @@ const serialize = (a, { delivery = false } = {}) => ({
   id: a.id, deviceId: a.deviceId, mac: a.mac, platform: a.Device?.platform ?? null, ...presenceOf(a.deviceId, a.Device?.lastSeenAt), status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
   activatedAt: a.activatedAt, revokedAt: a.revokedAt, claimPending: a.claimPending,
   licenseId: a.licenseId, partnerId: a.partnerId,
-  license: a.License ? { id: a.License.id, status: a.License.status, expiresAt: a.License.expiresAt, codeLast4: a.License.codeLast4, customer: a.License.Customer ? { name: a.License.Customer.name, email: a.License.Customer.email } : null } : null,
+  license: a.License ? { id: a.License.id, status: a.License.status, expiresAt: a.License.expiresAt, codeLast4: a.License.codeLast4, isTrial: a.License.isTrial, customer: a.License.Customer ? { name: a.License.Customer.name, email: a.License.Customer.email } : null } : null,
   // Licença vendida pelo código do revendedor (estoque): o vencimento é dela. remainingDays = dias inteiros que ainda restam.
   grantedLicense: a.GrantedLicense ? {
     id: a.GrantedLicense.id, codeLast4: a.GrantedLicense.codeLast4, status: a.GrantedLicense.status, statusReason: a.GrantedLicense.statusReason, startsAt: a.GrantedLicense.startsAt, expiresAt: a.GrantedLicense.expiresAt,

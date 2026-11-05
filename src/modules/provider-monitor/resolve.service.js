@@ -1,3 +1,4 @@
+import { webActivationDefaults } from "../settings/platform-settings.service.js";
 import { webProvider } from "../web/web-https.js";
 import { selectHealthy } from "./ranking.js";
 import { xtreamApiUrl } from "./url-utils.js";
@@ -63,6 +64,7 @@ async function verifyAlternative(server, username, password) {
 
 /** Escolhe um servidor seguro para as credenciais de UMA ativação, sem mudar seu vínculo no banco. */
 export async function resolveForActivation(activation, original, credentials) {
+  activation = await webActivationDefaults(activation);
   original = webProvider(original, activation);
   if (!enabled() || !activation.partnerCodeId || !activation.partnerId || activation.playlistUrlEnc) return {provider:original, verified:false};
   try {

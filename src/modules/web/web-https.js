@@ -12,9 +12,9 @@ export function withHttps(raw, enabled = true) {
 }
 export const webBaseUrl = (raw, activation) => withHttps(raw, usesWebHttps(activation));
 export function webProvider(provider, activation) {
-  if (!provider || !usesWebHttps(activation)) return provider;
+  if (!provider || !isWebActivation(activation) || activation.playlistUrlEnc) return provider;
   const data = provider.toJSON ? provider.toJSON() : provider;
-  return { ...data, baseUrl: webBaseUrl(data.baseUrl, activation) };
+  return { ...data, baseUrl: webBaseUrl(data.baseUrl, activation), webAutoHttps: usesWebHttps(activation) };
 }
 
 // Alguns painéis devolvem segmentos absolutos em HTTP mesmo quando a playlist veio por HTTPS.
