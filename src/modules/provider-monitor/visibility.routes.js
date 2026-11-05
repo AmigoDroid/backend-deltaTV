@@ -1,3 +1,4 @@
+import { getServerHistory } from "./server-history.service.js";
 import { Router } from "express";
 import { z } from "zod";
 import { requirePermission, requirePartnerRole } from "../../middleware/authenticate.js";
@@ -12,6 +13,10 @@ const query = z.object({
 });
 
 export const adminServerMonitor = Router();
+adminServerMonitor.get("/:id/history", requirePermission("override"),
+  validate({ params: z.object({ id: z.string().uuid() }), query: query.omit({ q: true }) }),
+  async (req, res) => res.set("Cache-Control", "no-store").json(await getServerHistory(req.valid.params.id, req.valid.query)),
+);
 adminServerMonitor.get("/", requirePermission("partners:read"),
   validate({ query: query.extend({ partnerId: z.string().uuid().optional() }) }),
   async (req, res) => {

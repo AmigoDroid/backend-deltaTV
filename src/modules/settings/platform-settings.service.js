@@ -2,7 +2,7 @@ import { PlatformSetting } from "../../db/models/index.js";
 import { audit } from "../../shared/audit.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { clearResolutionCache } from "../provider-monitor/resolve.service.js";
-export const DEFAULT_SETTINGS = { trial: { enabled: true, days: 30 }, web: { autoHttps: true, deliveryModes: { api: "redirect", live: "proxy", movie: "redirect", series: "redirect" } } };
+export const DEFAULT_SETTINGS = { trial: { enabled: true, days: 7 }, web: { autoHttps: true, deliveryModes: { api: "redirect", live: "proxy", movie: "redirect", series: "redirect" } } };
 let cached = null, until = 0, generation = 0;
 const copy = value => structuredClone(value);
 export const clearSettingsCache = () => { generation++; cached = null; until = 0; };

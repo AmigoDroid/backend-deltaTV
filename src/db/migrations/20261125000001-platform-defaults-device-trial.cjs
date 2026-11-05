@@ -8,7 +8,7 @@ module.exports = {
     }
     await q.sequelize.transaction(async transaction => {
       await q.createTable("platform_settings", { key: { type: S.STRING(80), primaryKey: true }, value: { type: S.JSONB, allowNull: false } }, { transaction });
-      await q.bulkInsert("platform_settings", [{ key: "defaults", value: JSON.stringify({ trial: { enabled: true, days: 30 }, web: { autoHttps: true, deliveryModes: modes } }) }], { transaction });
+      await q.bulkInsert("platform_settings", [{ key: "defaults", value: JSON.stringify({ trial: { enabled: true, days: 7 }, web: { autoHttps: true, deliveryModes: modes } }) }], { transaction });
       await q.addColumn("licenses", "is_trial", { type: S.BOOLEAN, allowNull: false, defaultValue: false }, { transaction });
       await q.createTable("device_trials", { mac: { type: S.STRING(17), primaryKey: true }, license_id: { type: S.UUID }, status: { type: S.STRING(30), allowNull: false }, starts_at: { type: S.DATE }, expires_at: { type: S.DATE } }, { transaction });
       await q.sequelize.query(`INSERT INTO device_trials(mac,status) SELECT mac,'existing' FROM devices WHERE mac IS NOT NULL ON CONFLICT DO NOTHING;

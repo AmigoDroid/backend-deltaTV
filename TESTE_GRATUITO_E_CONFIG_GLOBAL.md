@@ -2,7 +2,7 @@
 
 ## Teste gratuito
 Painel Superadmin → Licenças individuais → Teste gratuito.
-Padrão: habilitado, 30 dias. É possível desativar ou escolher de 1 a 365 dias.
+Padrão: habilitado, 7 dias. É possível desativar ou escolher de 1 a 365 dias.
 A licença começa no primeiro cadastro do novo MAC e dura a quantidade exata de dias configurada, sem depender do mês do calendário. Ela usa o mecanismo normal de licenças e expiração da plataforma.
 Cada MAC recebe o benefício uma única vez. Reinstalar, registrar novamente ou excluir/recriar o mesmo MAC não reinicia o teste. O identificador disponível é o MAC; um MAC diferente é tratado como outra identidade de dispositivo.
 Os dispositivos já cadastrados na data da migration ficam fora da promoção automática. Alterar o prazo ou desativar o benefício afeta as próximas concessões; licenças já emitidas mantêm seu vencimento.
@@ -38,3 +38,5 @@ As melhorias anteriores de parceiros e dispositivos por MAC estão incluídas.
 33 testes de regressão passaram. Incluem PostgreSQL embarcado (PGlite) para migration, prazo, repetição do benefício, expiração e rollback, além de fluxos simulados de pareamento e substituição por licença paga. A compilação do admin e a validação estática BrightScript/XML do Roku passaram.
 Não houve acesso à VPS, PostgreSQL de produção, provedores reais ou teste de execução em TV física.
 Rodar testes no backend: NODE_ENV=test node --experimental-test-module-mocks --test --test-concurrency=1 tests/regression/*.mjs
+
+Correção do prazo solicitado: o padrão inicial é sete dias. Se a migration anterior já foi aplicada, ajuste a duração em Licenças individuais → Teste gratuito para 7 e salve. As concessões existentes mantêm o vencimento originalmente emitido.
