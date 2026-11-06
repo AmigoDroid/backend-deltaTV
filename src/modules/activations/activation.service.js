@@ -3,7 +3,7 @@ import { getPlatformSettings } from "../settings/platform-settings.service.js";
 import { withHttps } from "../web/web-https.js";
 import { Op, UniqueConstraintError } from "sequelize";
 import {
-  sequelize, License, Plan, Partner, PartnerCode, PartnerProvider, Device, Activation,
+  sequelize, License, Plan, Partner, PartnerCode, PartnerProvider, Device, Activation, WebAccess,
 } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
 import { normalizeMac } from "../../shared/mac.js";
@@ -149,7 +149,7 @@ export const activateLicenseById = ({ licenseId, mac, installationId, meta, tran
 
 /* ============ Parceria: código curto + usuário/senha do provedor ============ */
 
-async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc, mac, installationId, idempotencyKey, meta, webIssuerPartnerId=null }) {
+async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc, mac, installationId, idempotencyKey, meta, webIssuerPartnerId=null, restoreClaim=null }) {
   return sequelize.transaction(async (t) => {
     const lock = { transaction: t, lock: t.LOCK.UPDATE };
     const idemKey = idempotencyKey ? `${mac}:${idempotencyKey}`.slice(0, 140) : null;
@@ -164,6 +164,22 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
       const terms=webIssuerPartnerId===partner.id?null:await termsFor(partner.id,t);
       if(!webIssuePolicy({issuer,owner:partner,code,terms}).allowed)
         throw new AppError(403,"WEB_ISSUANCE_UNAVAILABLE","A emissão foi desabilitada durante a ativação.");
+    }
+    if (restoreClaim) {
+      // Check inside the charge transaction, with a row lock: an expired worker
+      // cannot charge or activate a code after a new attempt has taken ownership.
+      const webAccess = await WebAccess.findByPk(restoreClaim.id, { transaction: t, lock: t.LOCK.UPDATE });
+      const webDevice = webAccess && await Device.findByPk(webAccess.deviceId, { transaction: t });
+      if (!webAccess || webAccess.status !== "pending" || webAccess.statusReason !== restoreClaim.claim ||
+          !webDevice || webDevice.mac !== mac)
+        throw new AppError(409, "RESTORE_CLAIM_LOST", "Recuperação substituída; nenhuma cobrança foi realizada.");
+      // Um acesso Web representa uma única lista. Nunca reutilize nem modifique
+      // uma ativação de outro conteúdo já existente neste MAC virtual.
+      const conflicting = await Activation.findOne({ where: { deviceId: webAccess.deviceId,
+        status: live, [Op.or]: [{ providerId: { [Op.ne]: null } }, { playlistUrlEnc: { [Op.ne]: null } }] },
+        transaction: t });
+      if (conflicting)
+        throw new AppError(409, "WEB_RESTORE_LIST_CONFLICT", "O dispositivo web já tem outra lista ativa. Resolva o vínculo antes de recuperar o código.");
     }
     // O código aponta para um servidor: se o admin o trocou depois da triagem, a validação das credenciais ficou velha.
     if (!(await isCodeServerAllowed(code,provider.id,t))) throw invalidCredentials();
@@ -288,7 +304,8 @@ export async function preparePartnerActivation({ code, username, password, web =
   let chosen = null;
   let refused = false;
   let unverified = null; // painel que bloqueou a checagem do servidor (401/403 sem corpo): senha não provada errada
-  for (const p of (pc.providerId ? providers.slice(0,4) : providers)) {
+  // Tentar também os servidores posteriores ao quarto, com limite de oito consultas por login.
+  for (const p of providers.slice(0, 8)) {
     const probeProvider = useHttps ? { ...(p.toJSON ? p.toJSON() : p), baseUrl: withHttps(p.baseUrl) } : p;
     const r = await probeCredentials(probeProvider, { username, password });
     if (r.ok) { chosen = p; break; }
@@ -310,11 +327,11 @@ export async function preparePartnerActivation({ code, username, password, web =
 }
 
 /** Fase 2 com credenciais já validadas por preparePartnerActivation (evita validar duas vezes no provedor). */
-export function activatePrepared({ prepared, mac: rawMac, installationId, idempotencyKey, meta, webIssuerPartnerId=null }) {
+export function activatePrepared({ prepared, mac: rawMac, installationId, idempotencyKey, meta, webIssuerPartnerId=null, restoreClaim=null }) {
   const mac = needMac(rawMac);
   return withRetry(() => activatePartnerOnce({
     codeId: prepared.pc.id, partnerId: prepared.partner.id, provider: prepared.provider,
-    credentialsEnc: prepared.credentialsEnc, mac, installationId, idempotencyKey, meta, webIssuerPartnerId,
+    credentialsEnc: prepared.credentialsEnc, mac, installationId, idempotencyKey, meta, webIssuerPartnerId, restoreClaim,
   }));
 }
 

@@ -49,6 +49,30 @@ router.post(
   async (req, res) => res.json(await svc.removeListByAdmin(req.valid.params.id, req.valid.body, actorOf(req))),
 );
 
+
+// Transferência de licença concedida pelo revendedor: o superadmin seleciona explicitamente
+// o revendedor proprietário, sem desabilitar validações de posse, prazo ou MAC destino.
+router.post("/activations/:id/transfer-license", requirePermission("override"), macWriteLimiter,
+  validate({ params: id, body: z.object({ toMac: z.string().trim().min(11).max(20), reason: z.string().trim().min(5).max(500) }) }),
+  async (req, res) => {
+    const { Activation, Partner, Device } = await import("../../db/models/index.js");
+    const { normalizeMac } = await import("../../shared/mac.js");
+    const { transferGrantedLicense } = await import("../stock/license-transfer.service.js");
+    const { audit } = await import("../../shared/audit.js");
+    const activation = await Activation.findByPk(req.valid.params.id);
+    if (!activation?.partnerId || !activation.grantedLicenseId) throw notFound("Licença concedida");
+    const partner = await Partner.findByPk(activation.partnerId);
+    if (!partner) throw notFound("Revendedor");
+    const mac = normalizeMac(req.valid.body.toMac);
+    if (!mac) throw new (await import("../../shared/errors.js")).AppError(422, "INVALID_MAC", "MAC inválido.");
+    const device = await Device.findOne({ where: { mac } });
+    if (!device) throw notFound("Dispositivo de destino");
+    const result = await transferGrantedLicense({ partner, actor: actorOf(req), activationId: activation.id, toDevice: device });
+    await audit({ actor: actorOf(req), action: "admin.license.transfer", entityType: "license", entityId: result.licenseId,
+      metadata: { reason: req.valid.body.reason, fromMac: result.fromMac, toMac: result.toMac } });
+    res.json(result);
+  });
+
 /* ---------- Dispositivos sem vínculo + cadastro direto pelo painel ---------- */
 // Código curto da parceria + usuário/senha do provedor. Mesmas regras do app (client.routes) e de configurationSchema.
 const credentials = z.object({

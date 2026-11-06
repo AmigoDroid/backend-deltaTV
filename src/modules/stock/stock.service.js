@@ -125,6 +125,24 @@ export async function transferStock({ partner, actor, email, months, quantity, n
   return { transferId, to: { name: to.name }, months, quantity, balanceAfter: balances.transfer_out, balances: await balancesOf(partner.id) };
 }
 
+/** Transferência administrativa entre cadastros, com lançamento bilateral atômico. */
+export async function adminTransferStock({ fromPartnerId, toPartnerId, months, quantity, reason }, actor) {
+  if (fromPartnerId === toPartnerId) throw new AppError(422, "SELF_TRANSFER", "Origem e destino devem ser diferentes.");
+  await loadHolder(fromPartnerId, actor);
+  await loadHolder(toPartnerId, actor);
+  const transferId = crypto.randomUUID();
+  const legs = [
+    { partnerId: fromPartnerId, delta: -quantity, kind: "transfer_out", counterpartyPartnerId: toPartnerId },
+    { partnerId: toPartnerId, delta: quantity, kind: "transfer_in", counterpartyPartnerId: fromPartnerId },
+  ].sort((a, b) => a.partnerId.localeCompare(b.partnerId));
+  await sequelize.transaction(async (t) => {
+    for (const leg of legs) await move(t, { ...leg, months, actor, transferId, note: reason });
+    await audit({ actor, action: "admin.stock.transfer", entityType: "partner", entityId: fromPartnerId,
+      metadata: { toPartnerId, months, quantity, reason, transferId }, transaction: t });
+  });
+  return { transferId, fromPartnerId, toPartnerId, months, quantity, balances: await balancesOf(fromPartnerId) };
+}
+
 /* ---------- Aplicar ao MAC do cliente ---------- */
 
 async function applyOnce({ partner, actor, device, months }) {
@@ -155,7 +173,7 @@ async function applyOnce({ partner, actor, device, months }) {
       const base = license.expiresAt && license.expiresAt > now ? license.expiresAt : now;
       expiresAt = addLicenseMonthsUTC(base, months);
       await license.update({
-        planId: plan.id, expiresAt, startsAt: license.startsAt ?? now,
+        planId: plan.id, expiresAt, startsAt: license.startsAt ?? now, isTrial: false,
         status: license.status === "pending" ? "active" : license.status,
         ...(license.ownerPartnerId ? {} : { ownerPartnerId: partner.id, assignedAt: now }),
       }, { transaction: t });

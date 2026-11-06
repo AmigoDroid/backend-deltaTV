@@ -117,7 +117,11 @@ export async function refreshSession(refreshToken, { installationId } = {}) {
     throw new AppError(403, "INSTALLATION_MISMATCH", "Instalação não reconhecida.");
   }
   const next = randomToken(48);
-  await session.update({ refreshHash: sha256(next), lastUsedAt: new Date(), expiresAt: new Date(Date.now() + env.deviceRefreshTtlDays * 86400000) });
+  const [updated] = await DeviceSession.update(
+    { refreshHash: sha256(next), lastUsedAt: new Date(), expiresAt: new Date(Date.now() + env.deviceRefreshTtlDays * 86400000) },
+    { where: { id: session.id, refreshHash: sha256(refreshToken), revokedAt: null } },
+  );
+  if (updated !== 1) throw new AppError(401, "REFRESH_ALREADY_USED", "Esta sessão já foi renovada. Entre novamente se o token atualizado não estiver disponível.");
   return {
     activation, decision,
     tokens: { accessToken: accessTokenFor(activation.id, session.id), refreshToken: next, expiresIn: env.deviceAccessTtl },

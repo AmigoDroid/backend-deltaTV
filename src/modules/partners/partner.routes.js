@@ -193,6 +193,13 @@ router.post("/:id/stock/adjust", requirePermission("partners:write"),
   validate({ params: id, body: z.object({ months: stockMonths, delta: z.number().int().min(-10000).max(10000).refine((n) => n !== 0, "Informe uma quantidade diferente de zero."), note: z.string().trim().min(3).max(500) }) }),
   async (req, res) => res.json(await stock.adjustStock(req.valid.params.id, req.valid.body, actorOf(req))));
 
+// Operação bilateral exclusiva do superadmin: transferência sem precisar entrar no portal do revendedor.
+router.post("/stock/transfer-admin", requirePermission("override"),
+  validate({ body: z.object({ fromPartnerId: z.string().uuid(), toPartnerId: z.string().uuid(),
+    months: z.number().int().min(1).max(120), quantity: z.number().int().min(1).max(10000),
+    reason: z.string().trim().min(5).max(500) }) }),
+  async (req, res) => res.json(await stock.adminTransferStock(req.valid.body, actorOf(req))));
+
 router.get(
   "/:id/devices", requirePermission("devices:read"),
   validate({ params: id, query: z.object({ ...pageQuery, q: z.string().max(40).optional(), status: z.enum(["active", "blocked", "revoked"]).optional() }) }),

@@ -13,11 +13,55 @@ import { SIGNUP_PENDING_REASON } from "../partners/reseller-signup.service.js";
 
 const SYSTEM = { type: "system", id: null };
 
+// A competência só é fechada após seu último dia em UTC; nunca faturar o mês em andamento
+// em uma execução horária do scheduler.
+export function nextCompetence(competence) {
+  const { end } = competenceBounds(competence);
+  return currentCompetence(end);
+}
+
+export function lastClosedCompetence(now = new Date()) {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth();
+  const previous = new Date(Date.UTC(year, month - 1, 1));
+  return currentCompetence(previous);
+}
+
+/** Competências encerradas a reprocessar, da mais antiga à mais recente. */
+export function recoveryCompetences(now = new Date(), lookbackMonths = 12) {
+  const count = Number(lookbackMonths);
+  if (!Number.isInteger(count) || count < 1 || count > 60)
+    throw new RangeError("BILLING_RECOVERY_MONTHS deve estar entre 1 e 60.");
+  return Array.from({ length: count }, (_, index) => {
+    const monthsBack = count - index;
+    return currentCompetence(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - monthsBack, 1)));
+  });
+}
+
+/**
+ * Reprocessa janelas encerradas: a chave única parceiro/competência evita
+ * cobrança duplicada, e generateInvoice não altera uma fatura paga/cancelada.
+ * Erros de um mês não impedem os demais; a próxima execução tenta novamente.
+ */
+export async function recoverMissedInvoices({ now = new Date(), months = 6, graceDays = 7, actor = SYSTEM } = {}) {
+  const results = [];
+  for (const competence of recoveryCompetences(now, months)) {
+    try {
+      results.push({ ...(await generateForAll(competence, actor, { recoveryGraceDays: graceDays })), ok: true });
+    } catch (error) {
+      results.push({ competence, ok: false, error: error?.message || "Falha ao gerar faturas" });
+    }
+  }
+  return { created: results.reduce((sum, item) => sum + (item.created || 0), 0),
+    failed: results.filter((item) => !item.ok).length, results };
+}
+
+
 // Dispositivos cobráveis na competência: vinculados em algum momento do mês (inclui bloqueados).
 export async function billableDeviceCount(partnerId, competence, transaction) {
   const { start, end } = competenceBounds(competence);
   const [rows] = await sequelize.query(
-    `SELECT count(*)::int AS n FROM activations
+    `SELECT count(DISTINCT device_id)::int AS n FROM activations
       WHERE partner_id = :partnerId AND activated_at < :end
         AND (revoked_at IS NULL OR revoked_at >= :start)`,
     { replacements: { partnerId, start, end }, transaction },
@@ -26,9 +70,31 @@ export async function billableDeviceCount(partnerId, competence, transaction) {
 }
 
 /** Gera a cobrança da competência. Idempotente: (parceiro, competência) é único. */
-export async function generateInvoice(partnerId, competence, actor = SYSTEM) {
+export async function generateInvoice(partnerId, competence, actor = SYSTEM, { recoveryGraceDays = 0 } = {}) {
+  if (competence >= currentCompetence()) throw new AppError(422, "COMPETENCE_NOT_CLOSED", "A competência ainda não terminou.");
   const existing = await Invoice.findOne({ where: { partnerId, competence } });
-  if (existing) return { invoice: existing, created: false };
+  if (existing) {
+    if (existing.status === "cancelled") return { invoice: existing, created: false, skipped: "CANCELLED_REQUIRES_REOPEN" };
+    // Faturas legadas emitidas antes do fechamento podem ter contagem incompleta.
+    // Nunca sobrescrever uma fatura que já recebeu pagamento ou foi revisada manualmente.
+    if (existing.paidCents === 0 && !existing.breakdown?.revised && !existing.breakdown?.closed) {
+      const partner = await Partner.findByPk(partnerId);
+      const count = await billableDeviceCount(partnerId, competence);
+      const { amountCents, breakdown } = calculateAmount(partner, count);
+      if (amountCents > 0) {
+        const previous = { amountCents: existing.amountCents, deviceCount: existing.deviceCount };
+        await sequelize.transaction(async (t) => {
+          const locked = await Invoice.findByPk(existing.id, { transaction: t, lock: t.LOCK.UPDATE });
+          if (locked.paidCents !== 0 || locked.status === "cancelled" || locked.breakdown?.closed || locked.breakdown?.revised) return;
+          await locked.update({ amountCents, deviceCount: count, breakdown: { ...breakdown, closed: true } }, { transaction: t });
+          await audit({ actor, action: "invoice.close", entityType: "invoice", entityId: locked.id,
+            metadata: { competence, previous, amountCents, count }, transaction: t });
+        });
+        await existing.reload();
+      }
+    }
+    return { invoice: existing, created: false };
+  }
   const partner = await Partner.findByPk(partnerId);
   if (!partner) throw notFound("Parceiro");
   const { start, end } = competenceBounds(competence);
@@ -41,8 +107,16 @@ export async function generateInvoice(partnerId, competence, actor = SYSTEM) {
   const { amountCents, breakdown } = calculateAmount(partner, count);
   if (amountCents <= 0) return { invoice: null, created: false, skipped: "ZERO_AMOUNT" };
   try {
+    const scheduledDueDate = dueDateFor(nextCompetence(competence), partner.dueDay);
+    // Em recuperação, não suspender imediatamente um parceiro por cobrança que
+    // o próprio sistema deixou de emitir. Dar prazo explícito para quitação.
+    const late = recoveryGraceDays > 0 && scheduledDueDate < toDateOnly(new Date());
+    const dueDate = late
+      ? toDateOnly(new Date(Date.now() + Math.min(60, Math.max(1, recoveryGraceDays)) * 86_400_000))
+      : scheduledDueDate;
     const invoice = await Invoice.create({
-      partnerId, competence, deviceCount: count, amountCents, dueDate: dueDateFor(competence, partner.dueDay), breakdown,
+      partnerId, competence, deviceCount: count, amountCents, dueDate,
+      breakdown: { ...breakdown, closed: true, ...(late ? { recoveredLate: true, scheduledDueDate } : {}) },
     });
     await audit({ actor, action: "invoice.generate", entityType: "invoice", entityId: invoice.id, metadata: { partnerId, competence, amountCents } });
     return { invoice, created: true };
@@ -52,7 +126,10 @@ export async function generateInvoice(partnerId, competence, actor = SYSTEM) {
   }
 }
 
-export async function generateForAll(competence = currentCompetence(), actor = SYSTEM) {
+export async function generateForAll(competence = lastClosedCompetence(), actor = SYSTEM, options = {}) {
+  if (competence >= currentCompetence()) {
+    throw new AppError(422, "COMPETENCE_NOT_CLOSED", "A competência ainda não terminou. Gere apenas competências encerradas.");
+  }
   const { start, end } = competenceBounds(competence);
   const partners = await Partner.findAll({
     where: {
@@ -63,7 +140,7 @@ export async function generateForAll(competence = currentCompetence(), actor = S
   });
   let created = 0;
   for (const p of partners) {
-    const r = await generateInvoice(p.id, competence, actor);
+    const r = await generateInvoice(p.id, competence, actor, options);
     if (r.created) created++;
   }
   return { competence, partners: partners.length, created };
@@ -152,6 +229,70 @@ export async function cancelInvoice(id, { reason }, actor) {
   return inv;
 }
 
+/** Reabre fatura cancelada SEM excluir o documento original nem perder sua referência. */
+export async function reopenInvoice(id, { reason }, actor) {
+  return sequelize.transaction(async (t) => {
+    const invoice = await Invoice.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!invoice) throw notFound("Fatura");
+    if (invoice.status !== "cancelled" || invoice.paidCents !== 0) throw new AppError(409, "INVALID_STATE", "Só faturas canceladas e sem pagamento podem ser reabertas.");
+    if (invoice.competence >= currentCompetence()) throw new AppError(422, "COMPETENCE_NOT_CLOSED", "A competência não foi encerrada.");
+    await invoice.update({ status: invoice.dueDate < toDateOnly(new Date()) ? "overdue" : "open" }, { transaction: t });
+    await audit({ actor, action: "invoice.reopen", entityType: "invoice", entityId: id, metadata: { reason, competence: invoice.competence }, transaction: t });
+    return invoice;
+  });
+}
+
+/** Retificação controlada: nunca altera fatura quitada nem apaga o valor anterior do log. */
+export async function reviseInvoice(id, { amountCents, dueDate, reason }, actor) {
+  let reactivated = false;
+  const invoice = await sequelize.transaction(async (t) => {
+    const inv = await Invoice.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!inv) throw notFound("Fatura");
+    if (inv.status === "cancelled") throw new AppError(409, "INVOICE_CANCELLED", "Reabra a fatura antes de revisá-la.");
+    if (inv.paidCents > 0) throw new AppError(409, "HAS_PAYMENTS", "Fatura com pagamentos não pode ter valor ou vencimento alterados diretamente.");
+    if (inv.competence >= currentCompetence()) throw new AppError(422, "COMPETENCE_NOT_CLOSED", "A competência não foi encerrada.");
+    const before = { amountCents: inv.amountCents, dueDate: inv.dueDate, status: inv.status, breakdown: inv.breakdown };
+    const newAmount = amountCents ?? inv.amountCents;
+    const newDue = dueDate ?? inv.dueDate;
+    await inv.update({ amountCents: newAmount, dueDate: newDue, status: newDue < toDateOnly(new Date()) ? "overdue" : "open",
+      breakdown: { ...inv.breakdown, revised: true } }, { transaction: t });
+    reactivated = await reactivateIfSettled(inv.partnerId, actor, t);
+    await audit({ actor, action: "invoice.revise", entityType: "invoice", entityId: id,
+      metadata: { reason, before, after: { amountCents: newAmount, dueDate: newDue }, reactivated }, transaction: t });
+    return inv;
+  });
+  if (reactivated) clearMirrorAuth();
+  return invoice;
+}
+
+/** Estorno administrativo contabilizado, sem apagar a linha de recebimento. */
+export async function refundPaymentTx(t, paymentId, { reason, providerConfirmed = false }, actor) {
+  // Bloquear a fatura primeiro mantém a mesma ordem de lock adotada na confirmação de pagamento.
+  const located = await Payment.findByPk(paymentId, { transaction: t });
+  if (!located) throw notFound("Pagamento");
+  if (!located.invoiceId) throw new AppError(422, "NOT_INVOICE_PAYMENT", "Pagamento não vinculado a fatura.");
+  const invoice = await Invoice.findByPk(located.invoiceId, { transaction: t, lock: t.LOCK.UPDATE });
+  const payment = await Payment.findByPk(paymentId, { transaction: t, lock: t.LOCK.UPDATE });
+  if (payment.status === "refunded") return { invoice, payment, already: true };
+  if (payment.status !== "confirmed") throw new AppError(409, "INVALID_STATE", "Este pagamento não pode ser estornado.");
+  if (payment.provider !== "manual" && !providerConfirmed) {
+    throw new AppError(409, "PROVIDER_CONFIRMATION_REQUIRED", "Confirme o estorno no provedor antes de contabilizá-lo.");
+  }
+  await payment.update({ status: "refunded", note: [payment.note, `Estorno: ${reason}`].filter(Boolean).join(" | ").slice(0, 500) }, { transaction: t });
+  const outstanding = await Payment.sum("amountCents", { where: { invoiceId: invoice.id, status: "confirmed" }, transaction: t });
+  const paidCents = Number(outstanding || 0);
+  const status = paidCents >= invoice.amountCents ? "paid" : paidCents > 0 ? "partial" : invoice.dueDate < toDateOnly(new Date()) ? "overdue" : "open";
+  await invoice.update({ paidCents, status, paidAt: status === "paid" ? invoice.paidAt : null }, { transaction: t });
+  await audit({ actor, action: "payment.refund", entityType: "invoice", entityId: invoice.id,
+    metadata: { paymentId, amountCents: payment.amountCents, reason, providerConfirmed, paidCents }, transaction: t });
+  return { invoice, payment, already: false };
+}
+
+export async function refundManualPayment(paymentId, input, actor) {
+  const result = await sequelize.transaction(async (t) => refundPaymentTx(t, paymentId, input, actor));
+  return result;
+}
+
 /**
  * Política de inadimplência: marca faturas vencidas e suspende parcerias (política automática)
  * cujo atraso excede a tolerância. O bloqueio efetivo NÃO depende deste job: o gate de acesso
@@ -171,11 +312,30 @@ export async function sweepDelinquency(actor = SYSTEM) {
     await sequelize.transaction(async (t) => {
       const fresh = await Partner.findByPk(p.id, { transaction: t, lock: t.LOCK.UPDATE });
       if (fresh.status !== "active") return;
+      // A leitura anterior foi apenas um filtro; o pagamento pode ter entrado entre as duas leituras.
+      const currentOverdue = await overdueSinceFor(p.id, t);
+      if (!isDelinquent(fresh, currentOverdue)) return;
       await fresh.update({ status: "suspended", statusReason: AUTO_SUSPEND_REASON }, { transaction: t });
-      await audit({ actor, action: "partner.suspend", entityType: "partner", entityId: p.id, metadata: { auto: true, overdueSince }, transaction: t });
+      await audit({ actor, action: "partner.suspend", entityType: "partner", entityId: p.id, metadata: { auto: true, overdueSince: currentOverdue }, transaction: t });
       suspended.push(p.id);
     });
   }
-  if (suspended.length) clearMirrorAuth();
-  return { markedOverdue: marked, suspended };
+  // Repara suspensões automáticas que ficaram sem dívida após uma confirmação concorrente.
+  const autoSuspended = await Partner.findAll({ where: { status: "suspended", statusReason: AUTO_SUSPEND_REASON } });
+  const reactivated = [];
+  for (const p of autoSuspended) {
+    const changed = await sequelize.transaction(async (t) => {
+      const fresh = await Partner.findByPk(p.id, { transaction: t, lock: t.LOCK.UPDATE });
+      if (fresh.status !== "suspended" || fresh.statusReason !== AUTO_SUSPEND_REASON) return false;
+      const overdue = await overdueSinceFor(p.id, t);
+      if (isDelinquent(fresh, overdue)) return false;
+      await fresh.update({ status: "active", statusReason: null }, { transaction: t });
+      await audit({ actor, action: "partner.reactivate", entityType: "partner", entityId: p.id,
+        metadata: { auto: true, reason: "no_outstanding_delinquency" }, transaction: t });
+      return true;
+    });
+    if (changed) reactivated.push(p.id);
+  }
+  if (suspended.length || reactivated.length) clearMirrorAuth();
+  return { markedOverdue: marked, suspended, reactivated };
 }

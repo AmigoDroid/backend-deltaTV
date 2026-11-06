@@ -3,7 +3,7 @@ import { z } from "zod";
 import { validate } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
-import { currentCompetence } from "../../shared/dates.js";
+
 import { requirePermission } from "../../middleware/authenticate.js";
 import * as svc from "./billing.service.js";
 
@@ -18,8 +18,8 @@ router.get(
 );
 router.get("/payments", requirePermission("billing:read"), validate({ query: z.object({ ...pageQuery, partnerId: z.string().uuid().optional() }) }), async (req, res) => res.json(await svc.listPayments(req.valid.query)));
 
-router.post("/invoices/generate", requirePermission("billing:write"), validate({ body: z.object({ competence: competence.default(currentCompetence()) }) }), async (req, res) =>
-  res.json(await svc.generateForAll(req.valid.body.competence, actorOf(req))));
+router.post("/invoices/generate", requirePermission("billing:write"), validate({ body: z.object({ competence: competence.optional() }) }), async (req, res) =>
+  res.json(await svc.generateForAll(req.valid.body.competence ?? svc.lastClosedCompetence(), actorOf(req))));
 
 // Confirmação administrativa (auditada). Confirmação automática só via webhook autenticado.
 router.post(
@@ -33,6 +33,17 @@ router.post(
 );
 router.post("/invoices/:id/cancel", requirePermission("billing:write"), validate({ params: id, body: z.object({ reason: z.string().max(500).optional() }) }), async (req, res) =>
   res.json(await svc.cancelInvoice(req.valid.params.id, req.valid.body, actorOf(req))));
+router.post("/invoices/:id/reopen", requirePermission("billing:write"),
+  validate({ params: id, body: z.object({ reason: z.string().trim().min(5).max(500) }) }),
+  async (req, res) => res.json(await svc.reopenInvoice(req.valid.params.id, req.valid.body, actorOf(req))));
+router.patch("/invoices/:id/revise", requirePermission("billing:write"),
+  validate({ params: id, body: z.object({ reason: z.string().trim().min(5).max(500),
+    amountCents: z.number().int().positive().optional(), dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() })
+    .refine((v) => v.amountCents !== undefined || v.dueDate !== undefined, "Informe valor ou vencimento") }),
+  async (req, res) => res.json(await svc.reviseInvoice(req.valid.params.id, req.valid.body, actorOf(req))));
+router.post("/payments/:id/refund", requirePermission("billing:write"),
+  validate({ params: id, body: z.object({ reason: z.string().trim().min(5).max(500) }) }),
+  async (req, res) => res.json(await svc.refundManualPayment(req.valid.params.id, req.valid.body, actorOf(req))));
 router.post("/sweep", requirePermission("billing:write"), async (req, res) => res.json(await svc.sweepDelinquency(actorOf(req))));
 
 export default router;

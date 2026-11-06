@@ -139,6 +139,11 @@ for (const action of ["block", "unblock", "revoke"]) {
   adminRouter.post(`/:id/${action}`, requirePermission("web:write"), validate({ params: id, body: reason }), async (req, res) =>
     res.json(await svc.changeStatus(req.valid.params.id, action, { reason: req.valid.body.reason, actor: actorOf(req), role: "admin" })));
 }
+adminRouter.post("/:id/restore", requirePermission("override"), macWriteLimiter,
+  validate({ params: id, body: z.object({
+    reason: z.string().trim().min(8).max(500), config: z.object({ mode: z.literal("partner"), code: z.string().trim().regex(/^[A-Za-z0-9]{4,12}$/), username: z.string().trim().min(1).max(128), password: z.string().min(1).max(128) }),
+  }).strict() }),
+  async (req, res) => res.json(await svc.restoreRevokedWebAccess(req.valid.params.id, req.valid.body, actorOf(req))));
 adminRouter.post("/:id/renew", requirePermission("web:write"), validate({ params: id, body: z.object({ months: months.default(1), useStock: z.boolean().default(false) }) }), async (req, res) =>
   res.json(await svc.renew(req.valid.params.id, { months: req.valid.body.months, actor: actorOf(req), useStock: req.valid.body.useStock })));
 

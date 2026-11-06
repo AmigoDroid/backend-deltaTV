@@ -92,6 +92,17 @@ adminRouter.post("/charges/:id/reprocess", requirePermission("billing:write"), v
   res.json(await svc.reprocessCharge(req.valid.params.id, actorOf(req))));
 adminRouter.post("/charges/:id/resolve", requirePermission("billing:write"), validate({ params: id, body: z.object({ note: z.string().trim().min(3).max(300) }) }), async (req, res) =>
   res.json(await svc.resolveCharge(req.valid.params.id, req.valid.body, actorOf(req))));
+adminRouter.get("/refund-cases", requirePermission("billing:read"),
+  validate({ query: z.object({ ...pageQuery, status: z.enum(["pending", "receivable", "waived", "recovered", "compensated"]).optional() }) }),
+  async (req, res) => res.json(await svc.listRefundCases(req.valid.query)));
+adminRouter.post("/refund-cases/:id/decision", requirePermission("override"),
+  validate({ params: id, body: z.object({ action: z.enum(["record_receivable", "waive", "mark_recovered"]), reason: z.string().trim().min(8).max(500) }) }),
+  async (req, res) => res.json(await svc.decideRefundCase(req.valid.params.id, req.valid.body, actorOf(req))));
+adminRouter.post("/refund-cases/:id/revoke-license", requirePermission("override"),
+  validate({ params: id, body: z.object({ reason: z.string().trim().min(8).max(500) }) }),
+  async (req, res) => res.json(await svc.revokeRefundedLicense(req.valid.params.id, req.valid.body, actorOf(req))));
+adminRouter.post("/charges/:id/retry-refund", requirePermission("override"), validate({ params: id }), async (req, res) =>
+  res.json(await svc.retryRefundCompensation(req.valid.params.id, actorOf(req))));
 adminRouter.post("/charges/:id/simulate-payment", requirePermission("billing:write"), validate({ params: id }), async (req, res) =>
   res.json(await svc.simulatePayment(req.valid.params.id, actorOf(req))));
 

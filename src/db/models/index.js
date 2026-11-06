@@ -326,6 +326,15 @@ export const PixCharge = def("PixCharge", "pix_charges", {
   mac: { type: T.CHAR(17) }, payerEmail: str(200), licenseId: { type: T.UUID },
 });
 
+// Caso financeiro aberto por devolução Pix; não altera saldo nem presume recebimento.
+export const PixRefundCase = def("PixRefundCase", "pix_refund_cases", {
+  chargeId: { type: T.UUID, allowNull: false, unique: true },
+  amountCents: { type: T.INTEGER, allowNull: false },
+  status: str(24, { allowNull: false, defaultValue: "pending" }),
+  decision: str(32), notes: T.TEXT, resolvedAt: ts(), resolvedBy: { type: T.UUID },
+});
+
+
 // Clientes do revendedor (migration 20261029000001): agenda privada por MAC (nome, contato, valor, vencimento).
 export const ResellerClient = def("ResellerClient", "reseller_clients", {
   partnerId: { type: T.UUID, allowNull: false }, mac: { type: T.CHAR(17), allowNull: false },

@@ -1,11 +1,17 @@
-import { currentCompetence } from "../shared/dates.js";
 import { reconcile as reconcilePix } from "../modules/pix/pix.service.js";
-import { generateForAll, sweepDelinquency } from "../modules/billing/billing.service.js";
+import { generateForAll, sweepDelinquency, lastClosedCompetence, recoverMissedInvoices } from "../modules/billing/billing.service.js";
 import { startMailWorker } from "../modules/mail/mail.worker.js";
 
 // Rotina horária e idempotente: gera a cobrança do mês e aplica a política de inadimplência.
-export async function runBillingJobs() {
-  const invoices = await generateForAll(currentCompetence());
+export async function runBillingJobs({ recovery = false } = {}) {
+  // A verificação diária recupera meses não faturados após períodos de offline.
+  // A execução horária continua leve, apurando somente a última competência.
+  const lookback = Number.parseInt(process.env.BILLING_RECOVERY_MONTHS ?? "6", 10);
+  const invoices = recovery ? await recoverMissedInvoices({ months: Math.max(1, Math.min(60, lookback || 6)),
+      graceDays: Number.parseInt(process.env.BILLING_RECOVERY_GRACE_DAYS ?? "7", 10) || 7 })
+    : await generateForAll(lastClosedCompetence());
+  if (recovery && invoices.failed) console.error(`[jobs] falhas na recuperação de ${invoices.failed} competência(s):`,
+    invoices.results.filter((r) => !r.ok));
   const sweep = await sweepDelinquency();
   console.log(`[jobs] faturas criadas: ${invoices.created}; vencidas: ${sweep.markedOverdue}; parcerias suspensas: ${sweep.suspended.length}`);
 }
@@ -17,9 +23,17 @@ export async function runPixJobs() {
 }
 
 export function startScheduler() {
-  const safe = () => runBillingJobs().catch((e) => console.error("[jobs] falha:", e.message));
-  setTimeout(safe, 15_000).unref();
-  setInterval(safe, 60 * 60 * 1000).unref();
+  let billingRunning = false;
+  const safe = async (recovery = false) => {
+    if (billingRunning) return;
+    billingRunning = true;
+    try { await runBillingJobs({ recovery }); }
+    catch (e) { console.error("[jobs] falha:", e.message); }
+    finally { billingRunning = false; }
+  };
+  setTimeout(() => { void safe(true); }, 15_000).unref();
+  setInterval(() => { void safe(false); }, 60 * 60 * 1000).unref();
+  setInterval(() => { void safe(true); }, 24 * 60 * 60 * 1000).unref();
   const safePix = () => runPixJobs().catch((e) => console.error("[jobs] pix falhou:", e.message));
   setTimeout(safePix, 20_000).unref();
   setInterval(safePix, 2 * 60 * 1000).unref();

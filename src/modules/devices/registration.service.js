@@ -10,6 +10,7 @@ import { audit } from "../../shared/audit.js";
 import { normalizeMac } from "../../shared/mac.js";
 import { decryptSecret, encryptSecret, randomToken, sha256 } from "../../shared/crypto.js";
 import { assertPublicUrl } from "../../shared/ssrf.js";
+import { authorizeActivation } from "../content-commerce/commerce.service.js";
 import { checkActivation, denialError, issueSession, overdueSinceFor, enforceSessionCap } from "../access/access.service.js";
 import { activateLicense, activatePrepared, preparePartnerActivation } from "../activations/activation.service.js";
 import { evaluateAccess } from "../access/access.policy.js";
@@ -411,6 +412,7 @@ async function configurePartnerList(device, input, actor) {
       });
       if (usedByCode >= code.maxActivations) throw new AppError(409, "CODE_LIMIT_REACHED", "Limite de ativações deste código atingido.");
     }
+    const previousCodeId = lockedActivation.partnerCodeId;
     await lockedActivation.update({
       licenseId: null,
       partnerCodeId: code.id,
@@ -419,6 +421,8 @@ async function configurePartnerList(device, input, actor) {
       playlistName: null,
       playlistUrlEnc: null,
     }, { transaction });
+    // Mesmo fluxo de cobrança do login: uma troca para código de créditos consome crédito na transação.
+    await authorizeActivation(transaction, { partner, code, activation: lockedActivation, isNew: false, previousCodeId });
     await audit({
       actor, action: "device.configuration.confirm", entityType: "device", entityId: device.id,
       metadata: { mac: device.mac, activationId: lockedActivation.id, mode: "partner", partnerId: partner.id, providerId: provider.id, added: false },

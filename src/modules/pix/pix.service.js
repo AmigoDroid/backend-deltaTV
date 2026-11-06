@@ -1,11 +1,11 @@
 import { Op } from "sequelize";
-import { sequelize, Partner, Invoice, PixCharge, Device, Activation, License, Customer, Renewal } from "../../db/models/index.js";
+import { sequelize, Partner, Invoice, PixCharge, Device, Activation, License, Customer, Renewal, PixRefundCase } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { pageOf, paged } from "../../shared/pagination.js";
 import { getProvider, pixEnabled } from "./providers/index.js";
-import { confirmPaymentTx } from "../billing/billing.service.js";
+import { confirmPaymentTx, refundPaymentTx } from "../billing/billing.service.js";
 import { STOCK_KINDS, move } from "../stock/stock-ledger.js";
 import { ensurePlan } from "../licenses/plan.service.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
@@ -193,10 +193,8 @@ function reload(id) {
 }
 
 async function expireIfDue(charge) {
-  if (charge && charge.status === "pending" && new Date(charge.expiresAt) <= new Date()) {
-    await PixCharge.update({ status: "expired" }, { where: { id: charge.id, status: "pending" } });
-    return reload(charge.id);
-  }
+  // Vencimento do QR não é prova de não pagamento. Só o provedor pode confirmar
+  // cancelamento/expiração; preservar pendência para a conciliação recuperar webhooks perdidos.
   return charge;
 }
 
@@ -279,6 +277,142 @@ async function fulfil(chargeId, info, actor) {
   return reload(chargeId);
 }
 
+/**
+ * Compensação de devolução CONFIRMADA no provedor. Nunca cria saldo negativo,
+ * nunca revoga automaticamente uma licença já entregue. Se o estoque/crédito foi
+ * consumido, registra uma pendência de cobrança no próprio Pix, auditada.
+ */
+async function applyRefund(chargeId, actor) {
+  let unresolved = null;
+  const outcome = await sequelize.transaction(async (t) => {
+    const c = await PixCharge.findByPk(chargeId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!c || (c.status === "refunded" && c.error === "Devolução conciliada e compensada.")) return { already: true };
+    if (!["paid", "review", "refunded"].includes(c.status)) return { ignored: true };
+    // Nunca reabrir decisão administrativa finalizada nem estornar o benefício duas vezes.
+    const priorCase = await PixRefundCase.findOne({ where: { chargeId: c.id }, transaction: t, lock: t.LOCK.UPDATE });
+    if (priorCase && priorCase.status !== "pending") return { already: true, decision: priorCase.status };
+    let compensated = false;
+    if (c.status === "review" && !c.fulfilledAt) {
+      compensated = true; // nenhuma entrega ocorreu
+    } else if (c.purpose === "invoice" && c.paymentId) {
+      await refundPaymentTx(t, c.paymentId, { reason: `Devolução Pix ${c.id}`, providerConfirmed: true }, actor);
+      compensated = true;
+    } else if (c.purpose === "credit") {
+      // Verificar antes de debitar: o saldo pode já ter sido usado para compras.
+      const [rows] = await sequelize.query("SELECT balance FROM credit_wallets WHERE partner_id = :id FOR UPDATE", { replacements: { id: c.partnerId }, transaction: t });
+      if (Number(rows[0]?.balance ?? 0) >= c.quantity) {
+        await creditMove(t, { partnerId: c.partnerId, delta: -c.quantity, kind: "adjust", note: `Estorno Pix ${c.id}`, actor });
+        compensated = true;
+      } else unresolved = "Créditos já consumidos: cobrança devolvida; ajuste financeiro/recuperação de dívida obrigatório.";
+    } else if (c.purpose === "stock") {
+      const [rows] = await sequelize.query("SELECT quantity FROM license_stock WHERE partner_id = :id AND months = :months FOR UPDATE", { replacements: { id: c.partnerId, months: c.months }, transaction: t });
+      if (Number(rows[0]?.quantity ?? 0) >= c.quantity) {
+        await move(t, { partnerId: c.partnerId, months: c.months, delta: -c.quantity, kind: "adjust", actor, note: `Estorno Pix ${c.id}` });
+        compensated = true;
+      } else unresolved = "Estoque já utilizado: cobrança devolvida; ajuste financeiro/recuperação de dívida obrigatório.";
+    } else if (c.purpose === "license") {
+      unresolved = "Licença já entregue: decisão administrativa necessária sobre manutenção, bloqueio ou cobrança do benefício.";
+    } else {
+      unresolved = "Entrega sem referência para compensação automática: revisar manualmente.";
+    }
+    // Persistir uma pendência própria: não confundir cobrança do provedor com dívida recebida.
+    const [refundCase] = await PixRefundCase.findOrCreate({
+      where: { chargeId: c.id },
+      defaults: { chargeId: c.id, amountCents: c.amountCents, status: compensated ? "compensated" : "pending" },
+      transaction: t,
+    });
+    if (compensated && ["pending", "receivable"].includes(refundCase.status)) {
+      await refundCase.update({ status: "compensated", decision: "automatic", resolvedAt: new Date() }, { transaction: t });
+    }
+    await c.update({ status: "refunded", error: compensated ? "Devolução conciliada e compensada." : unresolved }, { transaction: t });
+    await audit({ actor, action: compensated ? "pix.refund.compensated" : "pix.refund.needs_review", entityType: "pix_charge", entityId: c.id,
+      result: compensated ? "success" : "failure", metadata: { purpose: c.purpose, amountCents: c.amountCents, compensated, unresolved }, transaction: t });
+    return { compensated, unresolved };
+  });
+  return outcome;
+}
+
+/** Casos abertos: dinheiro já foi devolvido, mas o benefício não pôde ser debitado. */
+export async function listRefundCases({ status, page, pageSize }) {
+  const where = status ? { status } : {};
+  const { rows, count } = await PixRefundCase.findAndCountAll({ where,
+    order: [["createdAt", "DESC"]], ...pageOf({ page, pageSize }),
+  });
+  return paged(await Promise.all(rows.map(async c => ({
+    ...c.toJSON(), charge: await PixCharge.findByPk(c.chargeId, {
+      attributes: ["id", "purpose", "partnerId", "licenseId", "mac", "status", "amountCents", "error"],
+    }),
+  }))), count, { page, pageSize });
+}
+
+/** Decisão comercial de uma devolução: nenhum dos estados faz transferência financeira. */
+export async function decideRefundCase(id, { action, reason }, actor) {
+  const initial = await PixRefundCase.findByPk(id);
+  if (!initial) throw notFound("Pendência de estorno");
+  return sequelize.transaction(async t => {
+    // Ordem global de travas: cobrança -> caso. Evita deadlock com applyRefund().
+    const charge = await PixCharge.findByPk(initial.chargeId, { transaction: t, lock: t.LOCK.UPDATE });
+    const c = await PixRefundCase.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!c || c.chargeId !== initial.chargeId) throw notFound("Pendência de estorno");
+    if (!charge || charge.status !== "refunded") throw new AppError(409, "REFUND_NOT_CONFIRMED", "O Pix ainda não foi confirmado como devolvido.");
+    const pending = ["pending", "receivable"].includes(c.status);
+    if (!pending) throw new AppError(409, "CASE_CLOSED", "Esta pendência já foi encerrada.");
+    if (action === "record_receivable") {
+      if (c.status === "receivable") throw new AppError(409, "ALREADY_RECEIVABLE", "A cobrança a recuperar já está registrada.");
+      await c.update({ status: "receivable", decision: "record_receivable", notes: reason }, { transaction: t });
+    } else if (action === "waive") {
+      await c.update({ status: "waived", decision: "waive", notes: reason, resolvedAt: new Date(), resolvedBy: actor.id ?? null }, { transaction: t });
+    } else if (action === "mark_recovered") {
+      // Confirmação OPERACIONAL de cobrança externa já recebida; não gera pagamento nem debita saldo.
+      if (c.status !== "receivable") throw new AppError(409, "RECEIVABLE_REQUIRED", "Registre primeiro o valor a recuperar.");
+      await c.update({ status: "recovered", decision: "manual_external_receipt", notes: reason,
+        resolvedAt: new Date(), resolvedBy: actor.id ?? null }, { transaction: t });
+    } else throw new AppError(422, "INVALID_DECISION", "Decisão inválida.");
+    await audit({ actor, action: `pix.refund.case.${action}`, entityType: "pix_refund_case", entityId: c.id,
+      metadata: { chargeId: charge.id, amountCents: c.amountCents, purpose: charge.purpose, reason }, transaction: t });
+    return c.toJSON();
+  });
+}
+
+/** Cancelamento exclusivamente da licença criada por ESTE Pix. Nunca cancela renovação de outra compra. */
+export async function revokeRefundedLicense(id, { reason }, actor) {
+  const initial = await PixRefundCase.findByPk(id);
+  if (!initial) throw notFound("Pendência de estorno");
+  const result = await sequelize.transaction(async t => {
+    // Mesma ordem de bloqueio usada na conciliação Pix.
+    const charge = await PixCharge.findByPk(initial.chargeId, { transaction: t, lock: t.LOCK.UPDATE });
+    const c = await PixRefundCase.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!c || c.chargeId !== initial.chargeId || c.status !== "pending") throw new AppError(409, "CASE_NOT_PENDING", "Pendência não está aberta para cancelamento de licença.");
+    if (!charge || charge.status !== "refunded" || charge.purpose !== "license" || !charge.licenseId)
+      throw new AppError(409, "INVALID_LICENSE_REFUND", "Não existe licença Pix devolvida associada a este caso.");
+    const license = await License.findByPk(charge.licenseId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!license) throw notFound("Licença");
+    // Evita destruir meses legitimamente pagos anteriormente ou depois deste Pix.
+    const otherSales = await PixCharge.count({ where: { licenseId: license.id, id: { [Op.ne]: charge.id }, status: "paid" }, transaction: t });
+    const renewals = await Renewal.count({ where: { licenseId: license.id }, transaction: t });
+    if (otherSales || renewals || !String(license.notes ?? "").includes(`(${charge.id.slice(0, 8)})`))
+      throw new AppError(409, "LICENSE_MIXED_PURCHASES", "Esta licença pode conter períodos de outras compras. Use o tratamento financeiro, sem cancelar o prazo inteiro.");
+    await license.update({ status: "cancelled", statusReason: `Pix devolvido: ${reason}`.slice(0, 500) }, { transaction: t });
+    await c.update({ status: "compensated", decision: "revoke_license", notes: reason,
+      resolvedAt: new Date(), resolvedBy: actor.id ?? null }, { transaction: t });
+    await charge.update({ error: "Devolução conciliada: licença exclusiva cancelada por decisão administrativa." }, { transaction: t });
+    await audit({ actor, action: "pix.refund.license_revoke", entityType: "pix_refund_case", entityId: c.id,
+      metadata: { chargeId: charge.id, licenseId: license.id, reason }, transaction: t });
+    return c.toJSON();
+  });
+  clearMirrorAuth();
+  return result;
+}
+
+/** Retenta somente a compensação de uma devolução já identificada no provedor. */
+export async function retryRefundCompensation(id, actor) {
+  const charge = await PixCharge.findByPk(id);
+  if (!charge) throw notFound("Cobrança");
+  if (charge.status !== "refunded") throw new AppError(409, "NOT_REFUNDED", "A cobrança ainda não está devolvida.");
+  await applyRefund(id, actor);
+  return reload(id);
+}
+
 /** Aplica ao banco o estado que o PROVEDOR informou sobre o pagamento. */
 async function applyProviderState(chargeId, info, actor = SYSTEM) {
   const charge = await PixCharge.findByPk(chargeId);
@@ -292,18 +426,15 @@ async function applyProviderState(chargeId, info, actor = SYSTEM) {
   if (info.status === "cancelled" && charge.status === "pending") {
     await PixCharge.update({ status: new Date(charge.expiresAt) <= new Date() ? "expired" : "cancelled" }, { where: { id: chargeId, status: "pending" } });
   } else if (info.status === "refunded" && ["paid", "review"].includes(charge.status)) {
-    await PixCharge.update(
-      { status: "refunded", error: "Pix devolvido no provedor. O estoque/fatura/crédito NÃO foram revertidos automaticamente: ajuste manualmente, se necessário." },
-      { where: { id: chargeId, status: { [Op.in]: ["paid", "review"] } } },
-    );
-    await audit({ actor, action: "pix.refunded", entityType: "pix_charge", entityId: chargeId, result: "failure", metadata: { amountCents: charge.amountCents } });
+    await applyRefund(chargeId, actor);
   }
+
   return expireIfDue(await reload(chargeId));
 }
 
 /** Consulta o provedor e atualiza uma cobrança pendente (confirmação mesmo sem webhook, ex.: ambiente local). */
 async function refreshIfPending(charge, { force = false } = {}) {
-  if (charge.status !== "pending") return charge;
+  if (!["pending", "expired"].includes(charge.status)) return charge;
   const provider = providerFor(charge.provider);
   const recent = charge.lastCheckedAt && Date.now() - new Date(charge.lastCheckedAt).getTime() < CHECK_INTERVAL_MS;
   if (!provider || !charge.providerRef || (recent && !force)) return expireIfDue(charge);
@@ -411,15 +542,20 @@ export async function reconcile({ limit = 100 } = {}) {
   if (!pixEnabled()) return { checked: 0, paid: 0, expired: 0 };
   const provider = getProvider();
   const rows = await PixCharge.findAll({
-    where: { status: "pending", provider: provider.name, providerRef: { [Op.ne]: null }, createdAt: { [Op.lt]: new Date(Date.now() - 2 * 60_000) } },
-    order: [["expiresAt", "ASC"]], limit,
+    where: { status: { [Op.in]: ["pending", "expired"] }, provider: provider.name,
+      providerRef: { [Op.ne]: null }, createdAt: { [Op.lt]: new Date(Date.now() - 2 * 60_000) },
+      // Não varrer indefinidamente o histórico, mas recuperar pagamentos após expiração do QR.
+      [Op.or]: [{ status: "pending" }, { createdAt: { [Op.gte]: new Date(Date.now() - 30 * 86400000) } }] },
+    order: [["lastCheckedAt", "ASC NULLS FIRST"], ["createdAt", "ASC"]], limit,
   });
   let checked = 0;
   let paid = 0;
   let expired = 0;
   for (const c of rows) {
     try {
-      const after = await applyProviderState(c.id, await provider.getPayment(c.providerRef), SYSTEM);
+      const info = await provider.getPayment(c.providerRef);
+      await PixCharge.update({ lastCheckedAt: new Date() }, { where: { id: c.id } });
+      const after = await applyProviderState(c.id, info, SYSTEM);
       checked++;
       if (after?.status === "paid") paid++;
       if (after?.status === "expired") expired++; // vencida e sem pagamento no provedor
@@ -427,8 +563,26 @@ export async function reconcile({ limit = 100 } = {}) {
       console.error(`[pix] conciliação da cobrança ${c.id}: ${e.code ?? e.message}`);
     }
   }
-  const [others] = await PixCharge.update({ status: "expired" }, { where: { status: "pending", expiresAt: { [Op.lt]: new Date() } } });
-  return { checked, paid, expired: expired + others };
+  // Também confere devoluções de Pix pagos recentes; o webhook de estorno pode se perder.
+  // Lote separado impede que uma fila de pendentes impeça a conciliação dos estornos.
+  const refundCandidates = await PixCharge.findAll({
+    where: { status: "paid", provider: provider.name, providerRef: { [Op.ne]: null },
+      paidAt: { [Op.gte]: new Date(Date.now() - 30 * 86400000) },
+      [Op.or]: [{ lastCheckedAt: null }, { lastCheckedAt: { [Op.lt]: new Date(Date.now() - 12 * 3600000) } }] },
+    order: [["lastCheckedAt", "ASC NULLS FIRST"], ["paidAt", "DESC"]], limit: Math.min(limit, 20),
+  });
+  for (const c of refundCandidates) {
+    try {
+      const info = await provider.getPayment(c.providerRef);
+      await PixCharge.update({ lastCheckedAt: new Date() }, { where: { id: c.id } });
+      if (info.status === "refunded") await applyProviderState(c.id, info, SYSTEM);
+      checked++;
+    } catch (e) {
+      console.error(`[pix] conferência de devolução ${c.id}: ${e.code ?? e.message}`);
+    }
+  }
+  // Não expirar cobranças não consultadas: podem estar pagas no provedor.
+  return { checked, paid, expired };
 }
 
 
@@ -536,7 +690,7 @@ async function fulfilLicenseSale(t, c) {
     const previous = lic.expiresAt;
     const base = lic.expiresAt && lic.expiresAt > now ? lic.expiresAt : now;
     const expiresAt = addLicenseMonthsUTC(base, c.months);
-    await lic.update({ planId: plan.id, expiresAt, startsAt: lic.startsAt ?? now, status: "active", statusReason: null }, { transaction: t });
+    await lic.update({ planId: plan.id, expiresAt, startsAt: lic.startsAt ?? now, isTrial: false, status: "active", statusReason: null }, { transaction: t });
     await Renewal.create({ licenseId: lic.id, planId: plan.id, previousExpiresAt: previous, newExpiresAt: expiresAt, createdBy: null }, { transaction: t });
     return { licenseId: lic.id, renewed: true };
   }

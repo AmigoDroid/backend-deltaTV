@@ -93,14 +93,16 @@ export async function resolveForActivation(activation, original, credentials) {
       ? scored[0] : (automatic ? selectHealthy(scored,pinned,now)
         : (pinned?.until > now && scored.find(s => s.id === pinned.providerId) || scored[0]));
     if(selected.id===original?.id){put(pins,activation.id,{providerId:selected.id,until:now+PIN_MS},MAX_PINS);return {provider:selected,verified:false};}
-    // A URL alternativa DEVE aceitar o usuário/senha desta ativação. Se não, não há mudança.
-    const compatible=await verifyAlternative(selected,credentials.username,credentials.password);
-    if(compatible){put(pins,activation.id,{providerId:selected.id,until:now+PIN_MS},MAX_PINS);return {provider:selected,verified:true};}
-    // Se a primeira alternativa não aceitar as credenciais, tente SOMENTE mais uma (sem cascata cara).
-    const second=ranked.find(s=>s.id!==selected.id && s.id!==original?.id);
-    if(second && await verifyAlternative(second,credentials.username,credentials.password)) {
-      put(pins,activation.id,{providerId:second.id,until:now+PIN_MS},MAX_PINS);
-      return {provider:second,verified:true};
+    // Tenta progressivamente alternativas saudáveis dentro do orçamento de latência.
+    // Cada validação possui timeout individual; não bloquear o catálogo indefinidamente.
+    const deadline = Date.now() + 5500;
+    const candidates = [selected, ...ranked.filter(s => s.id !== selected.id && s.id !== original?.id)];
+    for (const candidate of candidates.slice(0, 4)) {
+      if (Date.now() >= deadline) break;
+      if (await verifyAlternative(candidate, credentials.username, credentials.password)) {
+        put(pins, activation.id, { providerId: candidate.id, until: now + PIN_MS }, MAX_PINS);
+        return { provider: candidate, verified: true };
+      }
     }
     return fallback;
   } catch(e) {

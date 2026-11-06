@@ -1,4 +1,4 @@
-import { grantNewDeviceTrial } from "../devices/device-trial.service.js";
+import { randomUUID } from "node:crypto";
 import { getPlatformSettings } from "../settings/platform-settings.service.js";
 import { env } from "../../config/env.js";
 import { Op, UniqueConstraintError } from "sequelize";
@@ -55,7 +55,7 @@ const includeFor = [
 
 async function liveActivationOf(deviceId, transaction) {
   return Activation.findOne({
-    where: { deviceId, status: live }, order: [["activatedAt", "DESC"]], transaction,
+    where: { deviceId, status: live, [Op.or]: [{ providerId: { [Op.ne]: null } }, { playlistUrlEnc: { [Op.ne]: null } }] }, order: [["activatedAt", "DESC"]], transaction,
     include: [{ model: PartnerProvider, attributes: ["id", "name", "deliveryMode", "status"], required: false }],
   });
 }
@@ -164,7 +164,6 @@ async function createRecord({ partner, actor, label, contentOwnerPartnerId=null,
           mac, platform: "web", appId: "delta-tv-web", identifierType: "virtual_mac", deviceKey: `web:${mac}`,
           lastInstallationId: installationIdOf(mac), firstRegisteredAt: new Date(),
         }, { transaction: t });
-        await grantNewDeviceTrial(device, true, { transaction: t, installationId: device.lastInstallationId });
         const wa = await WebAccess.create({
           partnerId: partner?.id ?? null, deviceId: device.id, codeHash: webHash(code), codeEnc: encryptSecret(code),
           label: label ?? null, createdBy: actor?.id ?? null, contentOwnerPartnerId, sourcePartnerCodeId, issuanceKey,
@@ -380,6 +379,136 @@ export async function changeStatus(id, action, { reason, actor, scope = {}, role
   return getWebAccess(id, scope);
 }
 
+/**
+ * Recuperação segura de um código revogado. A validação externa acontece antes de
+ * reservar o código; a transação comercial verifica a reserva imediatamente antes
+ * de cobrar, impedindo que uma tentativa antiga prossiga após perder o lease.
+ *
+ * A recuperação é reexecutável: se a ativação já foi gravada, conclui apenas os
+ * metadados; nunca repete a venda. O token da tentativa fica persistido em
+ * statusReason, e a idempotência da ativação usa o mesmo identificador.
+ */
+const RESTORE_PREFIX = "web-restore:";
+const RESTORE_LEASE_MS = 30 * 60 * 1000;
+const restoreIdempotency = (reason) => `web-restore-${reason.slice(RESTORE_PREFIX.length)}`;
+const restoredActivationFor = async (wa) => {
+  if (!wa.statusReason?.startsWith(RESTORE_PREFIX)) return null;
+  const device = await Device.findByPk(wa.deviceId);
+  if (!device) throw notFound("Dispositivo web");
+  return Activation.findOne({ where: {
+    deviceId: wa.deviceId,
+    idempotencyKey: `${device.mac}:${restoreIdempotency(wa.statusReason)}`,
+    status: "active",
+  } });
+};
+
+async function finalizeWebRestore(id, claim, activationId, actor, reason, resumed = false) {
+  const completed = await sequelize.transaction(async (t) => {
+    const wa = await WebAccess.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!wa || wa.status !== "pending" || wa.statusReason !== claim)
+      throw new AppError(409, "RESTORE_CLAIM_LOST", "A recuperação foi substituída por outra operação; atualize a página.");
+    const activation = await Activation.findByPk(activationId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!activation || activation.deviceId !== wa.deviceId || activation.status !== "active" ||
+        !activation.providerId || !activation.partnerId || !activation.partnerCodeId || !activation.credentialsEnc)
+      throw new AppError(409, "RESTORE_NOT_CONFIGURED", "A nova ativação ainda não está pronta para uso.");
+    const code = await PartnerCode.findByPk(activation.partnerCodeId, { transaction: t });
+    if (!code || code.partnerId !== activation.partnerId)
+      throw new AppError(409, "RESTORE_INVALID_SOURCE", "A ativação não pertence ao código selecionado.");
+    // Titular do conteúdo é quem responde pelas credenciais; o emissor/revendedor
+    // permanece em partnerId. Ambos os vínculos são alterados junto ao estado.
+    await wa.update({ status: "active", statusReason: null,
+      contentOwnerPartnerId: activation.partnerId, sourcePartnerCodeId: activation.partnerCodeId }, { transaction: t });
+    await audit({ actor, action: "web_access.restore", entityType: "web_access", entityId: id,
+      metadata: { activationId: activation.id, reason, resumed, contentOwnerPartnerId: activation.partnerId,
+        sourcePartnerCodeId: activation.partnerCodeId }, transaction: t });
+    return activation.id;
+  });
+  dropMirrorAuth(completed);
+  return getWebAccess(id);
+}
+
+async function reserveWebRestore(id) {
+  const claim = `${RESTORE_PREFIX}${randomUUID()}`;
+  const [reserved] = await WebAccess.update({ status: "pending", statusReason: claim },
+    { where: { id, status: "revoked" } });
+  if (reserved) return { claim };
+  const prior = await WebAccess.findByPk(id);
+  if (!prior) throw notFound("Acesso web");
+  if (prior.status !== "pending" || !prior.statusReason?.startsWith(RESTORE_PREFIX))
+    throw new AppError(409, "NOT_REVOKED", "Este acesso não está revogado.");
+
+  // Caiu após gravar a ativação, antes de liberar o código? Finalize sem cobrança.
+  const committed = await restoredActivationFor(prior);
+  if (committed) return { recovered: prior, activationId: committed.id };
+
+  // Uma tentativa ativa não pode ser roubada. Após 30 minutos ela pode ser
+  // retomada; a transação de ativação confere o token antes de cobrar.
+  if (new Date(prior.updatedAt).getTime() > Date.now() - RESTORE_LEASE_MS)
+    throw new AppError(409, "RESTORE_IN_PROGRESS", "Recuperação em andamento. Tente novamente mais tarde.");
+  const cutoff = new Date(Date.now() - RESTORE_LEASE_MS);
+  // Bloqueie ANTES de inspecionar a ativação: uma venda pode ter sido
+  // confirmada enquanto aguardávamos a trava da tentativa anterior.
+  return sequelize.transaction(async (t) => {
+    const locked = await WebAccess.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!locked || locked.status !== "pending" || !locked.statusReason?.startsWith(RESTORE_PREFIX))
+      throw new AppError(409, "RESTORE_CONFLICT", "O acesso mudou; consulte novamente.");
+    const device = await Device.findByPk(locked.deviceId, { transaction: t });
+    if (!device) throw notFound("Dispositivo web");
+    const committed = await Activation.findOne({ where: {
+      deviceId: locked.deviceId,
+      idempotencyKey: `${device.mac}:${restoreIdempotency(locked.statusReason)}`,
+      status: "active",
+    }, transaction: t });
+    if (committed) return { recovered: locked, activationId: committed.id };
+    if (new Date(locked.updatedAt).getTime() > cutoff.getTime())
+      throw new AppError(409, "RESTORE_IN_PROGRESS", "Recuperação em andamento. Tente novamente mais tarde.");
+    const previousAttempt = locked.statusReason;
+    await locked.update({ status: "pending", statusReason: claim }, { transaction: t });
+    await audit({ actor: { type: "system", id: null }, action: "web_access.restore_reclaim",
+      entityType: "web_access", entityId: id,
+      metadata: { reason: "lease_expired_no_activation", previousAttempt }, transaction: t });
+    return { claim };
+  });
+}
+
+export async function restoreRevokedWebAccess(id, { config, reason }, actor) {
+  if (config?.mode !== "partner")
+    throw new AppError(422, "PARTNER_RESTORE_ONLY", "Esta recuperação exige código e novas credenciais de parceria.");
+  // Verificação de credenciais antes de alterar o status ou reservar o código.
+  const wa = await WebAccess.findByPk(id, { include: [{ model: Device, attributes: ["mac", "lastInstallationId"] }] });
+  if (!wa) throw notFound("Acesso web");
+  if (wa.status !== "revoked" && wa.status !== "pending")
+    throw new AppError(409, "NOT_REVOKED", "Este acesso não está revogado.");
+  if (!wa.Device?.mac) throw notFound("Dispositivo web");
+  // Retomada de uma operação já cobrada não depende mais de consultar o Xtream.
+  if (wa.status === "pending" && wa.statusReason?.startsWith(RESTORE_PREFIX)) {
+    const committed = await restoredActivationFor(wa);
+    if (committed) return finalizeWebRestore(id, wa.statusReason, committed.id, actor, reason, true);
+  }
+  const prepared = await preparePartnerActivation({ ...config, web: true });
+  const { claim, recovered, activationId } = await reserveWebRestore(id);
+  if (recovered) return finalizeWebRestore(id, recovered.statusReason, activationId, actor, reason, true);
+
+  try {
+    // A própria transação comercial bloqueia WebAccess e verifica esta claim;
+    // um trabalhador atrasado não debita créditos após o lease ser retomado.
+    const result = await activatePrepared({ prepared, mac: wa.Device.mac,
+      installationId: wa.Device.lastInstallationId, idempotencyKey: restoreIdempotency(claim),
+      restoreClaim: { id, claim }, meta: { ip: actor?.ip, userAgent: "admin-web-restore" } });
+    return await finalizeWebRestore(id, claim, result.activation.id, actor, reason);
+  } catch (err) {
+    const current = await WebAccess.findByPk(id).catch(() => null);
+    if (current?.status === "pending" && current.statusReason === claim) {
+      // Se a transação de ativação comitou, NUNCA descartar a reserva nem repetir
+      // a cobrança. A próxima chamada somente finaliza o vínculo.
+      const committed = await restoredActivationFor(current).catch(() => null);
+      if (!committed) await WebAccess.update({ status: "revoked", statusReason: "Recuperação falhou; tente novamente" },
+        { where: { id, status: "pending", statusReason: claim } }).catch(() => {});
+    }
+    throw err;
+  }
+}
+
 /** Renovação: 1 licença do estoque do dono (ou cortesia do admin) soma `months` ao prazo. */
 export async function renew(id, { months, actor, scope = {}, useStock = true }) {
   const wa = await loadOwned(id, scope);
@@ -449,7 +578,11 @@ export async function loginWithCode({ code, ip, userAgent }) {
     throw invalidCode();
   }
   const outcome = await sequelize.transaction(async (t) => {
-    const activation = await Activation.findOne({ where: { deviceId: wa.deviceId, status: { [Op.ne]: "revoked" } }, transaction: t, lock: t.LOCK.UPDATE });
+    const activation = await Activation.findOne({
+      where: { deviceId: wa.deviceId, status: { [Op.ne]: "revoked" },
+        [Op.or]: [{ providerId: { [Op.ne]: null } }, { playlistUrlEnc: { [Op.ne]: null } }] },
+      order: [["activatedAt", "DESC"]], transaction: t, lock: t.LOCK.UPDATE,
+    });
     if (!activation) return { error: new AppError(409, "WEB_ACCESS_NOT_CONFIGURED", "Este acesso ainda não tem lista configurada. Contate seu fornecedor.") };
     const { decision } = await checkActivation(activation.id, { transaction: t });
     if (wa.status === "blocked" || !decision.allowed) {

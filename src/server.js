@@ -1,6 +1,7 @@
 import { env } from "./config/env.js";
 import { proxyConfigurationWarnings } from "./shared/proxy-config.js";
 import { sequelize } from "./db/sequelize.js";
+import { verifyRequiredSchema } from "./db/schema-preflight.js";
 import { createApp } from "./app.js";
 import { startScheduler } from "./jobs/scheduler.js";
 import { startPresence, stopPresence, countOnline } from "./modules/devices/presence.js";
@@ -10,6 +11,7 @@ import { startProviderMonitor,stopProviderMonitor } from "./modules/provider-mon
 dotenv.config();
 
 await sequelize.authenticate();
+await verifyRequiredSchema(sequelize);
 const app = createApp();
 const server = app.listen(env.port, env.bindHost, () => {
   console.log(`API de licenciamento em ${env.bindHost}:${env.port} (${env.nodeEnv}); trust proxy=${String(env.trustProxy)}`);

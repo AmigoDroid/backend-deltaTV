@@ -61,7 +61,7 @@ async function computeDashboard() {
   let counts = new Map();
   if (billableIds.length) {
     const [usage] = await sequelize.query(`
-      SELECT partner_id AS id, count(*)::integer AS n FROM activations
+      SELECT partner_id AS id, count(DISTINCT device_id)::integer AS n FROM activations
       WHERE partner_id IN (:ids) AND activated_at < :end
         AND (revoked_at IS NULL OR revoked_at >= :start)
       GROUP BY partner_id`, { replacements: { ids: billableIds, start, end } });
@@ -88,9 +88,18 @@ async function computeDashboard() {
         row.reason === "Aguardando aprovação do cadastro") partnerBreakdown.pendingSignups += Number(row.n);
   }
 
+  // Caixa consolidado: faturas (payments) + vendas Pix que não criam Payment.
+  // Pix de fatura está em payments, então não deve ser contado novamente.
+  // Pagamentos de faturas devolvidos por Pix são excluídos do total líquido.
   const [paidRow] = (await sequelize.query(
-    `SELECT COALESCE(sum(amount_cents),0)::bigint AS total FROM payments
-      WHERE status='confirmed' AND paid_at >= date_trunc('month', now() AT TIME ZONE 'UTC')`,
+    `SELECT COALESCE(sum(p.amount_cents),0)::bigint AS total FROM payments p
+      WHERE p.status='confirmed' AND p.paid_at >= date_trunc('month', now() AT TIME ZONE 'UTC')
+        AND NOT EXISTS (SELECT 1 FROM pix_charges pc WHERE pc.payment_id=p.id AND pc.status='refunded')`,
+  ))[0];
+  const [pixSalesRow] = (await sequelize.query(
+    `SELECT COALESCE(sum(amount_cents),0)::bigint AS total FROM pix_charges
+      WHERE status='paid' AND purpose IN ('stock','credit','license')
+        AND paid_at >= date_trunc('month', now() AT TIME ZONE 'UTC')`,
   ))[0];
 
   const [recentActivations, expiringLicenses, endingPartners, overdue, events] = await Promise.all([
@@ -106,7 +115,7 @@ async function computeDashboard() {
     devices: { active: devicesActive, blocked: devicesBlocked, unlinked: devicesUnlinked },
     partners: { active: partnersActive, suspended: partnersSuspended },
     partnerBreakdown,
-    billing: { pending, mrrCents, receivedThisMonthCents: Number(paidRow.total) },
+    billing: { pending, mrrCents, receivedThisMonthCents: Number(paidRow.total) + Number(pixSalesRow.total) },
     recentActivations,
     alerts: { expiringLicenses, endingPartners, overdueInvoices: overdue },
     events,
