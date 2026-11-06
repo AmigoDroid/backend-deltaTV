@@ -57,6 +57,17 @@ export async function deletePartnerAsSuper(id, { confirmation, confirmSlug, dele
     if (!matchesPartnerDeletionConfirmation(confirmation ?? confirmSlug, partner)) throw new AppError(422, "CONFIRMATION_MISMATCH", "Confirme o nome ou identificador da revenda ou parceiro mostrado no formulário.");
     if (partner.status === "deleted") throw new AppError(409, "ALREADY_DELETED", "Esta parceria já foi excluída da operação.");
     if (!reason?.trim() || reason.trim().length < 8) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo da exclusão (mínimo de 8 caracteres).");
+    // Fotografa os estados ANTES de revogar/desativar, para permitir restauração fiel.
+    // Os IDs são mantidos, mas nenhuma senha nem token é salvo na lixeira.
+    await sequelize.query(`INSERT INTO partner_trash_snapshots
+      (partner_id, previous_status, previous_status_reason, users, codes, providers, web_accesses)
+      SELECT p.id, p.status, p.status_reason,
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'status', status)) FROM admin_users WHERE partner_id = p.id), '[]'::jsonb),
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'status', status)) FROM partner_codes WHERE partner_id = p.id), '[]'::jsonb),
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'status', status)) FROM partner_providers WHERE partner_id = p.id), '[]'::jsonb),
+        COALESCE((SELECT jsonb_agg(jsonb_build_object('id', id, 'status', status, 'statusReason', status_reason)) FROM web_accesses WHERE partner_id = p.id), '[]'::jsonb)
+      FROM partners p WHERE p.id = :id
+      ON CONFLICT (partner_id) DO NOTHING`, { replacements: { id }, transaction });
     // Todas as sessões de usuários são revogadas dentro da transação, inclusive refresh tokens.
     const users = await AdminUser.findAll({ where: { partnerId: id }, attributes: ["id"], transaction });
     const userIds = users.map((u) => u.id);

@@ -18,6 +18,7 @@ import {getServicePlan,updateServicePlan} from "../service-plans/plan.service.js
 import { contractOverview } from "./contract-overview.service.js";
 
 import { partnerDeletionPreview, deletePartnerAsSuper } from "../admin-deletion.service.js";
+import { listPartnerTrash, trashPreview, restorePartnerFromTrash, permanentlyDeletePartner } from "../partner-trash.service.js";
 import * as preReg from "./partner-invite.service.js";
 
 import { setCodeServers, listCodeServerIds, invalidateServerPools } from "../provider-monitor/code-pool.service.js";
@@ -94,6 +95,22 @@ router.post("/pre-registrations/:preRegId/send", requirePermission("partners:wri
 router.post("/pre-registrations/:preRegId/cancel", requirePermission("partners:write"), validate({ params: preRegId }), async (req, res) =>
   res.json(await preReg.cancelPreRegistration(req.valid.params.preRegId, actorOf(req))));
 router.get("/codes/check", requirePermission("partners:read"), codeCheckLimiter, validate({ query: z.object({ code: z.string().max(40) }) }), async (req, res) => res.json(await svc.checkCode(req.valid.query.code)));
+// Lixeira visível exclusivamente ao superadmin. Rotas estáticas antes de /:id.
+router.get("/trash", requirePermission("override"), validate({ query: z.object({
+  ...pageQuery, q: z.string().trim().max(100).optional(), kind: z.enum(["content", "reseller"]).optional(),
+}) }), async (req, res) => res.set("Cache-Control", "no-store").json(await listPartnerTrash(req.valid.query, actorOf(req))));
+router.get("/trash/:id/preview", requirePermission("override"), validate({ params: id }),
+  async (req, res) => res.set("Cache-Control", "no-store").json(await trashPreview(req.valid.params.id, actorOf(req))));
+router.post("/trash/:id/restore", requirePermission("override"), validate({ params: id, body: z.object({
+  reason: z.string().trim().min(8).max(400),
+}).strict() }), async (req, res) => res.json(await restorePartnerFromTrash(req.valid.params.id, req.valid.body, actorOf(req))));
+router.delete("/trash/:id/permanent", requirePermission("override"), validate({ params: id, body: z.object({
+  confirmSlug: z.string().trim().min(1).max(160),
+  phrase: z.literal("EXCLUIR DEFINITIVAMENTE"),
+  purgeFinancialHistory: z.boolean().default(false),
+  reason: z.string().trim().min(12).max(400),
+}).strict() }), async (req, res) => res.json(await permanentlyDeletePartner(req.valid.params.id, req.valid.body, actorOf(req))));
+
 router.get("/:id/deletion-preview", requirePermission("override"), validate({ params: id }), async (req, res) => res.set("Cache-Control", "no-store").json(await partnerDeletionPreview(req.valid.params.id, actorOf(req))));
 router.delete("/:id", requirePermission("override"), validate({ params: id, body: z.object({
   confirmation: z.string().trim().min(1).max(160).optional(),

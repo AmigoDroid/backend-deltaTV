@@ -43,6 +43,7 @@ test("pré-verificação recusa esquema incompleto antes de abrir HTTP", async (
     pix_refund_cases: { id: {}, charge_id: {}, amount_cents: {}, status: {} },
     admin_user_profiles: { admin_user_id: {}, phone: {}, avatar_data: {}, show_unread_banner: {}, show_notification_badge: {} },
     web_accesses: { id: {}, status: {}, status_reason: {}, content_owner_partner_id: {}, source_partner_code_id: {} },
+    partner_trash_snapshots: { partner_id: {}, previous_status: {}, users: {}, codes: {}, providers: {}, web_accesses: {} },
   };
   const qi = { async describeTable(table) {
     if (!tables[table]) throw new Error("relation does not exist");

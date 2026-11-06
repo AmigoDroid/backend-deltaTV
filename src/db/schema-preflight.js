@@ -6,6 +6,7 @@ export async function verifyRequiredSchema(sequelize) {
     pix_refund_cases: ["id", "charge_id", "status", "amount_cents"],
     admin_user_profiles: ["admin_user_id", "phone", "avatar_data", "show_unread_banner", "show_notification_badge"],
     web_accesses: ["id", "status", "status_reason", "content_owner_partner_id", "source_partner_code_id"],
+    partner_trash_snapshots: ["partner_id", "previous_status", "users", "codes", "providers", "web_accesses"],
   };
   for (const [table, columns] of Object.entries(required)) {
     let schema;
