@@ -2,7 +2,7 @@ import { Router } from "express";
 import { createHash } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { validate } from "../../shared/validate.js";
+import { validate, partialInput } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
 import { requirePermission } from "../../middleware/authenticate.js";
@@ -16,23 +16,30 @@ const httpUrl = z.string().trim().url().max(500).refine(raw => {
   try { return ["https:", "http:"].includes(new URL(raw).protocol); } catch { return false; }
 }, "Informe um endereço HTTP(S) válido.");
 const optionalUrl = z.union([httpUrl, z.literal("")]).nullable().optional();
-const createBody = z.object({
+const appBaseBody = z.object({
   partnerId: z.string().uuid(), appKey: z.string().regex(/^[a-z][a-z0-9-]{2,63}$/),
   name: z.string().trim().min(2).max(120), logoUrl: optionalUrl, downloadUrl: optionalUrl,
   status: z.enum(["draft", "active", "suspended"]).default("draft"),
   planType: z.enum(["limited", "unlimited"]), activationLimit: z.number().int().min(1).max(1_000_000).nullable().optional(),
   monthlyFeeCents: z.number().int().min(0).max(100_000_000),
   paidThrough: z.iso.date().nullable().optional(), notes: z.string().max(2000).nullable().optional(),
-}).strict().superRefine((value, context) => {
+}).strict();
+// Zod 4 não permite .omit() sobre objetos com refinamentos. Derivamos os
+// schemas de um objeto base e só depois aplicamos a regra de criação.
+const createBody = appBaseBody.superRefine((value, context) => {
   if (value.planType === "limited" && !value.activationLimit)
     context.addIssue({ code: "custom", path: ["activationLimit"], message: "Informe a quantidade do plano limitado." });
 });
-const updateBody = createBody.omit({ partnerId: true, appKey: true }).partial().strict();
+// No PATCH, omissões não podem aplicar defaults de criação (ex.: status: draft).
+// A validação de limite final permanece em service.updateApp(), que considera
+// o plano e a quantidade já persistidos no banco.
+const updateBody = partialInput(appBaseBody.omit({ partnerId: true, appKey: true })).strict();
 const serverBody = z.object({
   name: z.string().trim().min(2).max(120), baseUrl: httpUrl,
   status: z.enum(["active", "disabled"]).default("active"), priority: z.number().int().min(-1000).max(1000).default(0),
 }).strict();
-const serverUpdate = serverBody.partial().strict();
+// Também evita resetar status/priority em atualizações parciais de servidor.
+const serverUpdate = partialInput(serverBody).strict();
 const paymentBody = z.object({
   reference: z.string().trim().min(3).max(120), months: z.number().int().min(1).max(24),
   amountCents: z.number().int().min(0).max(100_000_000), notes: z.string().max(500).optional(),
