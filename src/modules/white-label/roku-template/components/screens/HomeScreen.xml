@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="HomeScreen" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/screens/HomeScreen.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+    <interface>
+        <field id="appearanceVersion" type="integer" value="0" onChange="onAppearance" />
+        <field id="catalog" type="assocarray" onChange="onCatalog" />
+        <field id="openItem" type="assocarray" alwaysNotify="true" />
+        <field id="navigateTo" type="integer" alwaysNotify="true" />
+        <field id="favsVersion" type="integer" value="0" />
+        <field id="favoritesChanged" type="boolean" alwaysNotify="true" />
+        <function name="focusContent" />
+        <function name="blurContent" />
+    </interface>
+    <children>
+        <!-- Hero -->
+        <Poster id="hero" width="1020" height="314" loadWidth="1020" loadHeight="314" loadDisplayMode="scaleToZoom"
+            uri="pkg:/images/banner-delta.jpg" />
+        <Poster id="heroGradientLeft" width="1020" height="314" uri="pkg:/images/grad_left.png" />
+        <Poster id="heroGradientBottom" translation="[0,184]" width="1020" height="130" uri="pkg:/images/grad_bottom.png" />
+        <Label id="kicker" translation="[38,98]" width="600" height="24" text="DELTA TV" />
+        <Label id="title" translation="[38,124]" width="760" height="62" text="Bem-vindo ao Delta TV" />
+        <Label id="subtitle" translation="[38,194]" width="700" height="32" text="Seu entretenimento em um só lugar." />
+        <Group id="dots" translation="[38,274]" />
+
+        <!-- Cartoes de categoria -->
+        <Poster id="card0" translation="[36,322]" width="303" height="139" uri="pkg:/images/card_live.png" />
+        <Poster id="card1" translation="[360,322]" width="303" height="139" uri="pkg:/images/card_movies.png" />
+        <Poster id="card2" translation="[683,322]" width="303" height="139" uri="pkg:/images/card_series.png" />
+        <Poster id="ico0" translation="[58,340]" width="36" height="36" uri="pkg:/images/ic_tv.png" blendColor="0xB9A6FFFF" />
+        <Poster id="ico1" translation="[382,340]" width="36" height="36" uri="pkg:/images/ic_film.png" blendColor="0x7FB3FFFF" />
+        <Poster id="ico2" translation="[705,340]" width="36" height="36" uri="pkg:/images/ic_series.png" blendColor="0xF08CFFFF" />
+        <Label id="ct0" translation="[58,388]" width="240" height="30" text="TV ao vivo" />
+        <Label id="ct1" translation="[382,388]" width="240" height="30" text="Filmes" />
+        <Label id="ct2" translation="[705,388]" width="240" height="30" text="Séries" />
+        <Label id="cs0" translation="[58,420]" width="230" height="22" text="Assista aos canais" />
+        <Label id="cs1" translation="[382,420]" width="230" height="22" text="Explore o catálogo" />
+        <Label id="cs2" translation="[705,420]" width="230" height="22" text="Suas séries favoritas" />
+        <Poster translation="[300,432]" width="14" height="14" uri="pkg:/images/ic_chevron.png" blendColor="0xFFFFFFFF" />
+        <Poster translation="[624,432]" width="14" height="14" uri="pkg:/images/ic_chevron.png" blendColor="0xFFFFFFFF" />
+        <Poster translation="[947,432]" width="14" height="14" uri="pkg:/images/ic_chevron.png" blendColor="0xFFFFFFFF" />
+        <Poster id="ring0" translation="[36,322]" width="303" height="139" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />
+        <Poster id="ring1" translation="[360,322]" width="303" height="139" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />
+        <Poster id="ring2" translation="[683,322]" width="303" height="139" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />
+
+        <!-- Em destaque -->
+        <Label id="featTitle" translation="[36,486]" width="400" height="28" text="Em destaque" />
+        <Label id="featMore" translation="[800,488]" width="150" height="24" text="Ver mais" horizAlign="right" />
+        <Poster id="featChev" translation="[958,493]" width="12" height="12" uri="pkg:/images/ic_chevron.png" blendColor="0xC3C7D8FF" />
+
+        <Timer id="heroTimer" repeat="true" duration="7" />
+    </children>
+</component>

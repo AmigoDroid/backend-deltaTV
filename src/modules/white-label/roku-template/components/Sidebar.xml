@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="Sidebar" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/Sidebar.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <interface>
+        <field id="appearanceVersion" type="integer" value="0" onChange="onAppearance" />
+        <field id="activeIndex" type="integer" value="0" onChange="refresh" />
+        <field id="itemSelected" type="integer" value="-1" alwaysNotify="true" />
+        <field id="macText" type="string" value="" onChange="onMac" />
+        <field id="versionText" type="string" value="" onChange="onVersion" />
+        <function name="focusSidebar" />
+    </interface>
+    <children>
+        <Rectangle id="sideBg" width="260" height="720" color="0x101321FF" />
+        <Rectangle id="sideLine" translation="[259,0]" width="1" height="720" color="0x1E2038FF" />
+        <Poster id="brandLogo" translation="[26,26]" width="44" height="44" uri="pkg:/images/logo.png" />
+        <Label id="brandA" translation="[80,28]" text="DELTA" />
+        <Label id="brandB" translation="[180,28]" text="TV" />
+        <Poster id="pill" translation="[16,116]" width="228" height="49" uri="pkg:/images/round.9.png" />
+        <Rectangle id="footLine" translation="[24,628]" width="212" height="1" color="0x1E2038FF" />
+        <Label id="macTitle" translation="[24,640]" width="212" height="16" text="MAC VIRTUAL" />
+        <Label id="macValue" translation="[24,658]" width="220" height="18" text="" />
+        <Label id="foot" translation="[24,682]" width="220" height="30" text="Delta TV  •  Não vendemos conteúdo" wrap="true" />
+    </children>
+</component>

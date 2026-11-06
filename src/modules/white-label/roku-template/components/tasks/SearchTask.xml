@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Task de pesquisa PERMANENTE: mantem o indice carregado e responde a cada letra digitada -->
+<component name="SearchTask" extends="Task">
+    <script type="text/brightscript" uri="pkg:/components/tasks/SearchTask.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/DeviceId.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Xtream.brs" />
+
+    <interface>
+        <!-- { reqId, kind, term, limit } ; term "" = so aquece o indice -->
+        <field id="request" type="assocarray" alwaysNotify="true" />
+        <!-- { reqId, ok, fallback, data } ; fallback = memoria indisponivel (a tela usa o provedor) -->
+        <field id="result" type="assocarray" alwaysNotify="true" />
+    </interface>
+</component>

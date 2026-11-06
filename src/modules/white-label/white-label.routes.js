@@ -1,17 +1,50 @@
-import { Router } from "express";
+import express, { Router } from "express";
 import { createHash } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { validate, partialInput } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
-import { actorOf } from "../../shared/audit.js";
+import { actorOf, audit } from "../../shared/audit.js";
+import { AppError } from "../../shared/errors.js";
 import { requirePermission } from "../../middleware/authenticate.js";
 import * as service from "./white-label.service.js";
 import * as appearance from "./appearance.service.js";
+import { generateRokuBuild } from "./roku-builder.service.js";
+import { ASSET_SIZES, storeRokuAsset, listRokuAssets } from './roku-assets.js';
 import { appearanceBody } from "./appearance.schema.js";
 import { APPEARANCE_PRESETS } from "./appearance.presets.js";
 
+const expressRokuRaw = express.raw({type:'image/png',limit:'3mb'});
 const id = z.object({ id: z.string().uuid() });
+const rokuEdition = z.object({ edition: z.enum(["economy", "dedicated"]).default("dedicated"),
+  buildVersion: z.coerce.number().int().min(1).max(99999).default(1) });
+const rokuAssetParams = z.object({ id: z.string().uuid(), kind: z.enum(Object.keys(ASSET_SIZES)) });
+async function checkRokuAssetOwner(appId, partnerId) {
+  const app = await service.getApp(appId, partnerId); // ownership before touching files
+  if (partnerId && !app.appearanceEnabled)
+    throw new AppError(403,'APPEARANCE_DISABLED','O Estúdio Visual não está liberado para este aplicativo.');
+  if (app.status === 'archived')
+    throw new AppError(409,'APP_ARCHIVED','Aplicativo arquivado.');
+}
+async function uploadRokuAsset(req, res, partnerId) {
+  await checkRokuAssetOwner(req.valid.params.id, partnerId);
+  const image = await storeRokuAsset(req.valid.params.id, req.valid.params.kind, req.body);
+  await audit({actor:actorOf(req),action:'white-label.roku.asset',
+    entityType:'white_label_app',entityId:req.valid.params.id,metadata:{kind:req.valid.params.kind,...image}});
+  res.status(201).json({kind:req.valid.params.kind,...image});
+}
+
+// Exports are CPU-heavy: avoid multiple simultaneous compressions by the same actor.
+const rokuLimiter = rateLimit({ windowMs: 10 * 60_000, limit: 5, standardHeaders: "draft-7", legacyHeaders: false,
+  keyGenerator: req => `roku-export:${req.user?.id || req.ip}`, validate: false });
+async function sendRokuZip(req, res, partnerId) {
+  const built = await generateRokuBuild(req.valid.params.id, partnerId, req.valid.query.edition, actorOf(req), req.valid.query.buildVersion);
+  res.set({ "Content-Type": "application/zip", "Cache-Control": "no-store, private",
+    "X-Content-Type-Options": "nosniff", "Content-Disposition": `attachment; filename="${built.filename}"`,
+    "Content-Length": String(built.buffer.length) });
+  res.end(built.buffer);
+}
+
 const serverIds = z.object({ id: z.string().uuid(), serverId: z.string().uuid() });
 const activationIds = z.object({ id: z.string().uuid(), activationId: z.string().uuid() });
 const listQuery = z.object({ ...pageQuery, q: z.string().trim().max(70).optional() });
@@ -76,6 +109,20 @@ adminRouter.patch("/:id/appearance-access", validate({ params: id,
   res.json(await appearance.setAppearanceAccess(req.valid.params.id, req.valid.body.enabled, actorOf(req))));
 adminRouter.get("/:id/appearance", validate({ params: id }), async (req, res) =>
   res.set("Cache-Control", "no-store").json(await appearance.getAppearance(req.valid.params.id)));
+// The Superadmin can customize the look before exporting a separately signed channel.
+adminRouter.put("/:id/appearance/draft", validate({ params: id, body: appearanceBody }), async (req, res) =>
+  res.set("Cache-Control", "no-store").json(await appearance.saveAppearance(req.valid.params.id, null, req.valid.body, actorOf(req))));
+adminRouter.post("/:id/appearance/publish", validate({ params: id }), async (req, res) =>
+  res.set("Cache-Control", "no-store").json(await appearance.publishAppearance(req.valid.params.id, null, actorOf(req))));
+
+adminRouter.get('/:id/roku-assets', validate({params:id}), async (req,res)=>{
+  await checkRokuAssetOwner(req.valid.params.id,null);
+  res.set('Cache-Control','no-store').json({assets:await listRokuAssets(req.valid.params.id)});
+});
+adminRouter.put('/:id/roku-assets/:kind', expressRokuRaw, validate({params:rokuAssetParams}), async(req,res)=>
+  uploadRokuAsset(req,res,null));
+adminRouter.get("/:id/roku-export", rokuLimiter, validate({ params: id, query: rokuEdition }), async (req, res) =>
+  sendRokuZip(req, res, null));
 adminRouter.get("/:id/activations", validate({ params: id, query: z.object(pageQuery) }), async (req, res) =>
   res.json(await service.listActivations(req.valid.params.id, null, req.valid.query)));
 for (const action of ["revoke", "restore"]) {
@@ -108,6 +155,14 @@ partnerRouter.put("/:id/appearance/draft", validate({ params: id, body: appearan
   res.set("Cache-Control", "no-store").json(await appearance.saveAppearance(req.valid.params.id, owned(req), req.valid.body, actorOf(req))));
 partnerRouter.post("/:id/appearance/publish", validate({ params: id }), async (req, res) =>
   res.set("Cache-Control", "no-store").json(await appearance.publishAppearance(req.valid.params.id, owned(req), actorOf(req))));
+partnerRouter.get('/:id/roku-assets', validate({params:id}), async (req,res)=>{
+  await checkRokuAssetOwner(req.valid.params.id,owned(req));
+  res.set('Cache-Control','no-store').json({assets:await listRokuAssets(req.valid.params.id)});
+});
+partnerRouter.put('/:id/roku-assets/:kind', expressRokuRaw, validate({params:rokuAssetParams}), async(req,res)=>
+  uploadRokuAsset(req,res,owned(req)));
+partnerRouter.get("/:id/roku-export", rokuLimiter, validate({ params: id, query: rokuEdition }), async (req, res) =>
+  sendRokuZip(req, res, owned(req)));
 partnerRouter.get("/:id/activations", validate({ params: id, query: z.object(pageQuery) }), async (req, res) =>
   res.json(await service.listActivations(req.valid.params.id, owned(req), req.valid.query)));
 for (const action of ["revoke", "restore"]) {
@@ -120,8 +175,15 @@ partnerRouter.get("/:id/payments", validate({ params: id }), async (req, res) =>
 const infoLimiter = rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: "draft-7", legacyHeaders: false });
 // Published palettes are public, tiny and frequently polled by fleets of TVs sharing a NAT IP.
 const appearanceLimiter = rateLimit({ windowMs: 60_000, limit: 1500, standardHeaders: "draft-7", legacyHeaders: false });
-const publicLimiter = rateLimit({ windowMs: 60_000, limit: 20,
+const publicLimiter = rateLimit({ windowMs: 60_000, limit: 120,
   standardHeaders: "draft-7", legacyHeaders: false, message: { code: "RATE_LIMIT", message: "Muitas tentativas. Aguarde um minuto." } });
+// A segunda barreira impede tentativas repetidas da mesma instalação sem
+// bloquear uma rede residencial ou empresarial com muitos dispositivos Roku.
+const activationDeviceLimiter = rateLimit({ windowMs: 60_000, limit: 5,
+  standardHeaders: 'draft-7', legacyHeaders: false, validate: false,
+  keyGenerator: req => 'wl-activate:' + createHash('sha256').update(
+    `${req.ip}|${req.params?.appKey || ''}|${req.body?.installationId || ''}`).digest('hex'),
+  message: { code: 'RATE_LIMIT', message: 'Aguarde um minuto antes de tentar novamente neste aparelho.' } });
 // Sessões ativas são limitadas por token, não pelo IP público compartilhado de TVs.
 const sessionLimiter = rateLimit({ windowMs: 60_000, limit: 12, standardHeaders: "draft-7", legacyHeaders: false,
   keyGenerator: req => "wl-session:" + createHash("sha256").update(String(req.body?.sessionToken || req.ip)).digest("hex"),
@@ -139,7 +201,7 @@ publicRouter.get("/:appKey/appearance", appearanceLimiter, validate({ params: pu
   res.set("Cache-Control", "public, max-age=120").json(await appearance.publicAppearance(req.valid.params.appKey)));
 publicRouter.get("/:appKey", infoLimiter, validate({ params: publicKey }), async (req, res) =>
   res.set("Cache-Control", "no-store").json(await service.publicAppInfo(req.valid.params.appKey)));
-publicRouter.post("/:appKey/activate", publicLimiter, validate({ params: publicKey, body: activationBody }), async (req, res) =>
+publicRouter.post("/:appKey/activate", publicLimiter, activationDeviceLimiter, validate({ params: publicKey, body: activationBody }), async (req, res) =>
   res.set("Cache-Control", "no-store").json(await service.activateByXtream(req.valid.params.appKey, req.valid.body)));
 
 publicRouter.post("/:appKey/session", sessionLimiter,

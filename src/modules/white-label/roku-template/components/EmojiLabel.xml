@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Texto de uma linha com emoji desenhado como imagem (o Roku nao tem fonte de emoji colorido). -->
+<component name="EmojiLabel" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/EmojiLabel.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Emoji.brs" />
+    <script type="text/brightscript" uri="pkg:/source/EmojiData.brs" />
+    <interface>
+        <field id="text" type="string" value="" />
+        <field id="fontSize" type="integer" value="18" />
+        <field id="bold" type="boolean" value="false" />
+        <field id="color" type="string" value="0xFFFFFFFF" />
+        <field id="width" type="float" value="0" />
+        <field id="height" type="float" value="0" />
+        <function name="update" />
+    </interface>
+</component>

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="CategoryItem" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/items/CategoryItem.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Emoji.brs" />
+    <script type="text/brightscript" uri="pkg:/source/EmojiData.brs" />
+    <interface>
+        <field id="itemContent" type="node" onChange="redraw" />
+        <field id="width" type="float" onChange="redraw" />
+        <field id="height" type="float" onChange="redraw" />
+        <field id="itemHasFocus" type="boolean" onChange="redraw" />
+        <field id="listHasFocus" type="boolean" onChange="redraw" />
+        <field id="focusPercent" type="float" />
+    </interface>
+    <children>
+        <Poster id="pill" uri="pkg:/images/round.9.png" visible="false" />
+        <EmojiLabel id="label" />
+    </children>
+</component>

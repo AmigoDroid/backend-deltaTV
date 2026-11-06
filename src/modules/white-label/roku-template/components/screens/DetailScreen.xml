@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="DetailScreen" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/screens/DetailScreen.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Emoji.brs" />
+    <script type="text/brightscript" uri="pkg:/source/EmojiData.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+    <interface>
+        <field id="item" type="assocarray" onChange="onItem" />
+        <field id="closeRequest" type="boolean" alwaysNotify="true" />
+        <field id="playItem" type="assocarray" alwaysNotify="true" />
+        <field id="favoritesChanged" type="boolean" alwaysNotify="true" />
+        <function name="focusContent" />
+    </interface>
+    <children>
+        <Rectangle width="1280" height="720" color="0x090B14FF" />
+        <Poster id="backdrop" translation="[380,0]" width="900" height="440" loadWidth="900" loadHeight="440" loadDisplayMode="scaleToZoom" />
+        <Poster translation="[380,0]" width="900" height="440" uri="pkg:/images/grad_left.png" />
+        <Poster translation="[0,230]" width="1280" height="210" uri="pkg:/images/grad_bottom.png" />
+
+        <!-- capa -->
+        <Poster id="pBg" translation="[64,92]" width="190" height="285" uri="pkg:/images/round.9.png" />
+        <Poster id="pArt" translation="[64,92]" width="190" height="285" loadWidth="190" loadHeight="285" loadDisplayMode="scaleToZoom" />
+        <Poster translation="[64,92]" width="190" height="285" uri="pkg:/images/mask.9.png" />
+
+        <Label id="kind" translation="[290,92]" width="400" height="22" />
+        <EmojiLabel id="title" translation="[290,116]" />
+        <Label id="meta" translation="[290,178]" width="900" height="26" />
+        <Label id="desc" translation="[290,214]" width="740" height="90" wrap="true" maxLines="4" lineSpacing="2" />
+        <Label id="tmdbCredit" translation="[290,305]" width="700" height="18" visible="false" text="Informações e imagens: TMDB" />
+
+        <!-- botoes -->
+        <Group id="btn0" translation="[290,324]">
+            <Poster id="b0bg" width="200" height="50" uri="pkg:/images/round.9.png" />
+            <Poster translation="[22,15]" width="20" height="20" uri="pkg:/images/ic_play.png" blendColor="0xFFFFFFFF" />
+            <Label id="b0label" translation="[54,0]" width="140" height="50" vertAlign="center" text="Assistir" />
+            <Poster id="b0ring" width="200" height="50" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />
+        </Group>
+        <Group id="btn1" translation="[506,324]">
+            <Poster id="b1bg" width="220" height="50" uri="pkg:/images/round.9.png" />
+            <Poster id="b1ico" translation="[22,15]" width="20" height="20" uri="pkg:/images/ic_heart.png" blendColor="0xFFFFFFFF" />
+            <Label id="b1label" translation="[54,0]" width="160" height="50" vertAlign="center" text="Favoritar" />
+            <Poster id="b1ring" width="220" height="50" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />
+        </Group>
+
+        <Label id="seriesResume" translation="[748,324]" width="466" height="50" vertAlign="center" wrap="true" maxLines="2" visible="false" />
+
+        <!-- Series: temporadas visiveis, lista continua de episodios e foco da tela. -->
+        <Label id="seasonLabel" translation="[64,384]" width="420" height="29" text="TEMPORADAS" />
+        <Label id="seasonHint" translation="[525,390]" width="690" height="23" horizAlign="right" text="Esquerda / Direita: trocar temporada  •  OK: episódios" />
+        <Group id="seasonTabs">
+            <Group id="seasonTab0" translation="[64,419]">
+                <Poster id="seasonTab0Bg" width="216" height="43" uri="pkg:/images/round.9.png" />
+                <Label id="seasonTab0Label" translation="[8,0]" width="200" height="43" horizAlign="center" vertAlign="center" />
+                <Poster id="seasonTab0Ring" width="216" height="43" uri="pkg:/images/ring.9.png" visible="false" blendColor="0x6B47E6FF" />
+            </Group>
+            <Group id="seasonTab1" translation="[298,419]">
+                <Poster id="seasonTab1Bg" width="216" height="43" uri="pkg:/images/round.9.png" />
+                <Label id="seasonTab1Label" translation="[8,0]" width="200" height="43" horizAlign="center" vertAlign="center" />
+                <Poster id="seasonTab1Ring" width="216" height="43" uri="pkg:/images/ring.9.png" visible="false" blendColor="0x6B47E6FF" />
+            </Group>
+            <Group id="seasonTab2" translation="[532,419]">
+                <Poster id="seasonTab2Bg" width="216" height="43" uri="pkg:/images/round.9.png" />
+                <Label id="seasonTab2Label" translation="[8,0]" width="200" height="43" horizAlign="center" vertAlign="center" />
+                <Poster id="seasonTab2Ring" width="216" height="43" uri="pkg:/images/ring.9.png" visible="false" blendColor="0x6B47E6FF" />
+            </Group>
+            <Group id="seasonTab3" translation="[766,419]">
+                <Poster id="seasonTab3Bg" width="216" height="43" uri="pkg:/images/round.9.png" />
+                <Label id="seasonTab3Label" translation="[8,0]" width="200" height="43" horizAlign="center" vertAlign="center" />
+                <Poster id="seasonTab3Ring" width="216" height="43" uri="pkg:/images/ring.9.png" visible="false" blendColor="0x6B47E6FF" />
+            </Group>
+            <Group id="seasonTab4" translation="[1000,419]">
+                <Poster id="seasonTab4Bg" width="216" height="43" uri="pkg:/images/round.9.png" />
+                <Label id="seasonTab4Label" translation="[8,0]" width="200" height="43" horizAlign="center" vertAlign="center" />
+                <Poster id="seasonTab4Ring" width="216" height="43" uri="pkg:/images/ring.9.png" visible="false" blendColor="0x6B47E6FF" />
+            </Group>
+        </Group>
+        <Label id="episodeHeader" translation="[64,468]" width="540" height="24" text="EPISÓDIOS" />
+        <Label id="episodePageHint" translation="[602,468]" width="614" height="24" horizAlign="right" />
+        <Label id="seriesStatus" translation="[64,507]" width="1120" height="45" wrap="true" visible="false" />
+        <Group id="episodeRows">
+            <Group id="episodeRow0" translation="[64,493]">
+                <Poster id="episodeRow0Bg" width="1152" height="48" uri="pkg:/images/round.9.png" />
+                <Label id="episodeRow0Number" translation="[12,0]" width="80" height="48" horizAlign="center" vertAlign="center" />
+                <Label id="episodeRow0Title" translation="[105,0]" width="680" height="27" vertAlign="center" ellipsizeOnBoundary="true" />
+                <Label id="episodeRow0Desc" translation="[105,26]" width="760" height="20" ellipsizeOnBoundary="true" />
+                <Label id="episodeRow0Action" translation="[993,0]" width="145" height="48" horizAlign="right" vertAlign="center" text="OK  Assistir" />
+                <Poster id="episodeRow0Ring" width="1152" height="48" uri="pkg:/images/ring.9.png" visible="false" blendColor="0x6B47E6FF" />
+            </Group>
+            <Group id="episodeRow1" translation="[64,545]">
+                <Poster id="episodeRow1Bg" width="1152" height="48" uri="pkg:/images/round.9.png" />
+                <Label id="episodeRow1Number" translation="[12,0]" width="80" height="48" horizAlign="center" vertAlign="center" />
+                <Label id="episodeRow1Title" translation="[105,0]" width="680" height="27" vertAlign="center" ellipsizeOnBoundary="true" />
+                <Label id="episodeRow1Desc" translation="[105,26]" width="760" height="20" ellipsizeOnBoundary="true" />
+                <Label id="episodeRow1Action" translation="[993,0]" width="145" height="48" horizAlign="right" vertAlign="center" text="OK  Assistir" />
+                <Poster id="episodeRow1Ring" width="1152" height="48" uri="pkg:/images/ring.9.png" visible="false" blendColor="0x6B47E6FF" />
+            </Group>
+            <Group id="episodeRow2" translation="[64,597]">
+                <Poster id="episodeRow2Bg" width="1152" height="48" uri="pkg:/images/round.9.png" />
+                <Label id="episodeRow2Number" translation="[12,0]" width="80" height="48" horizAlign="center" vertAlign="center" />
+                <Label id="episodeRow2Title" translation="[105,0]" width="680" height="27" vertAlign="center" ellipsizeOnBoundary="true" />
+                <Label id="episodeRow2Desc" translation="[105,26]" width="760" height="20" ellipsizeOnBoundary="true" />
+                <Label id="episodeRow2Action" translation="[993,0]" width="145" height="48" horizAlign="right" vertAlign="center" text="OK  Assistir" />
+                <Poster id="episodeRow2Ring" width="1152" height="48" uri="pkg:/images/ring.9.png" visible="false" blendColor="0x6B47E6FF" />
+            </Group>
+            <Group id="episodeRow3" translation="[64,649]">
+                <Poster id="episodeRow3Bg" width="1152" height="48" uri="pkg:/images/round.9.png" />
+                <Label id="episodeRow3Number" translation="[12,0]" width="80" height="48" horizAlign="center" vertAlign="center" />
+                <Label id="episodeRow3Title" translation="[105,0]" width="680" height="27" vertAlign="center" ellipsizeOnBoundary="true" />
+                <Label id="episodeRow3Desc" translation="[105,26]" width="760" height="20" ellipsizeOnBoundary="true" />
+                <Label id="episodeRow3Action" translation="[993,0]" width="145" height="48" horizAlign="right" vertAlign="center" text="OK  Assistir" />
+                <Poster id="episodeRow3Ring" width="1152" height="48" uri="pkg:/images/ring.9.png" visible="false" blendColor="0x6B47E6FF" />
+            </Group>
+        </Group>
+        <Rectangle id="episodeScrollTrack" translation="[1225,493]" width="4" height="204" color="0x303A56FF" visible="false" />
+        <Rectangle id="episodeScrollThumb" translation="[1225,493]" width="4" height="42" color="0xA2BAFFFF" visible="false" />
+    </children>
+</component>

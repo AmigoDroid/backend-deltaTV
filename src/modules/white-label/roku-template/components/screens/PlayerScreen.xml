@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="PlayerScreen" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/screens/PlayerScreen.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/DeviceId.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <interface>
+        <field id="item" type="assocarray" />
+        <field id="closeRequest" type="boolean" alwaysNotify="true" />
+        <field id="mini" type="boolean" value="false" />
+        <function name="startPlayback" />
+        <function name="startMini" />
+        <function name="goFull" />
+        <function name="stopMini" />
+    </interface>
+    <children>
+        <Rectangle id="bgRect" width="1280" height="720" color="0x000000FF" />
+        <Video id="video" width="1280" height="720" />
+        <Timer id="watchdog" duration="5" repeat="true" />
+        <!-- Escolha de retomar VOD; foco permanece no PlayerScreen enquanto visivel. -->
+        <Group id="resumeBox" visible="false">
+            <Rectangle width="1280" height="720" color="0x000000DD" />
+            <Group translation="[260,190]">
+                <Rectangle width="760" height="342" color="0x171C30FF" />
+                <Rectangle width="760" height="5" color="0x6A84F5FF" />
+                <Label id="resumeTitle" translation="[34,29]" width="690" height="43" text="Continuar assistindo?" />
+                <Label id="resumeMessage" translation="[34,86]" width="690" height="35" />
+                <Group translation="[34,153]">
+                    <Rectangle id="resumeBtn0Bg" width="690" height="59" color="0x374EA0FF" />
+                    <Label id="resumeBtn0Label" translation="[20,0]" width="650" height="59" vertAlign="center" text="Continuar de onde parou" />
+                </Group>
+                <Group translation="[34,224]">
+                    <Rectangle id="resumeBtn1Bg" width="690" height="59" color="0x252C43FF" />
+                    <Label id="resumeBtn1Label" translation="[20,0]" width="650" height="59" vertAlign="center" text="Assistir do início" />
+                </Group>
+                <Label id="resumeHint" translation="[34,305]" width="690" height="25" text="↑ ↓ escolher     OK confirmar     VOLTAR cancelar" />
+            </Group>
+        </Group>
+
+        <!-- Previa real da cena: aparece acima do cursor do VOD se houver BIF/JPEG. -->
+        <Group id="seekPreviewBox" visible="false" translation="[496,342]">
+            <Rectangle width="304" height="210" color="0x101725F7" />
+            <Rectangle width="304" height="3" color="0x6A84F5FF" />
+            <Rectangle translation="[7,9]" width="290" height="163" color="0x080A12FF" />
+            <Poster id="seekPreviewImage" translation="[7,9]" width="290" height="163" loadDisplayMode="scaleToFit" />
+            <Label id="seekPreviewStatus" translation="[10,64]" width="284" height="32" horizAlign="center" text="Carregando cena..." />
+            <Label id="seekPreviewTime" translation="[7,178]" width="290" height="25" horizAlign="center" />
+        </Group>
+        <!-- Barra de avancar/retroceder dos filmes e episodios; nao usa seek em fluxo. -->
+        <Group id="seekBox" visible="false" translation="[120,566]">
+            <Rectangle width="1040" height="130" color="0x101725F2" />
+            <Rectangle width="1040" height="4" color="0x6A84F5FF" />
+            <Label id="seekCaption" translation="[21,14]" width="998" height="43" text="Ir para 00:00" />
+            <Rectangle translation="[21,75]" width="998" height="10" color="0x3B465FFF" />
+            <Rectangle id="seekFill" translation="[21,75]" width="0" height="10" color="0x6A84F5FF" />
+            <Rectangle id="seekCurrentMarker" translation="[21,75]" width="4" height="12" color="0xFFFFFFFF" />
+            <Label id="seekHint" translation="[21,96]" width="998" height="28" text="ESQ/DIR: 30s   CIMA/BAIXO ou FF/REW: 5min   OK: ir   VOLTAR: cancelar" />
+        </Group>
+        <!-- Cartao dentro da area segura HD, acima das legendas inferiores. -->
+        <Group id="nextEpisodeBox" translation="[60,496]" visible="false">
+            <Rectangle width="430" height="160" color="0x111526F2" />
+            <Rectangle width="430" height="5" color="0xA855F7FF" />
+            <Label id="nextEpisodeTitle" translation="[20,15]" width="390" height="29" />
+            <Rectangle translation="[16,51]" width="398" height="58" color="0xA855F7FF" />
+            <Poster translation="[29,68]" width="24" height="24" uri="pkg:/images/ic_play.png" />
+            <Label id="nextEpisodeButton" translation="[66,51]" width="334" height="58" vertAlign="center" />
+            <Rectangle translation="[16,109]" width="398" height="4" color="0x3B2858FF" />
+            <Rectangle id="nextEpisodeProgress" translation="[16,109]" width="398" height="4" color="0xE9D5FFFF" />
+            <Label id="nextEpisodeHint" translation="[20,125]" width="390" height="24" text="OK: próximo  •  VOLTAR: cancelar" />
+        </Group>
+        <Label id="loading" translation="[0,340]" width="1280" height="40" horizAlign="center" text="Carregando..." />
+        <Group id="errorBox" visible="false">
+            <Rectangle translation="[340,260]" width="600" height="200" color="0x101321FF" />
+            <Label id="errTitle" translation="[340,290]" width="600" height="36" horizAlign="center" text="Não foi possível reproduzir" />
+            <Label id="errMsg" translation="[370,336]" width="540" height="70" horizAlign="center" wrap="true" />
+            <Label id="errHint" translation="[340,412]" width="600" height="24" horizAlign="center" text="Pressione VOLTAR para sair" />
+        </Group>
+    </children>
+</component>

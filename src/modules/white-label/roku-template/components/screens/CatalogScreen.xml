@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Tela cheia de Filmes / Series: categorias na lateral, grade de capas (titulo embaixo) na direita -->
+<component name="CatalogScreen" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/screens/CatalogScreen.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Emoji.brs" />
+    <script type="text/brightscript" uri="pkg:/source/EmojiData.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+    <interface>
+        <field id="kind" type="string" value="movie" />
+        <field id="catalog" type="assocarray" onChange="onCatalog" />
+        <field id="openItem" type="assocarray" alwaysNotify="true" />
+        <field id="favsVersion" type="integer" value="0" onChange="onFavsVersion" />
+        <field id="favoritesChanged" type="boolean" alwaysNotify="true" />
+        <function name="focusContent" />
+    </interface>
+    <children>
+        <Rectangle width="1280" height="720" color="0x090B14FF" />
+        <Rectangle width="332" height="720" color="0x101321FF" />
+        <Rectangle translation="[331,0]" width="1" height="720" color="0x1E2038FF" />
+
+        <!-- lateral: categorias -->
+        <Label id="header" translation="[32,26]" width="280" height="40" />
+        <Label id="catCount" translation="[32,68]" width="280" height="22" />
+        <MarkupList id="cats" translation="[20,106]" itemComponentName="CategoryItem"
+            numRows="11" itemSize="[296,46]" itemSpacing="[0,6]"
+            focusBitmapUri="pkg:/images/blank.png" drawFocusFeedback="false" />
+
+        <!-- lateral no modo pesquisa: teclado embutido (a lista de categorias some) -->
+        <Group id="kbdBox" translation="[17,112]" visible="false" />
+        <Group id="controlKeys" translation="[24,460]" visible="false" />
+        <Timer id="searchTimer" repeat="false" duration="0.12" />
+
+        <!-- A sibling focus target prevents the grid from retaining OK through its parent. -->
+        <Group id="searchFocus" />
+        <!-- direita: barra de pesquisa + grade -->
+        <Poster id="searchBg" translation="[356,18]" width="600" height="44" uri="pkg:/images/round.9.png" blendColor="0x202A4AFF" />
+        <Poster id="searchRing" translation="[356,18]" width="600" height="44" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />
+        <Poster id="searchIcon" translation="[372,29]" width="22" height="22" uri="pkg:/images/ic_search.png" blendColor="0xAAB8FFFF" />
+        <Label id="searchLabel" translation="[406,18]" width="390" height="44" vertAlign="center" />
+        <Label id="searchHint" translation="[800,18]" width="144" height="44" vertAlign="center" horizAlign="right" text="↑ ABRIR BUSCA" visible="true" />
+
+        <EmojiLabel id="gridTitle" translation="[356,76]" />
+        <Label id="gridCount" translation="[700,78]" width="548" height="22" horizAlign="right" />
+        <MarkupGrid id="grid" translation="[356,116]" itemComponentName="GridPosterItem"
+            numColumns="5" numRows="2" itemSize="[164,278]" itemSpacing="[18,14]"
+            vertFocusAnimationStyle="floatingFocus" horizFocusAnimationStyle="floatingFocus" skipFocusAnimations="true"
+            focusBitmapUri="pkg:/images/blank.png" drawFocusFeedback="false" />
+        <Label id="hint" translation="[356,692]" width="892" height="22" />
+
+        <Label id="empty" translation="[356,300]" width="892" height="120" horizAlign="center"
+            wrap="true" text="Carregando..." />
+    </children>
+</component>

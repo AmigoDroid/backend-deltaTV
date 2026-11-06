@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="ChannelItem" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/items/ChannelItem.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Emoji.brs" />
+    <script type="text/brightscript" uri="pkg:/source/EmojiData.brs" />
+    <interface>
+        <field id="itemContent" type="node" onChange="redraw" />
+        <field id="width" type="float" onChange="redraw" />
+        <field id="height" type="float" onChange="redraw" />
+        <field id="itemHasFocus" type="boolean" onChange="redraw" />
+        <field id="listHasFocus" type="boolean" onChange="redraw" />
+        <field id="focusPercent" type="float" />
+    </interface>
+    <children>
+        <Poster id="bg" uri="pkg:/images/round.9.png" />
+        <Poster id="logoBg" uri="pkg:/images/round.9.png" blendColor="0x0B0D1AFF" />
+        <Poster id="logo" loadDisplayMode="scaleToFit" />
+        <Label id="num" horizAlign="center" vertAlign="center" />
+        <EmojiLabel id="name" />
+        <Label id="now" />
+        <Poster id="fav" uri="pkg:/images/ic_heart_filled.png" width="18" height="18" blendColor="0xFF6B9DFF" />
+    </children>
+</component>

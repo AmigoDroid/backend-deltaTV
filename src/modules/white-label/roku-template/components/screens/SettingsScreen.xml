@@ -1,0 +1,105 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="SettingsScreen" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/screens/SettingsScreen.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Emoji.brs" />
+    <script type="text/brightscript" uri="pkg:/source/EmojiData.brs" />
+    <script type="text/brightscript" uri="pkg:/source/DeviceId.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Xtream.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Lists.brs" />
+    <interface>
+        <field id="catalog" type="assocarray" onChange="onCatalog" />
+        <field id="favsVersion" type="integer" value="0" />
+        <field id="reloadCatalog" type="boolean" alwaysNotify="true" />
+        <field id="openConnect" type="boolean" alwaysNotify="true" />
+        <field id="addList" type="boolean" alwaysNotify="true" />
+        <field id="listsChanged" type="boolean" alwaysNotify="true" />
+        <field id="favoritesChanged" type="boolean" alwaysNotify="true" />
+        <function name="focusContent" />
+    </interface>
+    <children>
+        <Label id="header" translation="[36,28]" width="500" height="34" text="Configurações" />
+
+        <MarkupList id="sections" translation="[24,100]" itemComponentName="CategoryItem"
+            numRows="5" itemSize="[230,50]" itemSpacing="[0,6]"
+            vertFocusAnimationStyle="floatingFocus" skipFocusAnimations="true"
+            focusBitmapUri="pkg:/images/blank.png" drawFocusFeedback="false" />
+
+        <!-- Dispositivo -->
+        <Group id="paneDevice" translation="[290,100]">
+            <Poster width="700" height="196" uri="pkg:/images/round.9.png" blendColor="0x141830FF" />
+            <Poster width="4" height="196" uri="pkg:/images/round.9.png" blendColor="0x6B47E6FF" />
+            <Label id="macTag" translation="[28,18]" width="400" height="20" text="MAC VIRTUAL DO DELTA TV" />
+            <Label id="macValue" translation="[28,42]" width="640" height="56" />
+            <Label id="codeTag" translation="[28,108]" width="300" height="20" text="CÓDIGO DO DISPOSITIVO" />
+            <Label id="codeValue" translation="[28,130]" width="400" height="36" />
+            <Label id="idTag" translation="[380,108]" width="300" height="20" text="ID DO APARELHO" />
+            <Label id="idValue" translation="[380,130]" width="300" height="36" />
+
+            <Label id="devHint" translation="[0,214]" width="700" height="60" wrap="true"
+                text="Informe este MAC virtual ao seu provedor para vincular a sua lista. Ele é gerado a partir do ID exclusivo deste aparelho e sempre será o mesmo neste Roku." />
+
+            <Label id="infoModel" translation="[0,300]" width="700" height="26" />
+            <Label id="infoOs" translation="[0,330]" width="700" height="26" />
+            <Label id="infoNet" translation="[0,360]" width="700" height="26" />
+            <Label id="infoIp" translation="[0,390]" width="700" height="26" />
+        </Group>
+
+        <!-- Conteudo: gerenciador de listas (adicionar / usar / excluir / atualizar) -->
+        <Group id="paneContent" translation="[290,100]" visible="false">
+            <Poster width="700" height="118" uri="pkg:/images/round.9.png" blendColor="0x141830FF" />
+            <Poster width="4" height="118" uri="pkg:/images/round.9.png" blendColor="0x6B47E6FF" />
+            <Label id="srcTag" translation="[28,14]" width="400" height="20" text="LISTA EM USO" />
+            <Label id="srcValue" translation="[28,38]" width="650" height="34" />
+            <Label id="actStatus" translation="[28,76]" width="650" height="36" wrap="true" />
+
+            <Label id="listsTag" translation="[4,136]" width="400" height="20" text="MINHAS LISTAS" />
+            <MarkupList id="listList" translation="[0,162]" itemComponentName="CategoryItem"
+                numRows="6" itemSize="[700,46]" itemSpacing="[0,6]"
+                vertFocusAnimationStyle="floatingFocus" skipFocusAnimations="true"
+                focusBitmapUri="pkg:/images/blank.png" drawFocusFeedback="false" />
+            <Label id="listStatus" translation="[4,494]" width="700" height="44" wrap="true" />
+            <Label id="srcHint" translation="[4,544]" width="700" height="24" text="OK em uma lista: usar ou excluir  •  VOLTAR: menu" />
+        </Group>
+
+        <!-- TMDB: um unico botao, sem informar credenciais na TV -->
+        <Group id="paneTmdb" translation="[290,100]" visible="false">
+            <Poster width="700" height="130" uri="pkg:/images/round.9.png" blendColor="0x141830FF" />
+            <Poster width="4" height="130" uri="pkg:/images/round.9.png" blendColor="0x6B47E6FF" />
+            <Label id="tmdbTag" translation="[28,15]" width="620" height="25" text="THE MOVIE DATABASE (TMDB)" />
+            <Label id="tmdbState" translation="[28,44]" width="650" height="32" />
+            <MarkupList id="tmdbOptions" translation="[0,156]" itemComponentName="CategoryItem"
+                numRows="1" itemSize="[700,54]" itemSpacing="[0,8]"
+                vertFocusAnimationStyle="floatingFocus" skipFocusAnimations="true"
+                focusBitmapUri="pkg:/images/blank.png" drawFocusFeedback="false" />
+            <Label id="tmdbResult" translation="[4,254]" width="690" height="54" wrap="true" />
+            <Label id="tmdbHint" translation="[4,325]" width="690" height="96" wrap="true"
+                text="Ao ativar, o aplicativo consulta imagens, sinopses e detalhes de filmes e séries em português. Não altera a sua lista nem os links de reprodução. Pressione OK para alternar." />
+        </Group>
+
+        <!-- Acesso por chave de 6 digitos (gestao limitada a este aparelho, pelo painel) -->
+        <Group id="paneKey" translation="[290,100]" visible="false">
+            <Poster width="700" height="250" uri="pkg:/images/round.9.png" blendColor="0x141830FF" />
+            <Poster width="4" height="250" uri="pkg:/images/round.9.png" blendColor="0x6B47E6FF" />
+            <Label id="keyTag" translation="[28,18]" width="640" height="20" text="CHAVE DE ACESSO (6 DÍGITOS)" />
+            <Label id="keyValue" translation="[28,42]" width="640" height="64" />
+            <Label id="keyInfo" translation="[28,118]" width="650" height="60" wrap="true" />
+            <Label id="keyStatus" translation="[28,188]" width="650" height="24" />
+            <Label id="keyHint" translation="[28,214]" width="650" height="24" text="Pressione OK para gerar uma chave" />
+        </Group>
+
+        <!-- Sobre -->
+        <Group id="paneAbout" translation="[290,100]" visible="false">
+            <Poster width="700" height="170" uri="pkg:/images/round.9.png" blendColor="0x141830FF" />
+            <Label id="abTitle" translation="[28,22]" width="640" height="36" text="Delta TV" />
+            <Label id="abVer" translation="[28,62]" width="640" height="24" text="Versão" />
+            <Label id="abText" translation="[28,96]" width="650" height="60" wrap="true"
+                text="O Delta TV é apenas um reprodutor. Não fornecemos, não hospedamos e não vendemos conteúdo. Use somente listas que você tem direito de acessar." />
+            <Label id="abTmdbTitle" translation="[0,197]" width="680" height="30" text="Créditos de metadados: TMDB" />
+            <Label id="abTmdbNotice" translation="[0,235]" width="690" height="74" wrap="true"
+                text="This product uses the TMDB API but is not endorsed or certified by TMDB. https://www.themoviedb.org" />
+        </Group>
+    </children>
+</component>

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="ConnectScreen" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/screens/ConnectScreen.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/DeviceId.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Xtream.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Lists.brs" />
+    <interface>
+        <field id="closeRequest" type="boolean" alwaysNotify="true" />
+        <field id="connected" type="boolean" alwaysNotify="true" />
+        <function name="focusContent" />
+    </interface>
+    <children>
+        <Poster width="1280" height="720" uri="pkg:/images/connect_bg.jpg" />
+
+        <!-- topo -->
+        <Poster translation="[38,28]" width="44" height="44" uri="pkg:/images/logo.png" />
+        <Label id="brandA" translation="[92,30]" text="DELTA" />
+        <Label id="brandB" translation="[198,30]" text="TV" />
+        <Poster translation="[1172,29]" width="22" height="22" uri="pkg:/images/ic_wifi.png" blendColor="0xFFFFFFFF" />
+        <Label id="clock" translation="[1202,26]" width="60" height="28" vertAlign="center" text="--:--" />
+
+        <Label id="title" translation="[88,128]" width="1080" height="56" text="Conectar dispositivo" />
+        <Label id="sub" translation="[88,190]" width="1080" height="28" text="Escaneie o QR ou configure o acesso diretamente neste Roku." />
+
+        <!-- cartao principal -->
+        <Poster translation="[77,267]" width="776" height="365" uri="pkg:/images/round.9.png" blendColor="0x44476AFF" />
+        <Poster translation="[78,268]" width="774" height="363" uri="pkg:/images/round.9.png" blendColor="0x14162AFF" />
+
+        <Poster translation="[146,276]" width="154" height="154" uri="pkg:/images/round.9.png" blendColor="0xFFFFFFFF" />
+        <Group id="qr" translation="[146,276]" />
+        <Label id="qrText" translation="[112,438]" width="216" height="24" horizAlign="center" text="Aguardando pareamento" />
+        <Rectangle translation="[98,474]" width="250" height="1" color="0x3A3D55FF" />
+        <Label id="macTag" translation="[98,494]" width="250" height="16" horizAlign="center" text="MAC VIRTUAL DO DISPOSITIVO" />
+        <Label id="macValue" translation="[98,512]" width="250" height="30" horizAlign="center" />
+        <Label id="codeTag" translation="[98,560]" width="250" height="16" horizAlign="center" text="CÓDIGO DO DISPOSITIVO" />
+        <Label id="codeValue" translation="[98,578]" width="250" height="30" horizAlign="center" />
+        <Rectangle translation="[367,286]" width="1" height="326" color="0x3A3D55FF" />
+
+        <Label id="status" translation="[390,594]" width="432" height="35" wrap="true" />
+
+        <!-- cartao lateral -->
+        <Poster translation="[876,267]" width="339" height="249" uri="pkg:/images/round.9.png" blendColor="0x44476AFF" />
+        <Poster translation="[877,268]" width="337" height="247" uri="pkg:/images/round.9.png" blendColor="0x0B0C18FF" />
+        <Label id="sideTitle" translation="[904,298]" width="296" height="28" text="Seu acesso, em um só lugar" />
+        <Poster translation="[906,360]" width="24" height="24" uri="pkg:/images/ic_clock.png" blendColor="0xC3C7D8FF" />
+        <Poster translation="[906,414]" width="24" height="24" uri="pkg:/images/ic_star.png" blendColor="0xC3C7D8FF" />
+        <Poster translation="[906,467]" width="24" height="24" uri="pkg:/images/ic_heart.png" blendColor="0xC3C7D8FF" />
+        <Label id="side0" translation="[946,360]" width="250" height="26" text="Conexão rápida" />
+        <Label id="side1" translation="[946,414]" width="250" height="26" text="Acesso personalizado" />
+        <Label id="side2" translation="[946,467]" width="250" height="26" text="Sua experiência Delta TV" />
+
+        <Label id="footer" translation="[0,670]" width="1280" height="22" horizAlign="center"
+            text="Delta TV • Entretenimento do seu jeito" />
+
+        <Timer id="closeTimer" repeat="false" duration="1.4" />
+        <Timer id="pollTimer" repeat="false" duration="12" />
+    </children>
+</component>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="NextEpisodeTask" extends="Task">
+    <script type="text/brightscript" uri="pkg:/components/tasks/NextEpisodeTask.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/DeviceId.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Xtream.brs" />
+    <interface>
+        <field id="request" type="assocarray" />
+        <field id="result" type="assocarray" />
+    </interface>
+</component>

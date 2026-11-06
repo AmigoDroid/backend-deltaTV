@@ -1,0 +1,14 @@
+title=Delta TV
+major_version=1
+minor_version=0
+build_version=00042
+ui_resolutions=hd
+splash_screen_hd=pkg:/images/splash.jpg
+splash_screen_fhd=pkg:/images/splash_fhd.jpg
+splash_color=#090B14
+splash_min_time=800
+mm_icon_focus_hd=pkg:/images/icon_focus_hd.png
+mm_icon_focus_sd=pkg:/images/icon_focus_sd.png
+rsg_version=1.3
+supports_input_launch=1
+sg_component_libs_required=roku_analytics

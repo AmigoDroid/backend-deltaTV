@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="LiveScreen" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/screens/LiveScreen.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Emoji.brs" />
+    <script type="text/brightscript" uri="pkg:/source/EmojiData.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+    <interface>
+        <field id="catalog" type="assocarray" onChange="onCatalog" />
+        <field id="playItem" type="assocarray" alwaysNotify="true" />
+        <field id="miniItem" type="assocarray" alwaysNotify="true" />
+        <field id="fullscreenRequest" type="boolean" alwaysNotify="true" />
+        <field id="favsVersion" type="integer" value="0" onChange="onFavsVersion" />
+        <field id="favoritesChanged" type="boolean" alwaysNotify="true" />
+        <function name="focusContent" />
+    </interface>
+    <children>
+        <!-- Modo paginado: espera o foco parar antes de carregar a pasta; e tenta de novo quando o catalogo esta sendo preparado -->
+        <Timer id="selectTimer" duration="0.35" repeat="false" />
+        <Timer id="retryTimer" duration="5" repeat="false" />
+
+        <!-- tela cheia -->
+        <Rectangle width="1280" height="720" color="0x090B14FF" />
+        <Rectangle width="284" height="720" color="0x101321FF" />
+        <Rectangle translation="[283,0]" width="1" height="720" color="0x1E2038FF" />
+
+        <Label id="header" translation="[32,26]" width="240" height="40" text="TV ao vivo" />
+        <Label id="count" translation="[32,68]" width="240" height="22" text="" />
+
+        <MarkupList id="cats" translation="[16,106]" itemComponentName="CategoryItem"
+            numRows="11" itemSize="[252,46]" itemSpacing="[0,6]"
+            focusBitmapUri="pkg:/images/blank.png" drawFocusFeedback="false" />
+        <MarkupList id="chans" translation="[304,106]" itemComponentName="ChannelItem"
+            numRows="9" itemSize="[390,58]" itemSpacing="[0,6]"
+            focusBitmapUri="pkg:/images/blank.png" drawFocusFeedback="false" />
+
+        <!-- Pre-visualizacao do canal (o video em miniatura ocupa o quadro [724,106] 524x295) -->
+        <Group id="preview" translation="[724,106]">
+            <Poster id="pvArt" width="524" height="295" loadWidth="524" loadHeight="295" loadDisplayMode="scaleToZoom" uri="pkg:/images/tv-ao-vivo.jpg" />
+            <Poster width="524" height="295" uri="pkg:/images/grad_left.png" />
+            <Poster translation="[0,130]" width="524" height="165" uri="pkg:/images/grad_bottom.png" />
+            <Poster width="524" height="295" uri="pkg:/images/mask.9.png" />
+            <Label id="pvNumber" translation="[22,16]" width="200" height="28" />
+            <EmojiLabel id="pvName" translation="[22,222]" />
+            <EmojiLabel id="pvCategory" translation="[22,258]" />
+
+            <Label id="pvNowTag" translation="[0,318]" width="200" height="18" text="AGORA" />
+            <Label id="pvNow" translation="[0,338]" width="524" height="26" />
+            <Label id="pvNextTag" translation="[0,376]" width="200" height="18" text="A SEGUIR" />
+            <Label id="pvNext" translation="[0,396]" width="524" height="26" />
+
+            <Poster id="btnBg" translation="[0,446]" width="220" height="48" uri="pkg:/images/round.9.png" />
+            <Poster translation="[20,460]" width="20" height="20" uri="pkg:/images/ic_play.png" blendColor="0xFFFFFFFF" />
+            <Label id="btnLabel" translation="[50,446]" width="160" height="48" vertAlign="center" text="Assistir ao vivo" />
+            <Label id="pvHint" translation="[0,508]" width="524" height="22" text="OK ver  •  OK de novo: tela cheia  •  * favoritar" />
+        </Group>
+
+        <Label id="empty" translation="[304,290]" width="390" height="30" horizAlign="center"
+            text="Nenhum canal nesta categoria." visible="false" />
+    </children>
+</component>

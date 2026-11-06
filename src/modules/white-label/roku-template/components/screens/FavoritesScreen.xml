@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component name="FavoritesScreen" extends="Group">
+    <script type="text/brightscript" uri="pkg:/components/screens/FavoritesScreen.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Utils.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
+    <script type="text/brightscript" uri="pkg:/source/Http.brs" />
+    <interface>
+        <field id="catalog" type="assocarray" onChange="refreshList" />
+        <field id="openItem" type="assocarray" alwaysNotify="true" />
+        <field id="favsVersion" type="integer" value="0" onChange="refreshList" />
+        <field id="favoritesChanged" type="boolean" alwaysNotify="true" />
+        <function name="focusContent" />
+    </interface>
+    <children>
+        <Label id="header" translation="[36,28]" width="500" height="34" text="Favoritos" />
+        <Label id="count" translation="[36,66]" width="500" height="22" text="" />
+        <MarkupGrid id="grid" translation="[36,110]" itemComponentName="PosterItem"
+            numColumns="7" numRows="3" itemSize="[120,180]" itemSpacing="[16,20]"
+            focusBitmapUri="pkg:/images/blank.png" drawFocusFeedback="false" />
+        <Group id="emptyBox" visible="false">
+            <Poster translation="[470,230]" width="80" height="80" uri="pkg:/images/ic_heart.png" blendColor="0x7F879FFF" />
+            <Label id="emptyTitle" translation="[0,330]" width="1020" height="34" horizAlign="center" text="Você ainda não tem favoritos" />
+            <Label id="emptySub" translation="[210,372]" width="600" height="50" horizAlign="center" wrap="true"
+                text="Abra um filme, uma série ou um canal e escolha Favoritar. Nos canais, use o botão * do controle." />
+        </Group>
+    </children>
+</component>
