@@ -41,6 +41,7 @@ test("pré-verificação recusa esquema incompleto antes de abrir HTTP", async (
   const tables = {
     admin_users: { id: {}, password_reset_hash: {}, password_reset_expires_at: {}, password_reset_issued_at: {} },
     pix_refund_cases: { id: {}, charge_id: {}, amount_cents: {}, status: {} },
+    admin_user_profiles: { admin_user_id: {}, phone: {}, avatar_data: {}, show_unread_banner: {}, show_notification_badge: {} },
     web_accesses: { id: {}, status: {}, status_reason: {}, content_owner_partner_id: {}, source_partner_code_id: {} },
   };
   const qi = { async describeTable(table) {

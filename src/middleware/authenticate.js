@@ -1,5 +1,5 @@
 import { Op } from "sequelize";
-import { AdminUser } from "../db/models/index.js";
+import { AdminUser, AuthSession } from "../db/models/index.js";
 import { verifyJwt } from "../shared/crypto.js";
 import { AppError } from "../shared/errors.js";
 
@@ -32,6 +32,13 @@ export async function authenticate(req, _res, next) {
   if (!user || user.status !== "active" || user.tokenVersion !== payload.tv) {
     throw new AppError(401, "INVALID_TOKEN", "Sessão inválida ou expirada.");
   }
+  // A partir da etapa 7, todo access token possui sid: invalidar uma sessão
+  // invalida também o JWT dela, sem desconectar as outras sessões.
+  if (payload.sid) {
+    const session = await AuthSession.findOne({ where: { id: payload.sid, adminUserId: user.id, revokedAt: null, expiresAt: { [Op.gt]: new Date() } }, attributes: ["id"] });
+    if (!session) throw new AppError(401, "INVALID_TOKEN", "Sessão encerrada. Entre novamente.");
+  }
+  req.sessionId = payload.sid || null; // JWT anterior ao deploy permanece válido só até expirar.
   // Presença do portal: no máximo uma escrita por minuto por conta, compartilhada entre processos.
   // Falha de telemetria nunca deve derrubar uma requisição autenticada.
   if (user.role === "partner") {

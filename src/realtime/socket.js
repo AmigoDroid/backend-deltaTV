@@ -1,6 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import { readHostMetrics } from "../modules/system/metrics.js";
-import { AdminUser } from "../db/models/index.js";
+import { AdminUser, AuthSession } from "../db/models/index.js";
+import { Op } from "sequelize";
 import { verifyJwt } from "../shared/crypto.js";
 import { env } from "../config/env.js";
 
@@ -14,10 +15,26 @@ const allowed = (peer, partnerId) => canReceiveChange(peer.user, partnerId);
 export function disconnectAdminUser(userId) {
   for (const peer of [...peers]) if (String(peer.user.id) === String(userId)) peer.socket.close(1008, "Session revoked");
 }
+// Desconecta apenas o WebSocket ligado à sessão encerrada.
+export function disconnectAdminSession(userId, sessionId, { except = false } = {}) {
+  for (const peer of [...peers]) {
+    if (String(peer.user.id) !== String(userId)) continue;
+    if (except ? String(peer.sessionId) !== String(sessionId) : String(peer.sessionId) === String(sessionId))
+      peer.socket.close(1008, "Session revoked");
+  }
+}
 // Revalidação agrupada, sem uma consulta ao banco por cliente ou por evento.
 async function verifyActivePeers() {
   const active = [...peers].filter(p => p.socket.readyState === WebSocket.OPEN);
   const ids = [...new Set(active.map(p => p.user.id))];
+  // Para sessões novas, também revalida o sid (revogação seletiva).
+  const sessionIds = [...new Set(active.map(p => p.sessionId).filter(Boolean))];
+  const validSessions = new Set();
+  for (let i = 0; i < sessionIds.length; i += 400) {
+    const found = await AuthSession.findAll({ where: { id: { [Op.in]: sessionIds.slice(i, i + 400) }, revokedAt: null, expiresAt: { [Op.gt]: new Date() } }, attributes: ["id"], raw: true });
+    for (const row of found) validSessions.add(String(row.id));
+  }
+  for (const peer of active) if (peer.sessionId && !validSessions.has(String(peer.sessionId))) peer.socket.close(1008, "Session revoked");
   for (let start = 0; start < ids.length; start += 500) {
     const chunk = ids.slice(start, start + 500);
     const accounts = await AdminUser.findAll({ where: { id: chunk }, attributes: ["id", "role", "partnerId", "status", "tokenVersion"], raw: true });
@@ -124,8 +141,12 @@ export function attachRealtime(server) {
           const claims = verifyJwt(packet.token, "admin");
           const user = await AdminUser.findByPk(claims.sub);
           if (!user || user.status !== "active" || user.tokenVersion !== claims.tv || !["partner", "admin", "superadmin", "support"].includes(user.role) || (user.role === "partner" && !user.partnerId)) throw Error("Invalid account");
+          if (claims.sid) {
+            const session = await AuthSession.findOne({ where: { id: claims.sid, adminUserId: user.id, revokedAt: null, expiresAt: { [Op.gt]: new Date() } }, attributes: ["id"] });
+            if (!session) throw Error("Revoked session");
+          }
           if (socket.readyState !== WebSocket.OPEN) return;
-          peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, tokenVersion: user.tokenVersion, exp: claims.exp, alive: true, systemMetricsSubscribed: false };
+          peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, tokenVersion: user.tokenVersion, sessionId: claims.sid || null, exp: claims.exp, alive: true, systemMetricsSubscribed: false };
           peers.add(peer); clearTimeout(timeout);
           emit(socket, { type: "ready", role: user.role, ...(user.role !== "partner" ? { onlinePartnerIds: livePartnerIds(), onlinePartnerCount: onlinePartnerCount() } : {}) });
           if (user.role === "partner") { lastTouch = now(); void touch(peer.user); broadcastPresence(user.partnerId); }

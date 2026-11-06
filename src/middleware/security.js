@@ -44,6 +44,7 @@ export const signupLimiter = limiter(60 * 60_000, 5);
 export const passwordResetRequestLimiter = limiter(60 * 60_000, 5);
 export const passwordResetCompleteLimiter = limiter(15 * 60_000, 12);
 export const passwordResetSendLimiter = limiter(60 * 60_000, 5, (req) => `pwdreset:${req.user?.id ?? req.ip}`);
+export const profileSensitiveLimiter = limiter(15 * 60_000, 8, (req) => `profilesec:${req.user?.id ?? req.ip}`);
 // Ativação: limita por IP e também por MAC (impede varredura de códigos por dispositivo).
 export const activationIpLimiter = limiter(15 * 60_000, 30);
 export const activationMacLimiter = limiter(15 * 60_000, 10, (req) => `mac:${String(req.body?.mac ?? "").toUpperCase()}:${req.ip}`);

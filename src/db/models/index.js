@@ -36,6 +36,14 @@ export const AdminUser = def("AdminUser", "admin_users", {
   passwordResetHash: str(64), passwordResetExpiresAt: ts(), passwordResetIssuedAt: ts(),
 });
 
+// Perfil privado; carregado apenas pelas rotas de conta, nunca na verificação JWT.
+export const AdminUserProfile = sequelize.define("AdminUserProfile", {
+  adminUserId: { type: T.UUID, primaryKey: true, allowNull: false },
+  phone: str(40), avatarData: T.TEXT,
+  showUnreadBanner: { type: T.BOOLEAN, allowNull: false, defaultValue: true },
+  showNotificationBadge: { type: T.BOOLEAN, allowNull: false, defaultValue: true },
+}, { tableName: "admin_user_profiles" });
+
 // Registro de convite: ainda NÃO é uma conta ou uma parceria ativa.
 export const PartnerPreRegistration = def("PartnerPreRegistration", "partner_pre_registrations", {
   name: str(160, { allowNull: false }), email: str(200, { allowNull: false }),
@@ -425,6 +433,7 @@ Renewal.belongsTo(License, { foreignKey: "licenseId" });
 Renewal.belongsTo(Plan, { foreignKey: "planId" });
 AdminUser.belongsTo(Partner, { foreignKey: "partnerId" });
 AdminUser.hasMany(AuthSession, { foreignKey: "adminUserId" });
+AdminUser.hasOne(AdminUserProfile, { foreignKey: "adminUserId" });
 ContentSource.hasMany(Category, { foreignKey: "sourceId" });
 ContentSource.hasMany(Channel, { foreignKey: "sourceId" });
 Category.hasMany(Channel, { foreignKey: "categoryId" });

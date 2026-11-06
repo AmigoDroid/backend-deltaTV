@@ -15,7 +15,7 @@ const publicUser = (u) => ({ id: u.id, name: u.name, email: u.email, role: u.rol
 
 async function issue(user, meta, transaction) {
   const refreshToken = randomToken(48);
-  await AuthSession.create(
+  const session = await AuthSession.create(
     {
       adminUserId: user.id,
       refreshHash: sha256(refreshToken),
@@ -26,7 +26,7 @@ async function issue(user, meta, transaction) {
     { transaction },
   );
   return {
-    accessToken: signJwt({ typ: "admin", sub: user.id, tv: user.tokenVersion }, env.adminAccessTtl),
+    accessToken: signJwt({ typ: "admin", sub: user.id, tv: user.tokenVersion, sid: session.id }, env.adminAccessTtl),
     refreshToken,
     expiresIn: env.adminAccessTtl,
     user: publicUser(user),

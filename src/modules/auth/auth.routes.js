@@ -1,13 +1,14 @@
 import { Router } from "express";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
-import { loginLimiter, refreshLimiter, signupLimiter, passwordResetRequestLimiter, passwordResetCompleteLimiter, passwordResetSendLimiter } from "../../middleware/security.js";
+import { loginLimiter, refreshLimiter, signupLimiter, passwordResetRequestLimiter, passwordResetCompleteLimiter, passwordResetSendLimiter, profileSensitiveLimiter } from "../../middleware/security.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import { sequelize, AdminUser } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
 import { hashPassword, verifyPassword } from "../../shared/crypto.js";
 import * as svc from "./auth.service.js";
 import history from "./login-history.routes.js";
+import profileRoutes from "../profile/profile.routes.js";
 import * as resetSvc from "./password-reset.service.js";
 import { actorOf } from "../../shared/audit.js";
 import { disconnectAdminUser } from "../../realtime/socket.js";
@@ -16,6 +17,7 @@ import { verifyPreRegistration, completePreRegistration } from "../partners/part
 
 const router = Router();
 router.use("/history", history);
+router.use("/profile", profileRoutes);
 const meta = (req) => ({ ip: req.ip, userAgent: req.get("user-agent") });
 
 router.post(
@@ -87,7 +89,7 @@ router.post(
 router.get("/me", authenticate, async (req, res) => res.json({ user: req.user }));
 
 router.post(
-  "/change-password", authenticate,
+  "/change-password", authenticate, profileSensitiveLimiter,
   validate({ body: z.object({ currentPassword: z.string().max(128), newPassword: z.string().min(12).max(128) }) }),
   async (req, res) => {
     const passwordHash = await hashPassword(req.valid.body.newPassword);
