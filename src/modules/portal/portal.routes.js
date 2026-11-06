@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { partnerRouter as whiteLabelApps } from "../white-label/white-label.routes.js";
 import { resellerServerMonitor } from "../provider-monitor/visibility.routes.js";
 import { partnerNotificationRoutes } from "../notifications/notification.routes.js";
 import { z } from "zod";
@@ -42,6 +43,7 @@ router.use("/credits", creditRoutes);
 router.use("/clients", clientsRoutes);
 router.use("/web-access", webAccessRoutes);
 router.use("/app-downloads", appDownloadsRoutes);
+router.use("/white-label", whiteLabelApps);
 const scope = (req) => ({ partnerId: req.user.partnerId });
 const id = z.object({ id: z.string().uuid() });
 

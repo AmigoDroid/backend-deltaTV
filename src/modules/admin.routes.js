@@ -1,3 +1,4 @@
+import { adminRouter as whiteLabelApps } from "./white-label/white-label.routes.js";
 import platformSettings from "./settings/platform-settings.routes.js";
 import { Router } from "express";
 import { systemRoutes } from "./system/system.routes.js";
@@ -42,4 +43,5 @@ router.use("/credits", credits);
 router.use("/mail", mail);
 router.use("/web-access", webAccess);
 router.use("/app-downloads", appDownloads);
+router.use("/white-label", whiteLabelApps);
 export default router;

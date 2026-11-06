@@ -6,6 +6,7 @@ import cors from "cors";
 import { env } from "./config/env.js";
 import { AppError, errorHandler } from "./shared/errors.js";
 import { requestContext, apiLimiter, mirrorLimiter } from "./middleware/security.js";
+import { publicRouter as whiteLabelPublic } from "./modules/white-label/white-label.routes.js";
 import authRoutes from "./modules/auth/auth.routes.js";
 import contentPartnerRoutes from "./modules/provider-monitor/monitor.routes.js";
 import adminRoutes from "./modules/admin.routes.js";
@@ -51,6 +52,8 @@ export function createApp() {
   // Arquivos (APK) hospedados na VPS: público, sem login; as TVs/aparelhos dos clientes baixam daqui.
   app.use("/dl", appDownloadFiles);
 
+  // Sessões de players white-label têm limite próprio por token (não por IP público compartilhado).
+  app.use("/api/v1/player-apps", whiteLabelPublic);
   app.use(apiLimiter);
   // Notificar após respostas bem-sucedidas; o convite público também cria uma parceria.
   app.use((req, res, next) => {

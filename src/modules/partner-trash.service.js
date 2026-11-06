@@ -60,6 +60,9 @@ async function previewInTransaction(id, transaction) {
     (SELECT count(*)::int FROM activations a WHERE ${OWN_ACTIVATION}) AS "activations",
     (SELECT count(*)::int FROM licenses WHERE owner_partner_id = :id) AS "licenses",
     (SELECT count(*)::int FROM web_accesses WHERE partner_id = :id) AS "webAccesses",
+    (SELECT count(*)::int FROM white_label_apps WHERE partner_id = :id) AS "whiteLabelApps",
+    (SELECT count(*)::int FROM white_label_app_activations WHERE app_id IN (SELECT id FROM white_label_apps WHERE partner_id = :id)) AS "whiteLabelActivations",
+    (SELECT count(*)::int FROM white_label_app_payments WHERE app_id IN (SELECT id FROM white_label_apps WHERE partner_id = :id)) AS "whiteLabelPayments",
     (SELECT count(*)::int FROM invoices WHERE partner_id = :id) AS "invoices",
     (SELECT count(*)::int FROM payments WHERE invoice_id IN (${OWN_INVOICE}) OR license_id IN (${OWN_LICENSE})) AS "payments",
     (SELECT count(*)::int FROM pix_charges WHERE ${OWN_CHARGE}) AS "pixCharges",
@@ -88,7 +91,7 @@ async function previewInTransaction(id, transaction) {
   const response = {};
   for (const [key, value] of Object.entries(r)) response[key] = typeof value === "number" ? value : value;
   response.financialRecords = response.invoices + response.payments + response.pixCharges + response.stockMovements + response.creditMovements
-    + response.stockBalances + response.creditBalances + response.codeBalances;
+    + response.stockBalances + response.creditBalances + response.codeBalances + response.whiteLabelPayments;
   response.blockers = [];
   if (response.openPix) response.blockers.push("Há cobranças Pix pendentes/em revisão. Concilie ou cancele no provedor antes.");
   if (response.openRefunds) response.blockers.push("Há devoluções pendentes. Resolva todos os casos no Financeiro antes.");
@@ -242,6 +245,11 @@ export async function permanentlyDeletePartner(id, input, actor) {
       await run("orphanDevices", `DELETE FROM devices d WHERE d.id IN (SELECT id FROM deltatv_trash_devices)
         AND NOT EXISTS (SELECT 1 FROM activations a WHERE a.device_id = d.id)
         AND NOT EXISTS (SELECT 1 FROM web_accesses w WHERE w.device_id = d.id)`);
+      // A FK CASCADE retira os serviços white-label exclusivamente deste cliente.
+      // Os pagamentos manuais white-label já foram incluídos na confirmação financeira da prévia.
+      deleted.whiteLabelApps = preview.whiteLabelApps;
+      deleted.whiteLabelActivations = preview.whiteLabelActivations;
+      deleted.whiteLabelPayments = preview.whiteLabelPayments;
       deleted.partner = await countDelete("DELETE FROM partners WHERE id = :id", replacements, transaction);
       if (deleted.partner !== 1) throw new AppError(409, "PURGE_INCOMPLETE", "Cadastro não foi removido; a transação será revertida.");
       // Sem dados de contato/slug no log; só ID, totais, ator e justificativa.

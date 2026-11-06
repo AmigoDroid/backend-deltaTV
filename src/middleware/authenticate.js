@@ -4,7 +4,7 @@ import { verifyJwt } from "../shared/crypto.js";
 import { AppError } from "../shared/errors.js";
 
 const PERMISSIONS = {
-  superadmin: ["*"],
+  superadmin: ["*"], // white-label:manage permanece exclusivo da administração principal
   admin: [
     "licenses:read", "licenses:write", "partners:read", "partners:write", "billing:read", "billing:write",
     "devices:read", "devices:write", "sources:read", "sources:write", "audit:read", "dashboard:read",

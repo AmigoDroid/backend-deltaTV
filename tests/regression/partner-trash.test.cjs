@@ -15,7 +15,7 @@ async function load({ snapshot = null, counts = {}, status = "deleted" } = {}) {
   const partner = { id: "00000000-0000-4000-8000-000000000001", name: "Revenda teste", slug: "revenda-teste", kind: "reseller", status,
     statusReason: "Excluído", async update(values) { Object.assign(this, values); }, toJSON() { return { ...this }; } };
   const defaults = { users: 1, codes: 1, providers: 1, clients: 0, activations: 0, licenses: 0, webAccesses: 0,
-    invoices: 0, payments: 0, pixCharges: 0, openRefunds: 0, openPix: 0, stockMovements: 0, creditMovements: 0,
+    invoices: 0, payments: 0, pixCharges: 0, whiteLabelApps: 0, whiteLabelActivations: 0, whiteLabelPayments: 0, openRefunds: 0, openPix: 0, stockMovements: 0, creditMovements: 0,
     stockBalances: 0, creditBalances: 0, codeBalances: 0,
     otherPartnerActivations: 0, otherPartnerWebAccesses: 0, otherPartnerServerPools: 0,
     unownedCreatorLicenses: 0, otherCreatorPixCharges: 0,

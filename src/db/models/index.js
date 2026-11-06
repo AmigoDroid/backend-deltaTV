@@ -203,6 +203,30 @@ export const WebAccess = def("WebAccess", "web_accesses", {
 });
 
 // Downloads de aplicativos para os revendedores (migration 20261106000001): nome, versão, link e código numérico do Downloader.
+// Apps white-label: cada registro é um aplicativo de um cliente, isolado do DeltaTV.
+export const WhiteLabelApp = def("WhiteLabelApp", "white_label_apps", {
+  partnerId: { type: T.UUID, allowNull: false }, appKey: str(64, { allowNull: false, unique: true }),
+  name: str(120, { allowNull: false }), logoUrl: str(500), downloadUrl: str(500),
+  status: str(20, { allowNull: false, defaultValue: "draft" }),
+  planType: str(20, { allowNull: false, defaultValue: "limited" }), activationLimit: { type: T.INTEGER },
+  monthlyFeeCents: int(0), paidThrough: { type: T.DATEONLY }, notes: T.TEXT,
+});
+export const WhiteLabelAppServer = def("WhiteLabelAppServer", "white_label_app_servers", {
+  appId: { type: T.UUID, allowNull: false }, name: str(120, { allowNull: false }),
+  baseUrl: str(500, { allowNull: false }), status: str(20, { allowNull: false, defaultValue: "active" }), priority: int(0),
+});
+export const WhiteLabelAppActivation = def("WhiteLabelAppActivation", "white_label_app_activations", {
+  appId: { type: T.UUID, allowNull: false }, installationHash: { type: T.CHAR(64), allowNull: false },
+  platform: str(32, { allowNull: false }), status: str(20, { allowNull: false, defaultValue: "active" }),
+  activatedAt: { ...ts(), allowNull: false, defaultValue: T.NOW }, lastSeenAt: ts(), revokedAt: ts(),
+});
+export const WhiteLabelAppPayment = def("WhiteLabelAppPayment", "white_label_app_payments", {
+  appId: { type: T.UUID, allowNull: false }, reference: str(120, { allowNull: false }), months: int(1),
+  amountCents: int(0), previousPaidThrough: { type: T.DATEONLY },
+  paidThrough: { type: T.DATEONLY, allowNull: false }, notes: str(500),
+  paidAt: { ...ts(), allowNull: false, defaultValue: T.NOW }, createdBy: { type: T.UUID },
+});
+
 export const AppDownload = def("AppDownload", "app_downloads", {
   name: str(120, { allowNull: false }), version: str(40), downloadUrl: { type: T.TEXT, allowNull: false },
   downloaderCode: str(20), createdBy: { type: T.UUID },
@@ -369,6 +393,14 @@ export const AuditLog = sequelize.define(
   { tableName: "audit_logs", updatedAt: false },
 );
 
+Partner.hasMany(WhiteLabelApp, { foreignKey: "partnerId" });
+WhiteLabelApp.belongsTo(Partner, { foreignKey: "partnerId" });
+WhiteLabelApp.hasMany(WhiteLabelAppServer, { foreignKey: "appId", as: "servers" });
+WhiteLabelAppServer.belongsTo(WhiteLabelApp, { foreignKey: "appId" });
+WhiteLabelApp.hasMany(WhiteLabelAppActivation, { foreignKey: "appId", as: "activations" });
+WhiteLabelAppActivation.belongsTo(WhiteLabelApp, { foreignKey: "appId" });
+WhiteLabelApp.hasMany(WhiteLabelAppPayment, { foreignKey: "appId", as: "payments" });
+WhiteLabelAppPayment.belongsTo(WhiteLabelApp, { foreignKey: "appId" });
 /* ---------- Associações ---------- */
 Plan.hasMany(License, { foreignKey: "planId" });
 License.belongsTo(Plan, { foreignKey: "planId" });
