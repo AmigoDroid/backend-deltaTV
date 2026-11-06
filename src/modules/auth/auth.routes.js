@@ -54,10 +54,10 @@ router.post("/partner-invite/complete", signupLimiter,
   }).strict() }),
   async (req, res) => res.set("Cache-Control", "no-store").json(await completePreRegistration(req.valid.body)));
 
-// Recuperação de senha (conteúdo/parceiro): não exige sessão nem revela e-mails cadastrados.
+// Recuperação de senha nos portais de conteúdo e revenda: não revela e-mails cadastrados.
 router.post("/password-reset/request", passwordResetRequestLimiter,
-  validate({ body: z.object({ email: z.string().trim().email().max(200) }).strict() }),
-  async (req, res) => res.set("Cache-Control", "no-store").status(202).json(await resetSvc.requestPasswordReset(req.valid.body.email, meta(req))));
+  validate({ body: z.object({ email: z.string().trim().email().max(200), audience: z.enum(["content_partner", "reseller"]).default("content_partner") }).strict() }),
+  async (req, res) => res.set("Cache-Control", "no-store").status(202).json(await resetSvc.requestPasswordReset(req.valid.body.email, meta(req), req.valid.body.audience)));
 
 router.post("/password-reset/complete", passwordResetCompleteLimiter,
   validate({ body: z.object({ token: z.string().min(32).max(128).regex(/^[A-Za-z0-9_-]+$/), newPassword: z.string().min(12).max(128) }).strict() }),

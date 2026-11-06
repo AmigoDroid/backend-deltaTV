@@ -128,3 +128,28 @@ test("pedido público de revendedor não é aceito no login de parceiro de conte
   assert.equal((await o.svc.requestPasswordReset("test@example.com")).ok, true);
   assert.equal(o.mails.length, 0);
 });
+
+
+test("revendedor recebe link pelo pedido público do portal de revenda", async () => {
+  const o = await load({ partnerKind: "reseller" });
+  const response = await o.svc.requestPasswordReset("test@example.com", {}, "reseller");
+  assert.equal(response.ok, true);
+  assert.equal(o.mails.length, 1);
+  assert.ok(o.mails[0].text.includes("https://revenda.example/redefinir-senha#token="));
+  assert.equal(o.user.passwordResetHash, hash(o.token()));
+});
+
+test("pedido da revenda não envia e-mail para conta apenas de conteúdo", async () => {
+  const o = await load({ partnerKind: "content" });
+  assert.equal((await o.svc.requestPasswordReset("test@example.com", {}, "reseller")).ok, true);
+  assert.equal(o.mails.length, 0);
+});
+
+test("conta de dois portais recebe link correspondente ao portal solicitante", async () => {
+  const o = await load({ partnerKind: "both" });
+  assert.equal((await o.svc.requestPasswordReset("test@example.com", {}, "reseller")).ok, true);
+  assert.ok(o.mails[0].text.includes("https://revenda.example/redefinir-senha#token="));
+  o.user.passwordResetIssuedAt = null;
+  assert.equal((await o.svc.requestPasswordReset("test@example.com", {}, "content_partner")).ok, true);
+  assert.ok(o.mails[1].text.includes("https://parceiro.example/redefinir-senha#token="));
+});

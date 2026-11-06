@@ -20,7 +20,7 @@ export function resetLinkForRole(role, token, partnerKind = null) {
   return `${origin}/redefinir-senha#token=${encodeURIComponent(token)}`;
 }
 
-async function dispatchForUser(userId, { actor, cooldownMs, generic = false } = {}) {
+async function dispatchForUser(userId, { actor, cooldownMs, generic = false, portal = null } = {}) {
   // No fluxo público não mostramos se o e-mail existe ou se o SMTP falhou.
   if (!env.mail.configured) {
     if (generic) return false;
@@ -45,7 +45,11 @@ async function dispatchForUser(userId, { actor, cooldownMs, generic = false } = 
   if (!issued) return false;
 
   const partner = issued.role === "partner" && issued.partnerId ? await Partner.findByPk(issued.partnerId, { attributes: ["kind"] }) : null;
-  const link = resetLinkForRole(issued.role, token, partner?.kind);
+  // Contas "both" acessam dois portais. No pedido público, o link deve voltar
+  // ao mesmo portal, sem permitir que o navegador forneça uma URL arbitrária.
+  const linkKind = portal === "reseller" && ["reseller", "both"].includes(partner?.kind)
+    ? "reseller" : partner?.kind;
+  const link = resetLinkForRole(issued.role, token, linkKind);
   const displayName = escapeHtml(issued.name || "parceiro");
   const safeLink = escapeHtml(link);
   try {
@@ -69,7 +73,7 @@ async function dispatchForUser(userId, { actor, cooldownMs, generic = false } = 
 }
 
 /** Sempre devolve a mesma resposta pública, inclusive para endereço desconhecido. */
-export async function requestPasswordReset(email, meta = {}) {
+export async function requestPasswordReset(email, meta = {}, audience = "content_partner") {
   const normalized = String(email).trim().toLowerCase();
   const user = await AdminUser.findOne({
     where: sequelize.where(sequelize.fn("lower", sequelize.col("email")), normalized),
@@ -77,8 +81,13 @@ export async function requestPasswordReset(email, meta = {}) {
   });
   if (user?.status === "active" && user.role === "partner" && user.partnerId) {
     const partner = await Partner.findByPk(user.partnerId, { attributes: ["id", "kind"] });
-    if (partner && ["content", "both"].includes(partner.kind)) {
-      await dispatchForUser(user.id, { generic: true, cooldownMs: PUBLIC_COOLDOWN_MS, actor: { type: "anonymous", ip: meta.ip } });
+    const allowedKinds = audience === "reseller" ? ["reseller", "both"] : ["content", "both"];
+    if (partner && allowedKinds.includes(partner.kind)) {
+      await dispatchForUser(user.id, {
+        generic: true, cooldownMs: PUBLIC_COOLDOWN_MS,
+        actor: { type: "anonymous", ip: meta.ip },
+        portal: audience === "reseller" ? "reseller" : "content_partner",
+      });
     }
   }
   return GENERAL_RESPONSE;
