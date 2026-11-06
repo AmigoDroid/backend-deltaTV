@@ -17,7 +17,7 @@
     "verify:db": "npm run db:migrate:status",
     "db:migrate:status": "sequelize-cli db:migrate:status --config config/sequelize-cli.cjs --migrations-path src/db/migrations",
     "test:integration": "NODE_ENV=test node --test \"tests/integration/*.test.js\"",
-    "test:regression": "node --experimental-vm-modules --test tests/regression/*.test.cjs"
+    "test:regression": "node --experimental-vm-modules --test --test-concurrency=1 tests/regression/*.test.cjs"
   },
   "dependencies": {
     "cors": "^2.8.5",

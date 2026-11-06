@@ -33,6 +33,7 @@ export const AdminUser = def("AdminUser", "admin_users", {
   passwordHash: { type: T.TEXT, allowNull: false }, role: str(20, { allowNull: false }),
   partnerId: { type: T.UUID }, status: str(20, { allowNull: false, defaultValue: "active" }),
   failedLogins: int(0), lockedUntil: ts(), tokenVersion: int(0), lastLoginAt: ts(), lastActivityAt: ts(),
+  passwordResetHash: str(64), passwordResetExpiresAt: ts(), passwordResetIssuedAt: ts(),
 });
 
 // Registro de convite: ainda NÃO é uma conta ou uma parceria ativa.

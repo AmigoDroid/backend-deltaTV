@@ -40,6 +40,10 @@ export const mirrorLimiter = limiter(60_000, 3000, (req) => {
 export const loginLimiter = limiter(15 * 60_000, 10);
 // Cadastro público de revendedor: poucas tentativas por hora por IP (cada uma gera um registro e um hash de senha).
 export const signupLimiter = limiter(60 * 60_000, 5);
+// Senha: impedir abuso de SMTP, tentativas de enumeração e força bruta dos tokens.
+export const passwordResetRequestLimiter = limiter(60 * 60_000, 5);
+export const passwordResetCompleteLimiter = limiter(15 * 60_000, 12);
+export const passwordResetSendLimiter = limiter(60 * 60_000, 5, (req) => `pwdreset:${req.user?.id ?? req.ip}`);
 // Ativação: limita por IP e também por MAC (impede varredura de códigos por dispositivo).
 export const activationIpLimiter = limiter(15 * 60_000, 30);
 export const activationMacLimiter = limiter(15 * 60_000, 10, (req) => `mac:${String(req.body?.mac ?? "").toUpperCase()}:${req.ip}`);

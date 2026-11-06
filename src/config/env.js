@@ -166,6 +166,24 @@ export const env = Object.freeze({
   presenceHeartbeatSeconds: Math.min(60, Math.max(10, int("PRESENCE_HEARTBEAT_SECONDS", 30))),
   maxSessionsPerActivation: int("MAX_SESSIONS_PER_ACTIVATION", 3),
   deviceScopedSessionMinutes: int("DEVICE_SCOPED_SESSION_MINUTES", 30),
+  // Redefinição de contas de revenda enviadas pelo superadmin.
+  resellerPortalUrl: (() => {
+    const raw = (e.RESELLER_PORTAL_URL || (isProd ? "https://revenda.deltatv.com.br" : "http://localhost:5175")).replace(/\/+$/, "");
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || (isProd && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+      throw new Error("RESELLER_PORTAL_URL deve ser a origem pública do portal de revenda (HTTPS em produção).");
+    }
+    return url.origin;
+  })(),
+  // Links de redefinição do admin nunca apontam para a API nem aceitam URLs enviadas pelo solicitante.
+  adminPanelUrl: (() => {
+    const raw = (e.ADMIN_PANEL_URL || (isProd ? "https://admin.deltatv.com.br" : "http://localhost:5173")).replace(/\/+$/, "");
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || (isProd && url.protocol !== "https:") || url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+      throw new Error("ADMIN_PANEL_URL deve ser a origem pública do painel (HTTPS em produção).");
+    }
+    return url.origin;
+  })(),
   // E-mail de saída (SMTP). Sem SMTP_HOST + MAIL_FROM o envio fica desligado e o painel avisa. A senha só existe aqui (.env).
   mail: mailConfig,
   enableScheduler: e.ENABLE_SCHEDULER !== "false",

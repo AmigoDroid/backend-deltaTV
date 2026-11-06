@@ -2,6 +2,7 @@
 export async function verifyRequiredSchema(sequelize) {
   const qi = sequelize.getQueryInterface();
   const required = {
+    admin_users: ["id", "password_reset_hash", "password_reset_expires_at", "password_reset_issued_at"],
     pix_refund_cases: ["id", "charge_id", "status", "amount_cents"],
     web_accesses: ["id", "status", "status_reason", "content_owner_partner_id", "source_partner_code_id"],
   };

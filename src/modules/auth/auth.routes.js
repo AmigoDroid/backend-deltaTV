@@ -1,13 +1,15 @@
 import { Router } from "express";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
-import { loginLimiter, refreshLimiter, signupLimiter } from "../../middleware/security.js";
+import { loginLimiter, refreshLimiter, signupLimiter, passwordResetRequestLimiter, passwordResetCompleteLimiter, passwordResetSendLimiter } from "../../middleware/security.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import { sequelize, AdminUser } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
 import { hashPassword, verifyPassword } from "../../shared/crypto.js";
 import * as svc from "./auth.service.js";
 import history from "./login-history.routes.js";
+import * as resetSvc from "./password-reset.service.js";
+import { actorOf } from "../../shared/audit.js";
 import { disconnectAdminUser } from "../../realtime/socket.js";
 import { registerReseller } from "../partners/reseller-signup.service.js";
 import { verifyPreRegistration, completePreRegistration } from "../partners/partner-invite.service.js";
@@ -52,6 +54,21 @@ router.post("/partner-invite/complete", signupLimiter,
   }).strict() }),
   async (req, res) => res.set("Cache-Control", "no-store").json(await completePreRegistration(req.valid.body)));
 
+// Recuperação de senha (conteúdo/parceiro): não exige sessão nem revela e-mails cadastrados.
+router.post("/password-reset/request", passwordResetRequestLimiter,
+  validate({ body: z.object({ email: z.string().trim().email().max(200) }).strict() }),
+  async (req, res) => res.set("Cache-Control", "no-store").status(202).json(await resetSvc.requestPasswordReset(req.valid.body.email, meta(req))));
+
+router.post("/password-reset/complete", passwordResetCompleteLimiter,
+  validate({ body: z.object({ token: z.string().min(32).max(128).regex(/^[A-Za-z0-9_-]+$/), newPassword: z.string().min(12).max(128) }).strict() }),
+  async (req, res) => res.set("Cache-Control", "no-store").json(await resetSvc.completePasswordReset(req.valid.body.token, req.valid.body.newPassword, meta(req))));
+
+router.post("/password-reset/send-self", authenticate, passwordResetSendLimiter,
+  async (req, res) => {
+    if (req.user.role !== "partner") throw new AppError(403, "FORBIDDEN", "Esta opção é exclusiva do portal do parceiro.");
+    res.set("Cache-Control", "no-store").status(202).json(await resetSvc.sendPasswordResetToUser(req.user.id, actorOf(req)));
+  });
+
 router.post(
   "/refresh", refreshLimiter,
   validate({ body: z.object({ refreshToken: z.string().min(20).max(200) }) }),
@@ -79,7 +96,7 @@ router.post(
       if (!user || !(await verifyPassword(req.valid.body.currentPassword, user.passwordHash))) {
         throw new AppError(400, "INVALID_CREDENTIALS", "Senha atual incorreta.");
       }
-      await user.update({ passwordHash }, { transaction });
+      await user.update({ passwordHash, passwordResetHash: null, passwordResetExpiresAt: null, passwordResetIssuedAt: null }, { transaction });
       await svc.revokeAllSessions(user.id, transaction);
     });
     disconnectAdminUser(req.user.id);

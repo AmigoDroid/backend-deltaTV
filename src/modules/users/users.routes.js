@@ -10,6 +10,8 @@ import { hashPassword } from "../../shared/crypto.js";
 import { can } from "../../middleware/authenticate.js";
 import { revokeAllSessions } from "../auth/auth.service.js";
 import { disconnectAdminUser } from "../../realtime/socket.js";
+import { sendPasswordResetToUser } from "../auth/password-reset.service.js";
+import { passwordResetSendLimiter } from "../../middleware/security.js";
 
 /**
  * Gestão de usuários.
@@ -19,7 +21,7 @@ import { disconnectAdminUser } from "../../realtime/socket.js";
  */
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
-const safe = (u, partner) => { const j = u.toJSON(); delete j.passwordHash; return { ...j, partnerName: partner?.name ?? null }; };
+const safe = (u, partner) => { const j = u.toJSON(); delete j.passwordHash; delete j.passwordResetHash; delete j.passwordResetExpiresAt; delete j.passwordResetIssuedAt; return { ...j, partnerName: partner?.name ?? null }; };
 const ROLES = ["superadmin", "admin", "support", "partner"];
 
 router.use((req, _res, next) => {
@@ -68,6 +70,14 @@ router.post(
   },
 );
 
+// Não envia senha temporária nem devolve o link na API: somente o e-mail cadastrado recebe.
+router.post("/:id/send-password-reset", passwordResetSendLimiter, validate({ params: id }), async (req, res) => {
+  const target = await AdminUser.findByPk(req.valid.params.id, { attributes: ["id", "role", "status"] });
+  if (!target) throw notFound("Usuário");
+  if (req.userScope === "partner" && target.role !== "partner") throw forbiddenRole();
+  res.set("Cache-Control", "no-store").status(202).json(await sendPasswordResetToUser(target.id, actorOf(req)));
+});
+
 router.patch(
   "/:id", validate({ params: id, body: z.object({
     name: z.string().min(2).max(160).optional(), email: z.string().email().max(200).optional(),
@@ -97,7 +107,8 @@ router.patch(
     }
 
     const sensitive = !!password || changes.status === "disabled" || role !== u.role || partnerId !== u.partnerId || (changes.email && changes.email !== u.email);
-    await u.update({ ...changes, ...(password ? { passwordHash: await hashPassword(password) } : {}) });
+    await u.update({ ...changes, ...(password ? { passwordHash: await hashPassword(password) } : {}),
+      ...(sensitive ? { passwordResetHash: null, passwordResetExpiresAt: null, passwordResetIssuedAt: null } : {}) });
     if (sensitive) { await revokeAllSessions(u.id); disconnectAdminUser(u.id); }
     await audit({ actor: actorOf(req), action: "user.update", entityType: "admin_user", entityId: u.id, metadata: { ...rest, partnerId, passwordChanged: !!password } });
     res.json(await present(u));
