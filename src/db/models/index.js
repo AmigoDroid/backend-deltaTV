@@ -210,7 +210,13 @@ export const WhiteLabelApp = def("WhiteLabelApp", "white_label_apps", {
   status: str(20, { allowNull: false, defaultValue: "draft" }),
   planType: str(20, { allowNull: false, defaultValue: "limited" }), activationLimit: { type: T.INTEGER },
   monthlyFeeCents: int(0), paidThrough: { type: T.DATEONLY }, notes: T.TEXT,
+  appearanceEnabled: { type: T.BOOLEAN, allowNull: false, defaultValue: false },
 });
+export const WhiteLabelAppAppearance = sequelize.define("WhiteLabelAppAppearance", {
+  appId: { type: T.UUID, primaryKey: true, allowNull: false },
+  draftConfig: T.JSONB, publishedConfig: T.JSONB,
+  publishedVersion: int(0), publishedAt: ts(), editedBy: { type: T.UUID },
+}, { tableName: "white_label_app_appearances" });
 export const WhiteLabelAppServer = def("WhiteLabelAppServer", "white_label_app_servers", {
   appId: { type: T.UUID, allowNull: false }, name: str(120, { allowNull: false }),
   baseUrl: str(500, { allowNull: false }), status: str(20, { allowNull: false, defaultValue: "active" }), priority: int(0),
@@ -395,6 +401,8 @@ export const AuditLog = sequelize.define(
 
 Partner.hasMany(WhiteLabelApp, { foreignKey: "partnerId" });
 WhiteLabelApp.belongsTo(Partner, { foreignKey: "partnerId" });
+WhiteLabelApp.hasOne(WhiteLabelAppAppearance, { foreignKey: "appId", as: "appearance" });
+WhiteLabelAppAppearance.belongsTo(WhiteLabelApp, { foreignKey: "appId" });
 WhiteLabelApp.hasMany(WhiteLabelAppServer, { foreignKey: "appId", as: "servers" });
 WhiteLabelAppServer.belongsTo(WhiteLabelApp, { foreignKey: "appId" });
 WhiteLabelApp.hasMany(WhiteLabelAppActivation, { foreignKey: "appId", as: "activations" });

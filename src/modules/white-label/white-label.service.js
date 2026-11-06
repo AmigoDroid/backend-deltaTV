@@ -22,7 +22,7 @@ function sessionTokenFor(app, activation, authAt = Math.floor(Date.now() / 1000)
 const appSummary = (app, count = 0, partnerStatus = "active") => ({
   id: app.id, partnerId: app.partnerId, appKey: app.appKey, name: app.name,
   logoUrl: app.logoUrl, downloadUrl: app.downloadUrl,
-  status: app.status, effectiveStatus: effectiveAppState(app, partnerStatus),
+  status: app.status, appearanceEnabled: !!app.appearanceEnabled, effectiveStatus: effectiveAppState(app, partnerStatus),
   planType: app.planType, activationLimit: app.activationLimit,
   activeActivations: count, availableActivations: app.planType === "unlimited" ? null : Math.max(0, app.activationLimit - count),
   monthlyFeeCents: app.monthlyFeeCents, paidThrough: app.paidThrough,

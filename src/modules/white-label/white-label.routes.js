@@ -7,6 +7,9 @@ import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
 import { requirePermission } from "../../middleware/authenticate.js";
 import * as service from "./white-label.service.js";
+import * as appearance from "./appearance.service.js";
+import { appearanceBody } from "./appearance.schema.js";
+import { APPEARANCE_PRESETS } from "./appearance.presets.js";
 
 const id = z.object({ id: z.string().uuid() });
 const serverIds = z.object({ id: z.string().uuid(), serverId: z.string().uuid() });
@@ -67,6 +70,12 @@ adminRouter.patch("/:id/servers/:serverId", validate({ params: serverIds, body: 
 adminRouter.delete("/:id/servers/:serverId", validate({ params: serverIds }), async (req, res) => {
   await service.removeServer(req.valid.params.id, req.valid.params.serverId, null, actorOf(req)); res.status(204).end();
 });
+// Visual Studio access control is exclusive to superadmin; no partner-controlled bypass.
+adminRouter.patch("/:id/appearance-access", validate({ params: id,
+  body: z.object({ enabled: z.boolean() }).strict() }), async (req, res) =>
+  res.json(await appearance.setAppearanceAccess(req.valid.params.id, req.valid.body.enabled, actorOf(req))));
+adminRouter.get("/:id/appearance", validate({ params: id }), async (req, res) =>
+  res.set("Cache-Control", "no-store").json(await appearance.getAppearance(req.valid.params.id)));
 adminRouter.get("/:id/activations", validate({ params: id, query: z.object(pageQuery) }), async (req, res) =>
   res.json(await service.listActivations(req.valid.params.id, null, req.valid.query)));
 for (const action of ["revoke", "restore"]) {
@@ -89,6 +98,16 @@ partnerRouter.patch("/:id/servers/:serverId", validate({ params: serverIds, body
 partnerRouter.delete("/:id/servers/:serverId", validate({ params: serverIds }), async (req, res) => {
   await service.removeServer(req.valid.params.id, req.valid.params.serverId, owned(req), actorOf(req)); res.status(204).end();
 });
+// Partner can only edit apps belonging to their own authenticated partnership.
+partnerRouter.get("/appearance/eligible", async (req, res) =>
+  res.json({ data: await appearance.listEditableAppearances(owned(req)) }));
+partnerRouter.get("/appearance/presets", (_req, res) => res.json({ presets: APPEARANCE_PRESETS }));
+partnerRouter.get("/:id/appearance", validate({ params: id }), async (req, res) =>
+  res.set("Cache-Control", "no-store").json(await appearance.getAppearance(req.valid.params.id, owned(req))));
+partnerRouter.put("/:id/appearance/draft", validate({ params: id, body: appearanceBody }), async (req, res) =>
+  res.set("Cache-Control", "no-store").json(await appearance.saveAppearance(req.valid.params.id, owned(req), req.valid.body, actorOf(req))));
+partnerRouter.post("/:id/appearance/publish", validate({ params: id }), async (req, res) =>
+  res.set("Cache-Control", "no-store").json(await appearance.publishAppearance(req.valid.params.id, owned(req), actorOf(req))));
 partnerRouter.get("/:id/activations", validate({ params: id, query: z.object(pageQuery) }), async (req, res) =>
   res.json(await service.listActivations(req.valid.params.id, owned(req), req.valid.query)));
 for (const action of ["revoke", "restore"]) {
@@ -99,6 +118,8 @@ partnerRouter.get("/:id/payments", validate({ params: id }), async (req, res) =>
   res.json({ data: await service.listPayments(req.valid.params.id, owned(req)) }));
 
 const infoLimiter = rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: "draft-7", legacyHeaders: false });
+// Published palettes are public, tiny and frequently polled by fleets of TVs sharing a NAT IP.
+const appearanceLimiter = rateLimit({ windowMs: 60_000, limit: 1500, standardHeaders: "draft-7", legacyHeaders: false });
 const publicLimiter = rateLimit({ windowMs: 60_000, limit: 20,
   standardHeaders: "draft-7", legacyHeaders: false, message: { code: "RATE_LIMIT", message: "Muitas tentativas. Aguarde um minuto." } });
 // Sessões ativas são limitadas por token, não pelo IP público compartilhado de TVs.
@@ -113,6 +134,9 @@ const activationBody = z.object({
   username: z.string().min(1).max(128), password: z.string().min(1).max(256),
 }).strict();
 export const publicRouter = Router();
+// Anonymous player receives only the last published config, never the draft.
+publicRouter.get("/:appKey/appearance", appearanceLimiter, validate({ params: publicKey }), async (req, res) =>
+  res.set("Cache-Control", "public, max-age=120").json(await appearance.publicAppearance(req.valid.params.appKey)));
 publicRouter.get("/:appKey", infoLimiter, validate({ params: publicKey }), async (req, res) =>
   res.set("Cache-Control", "no-store").json(await service.publicAppInfo(req.valid.params.appKey)));
 publicRouter.post("/:appKey/activate", publicLimiter, validate({ params: publicKey, body: activationBody }), async (req, res) =>
