@@ -8,6 +8,7 @@ import { requirePermission, can } from "../../middleware/authenticate.js";
 import { generateInvoice } from "../billing/billing.service.js";
 import { listActivations } from "../devices/device.service.js";
 import * as svc from "./partner.service.js";
+import { getPartnerAvatarImages } from "./partner-avatar.service.js";
 import * as providers from "../providers/provider.service.js";
 import * as stock from "../stock/stock.service.js";
 import { DEFAULT_TEMPLATE } from "../providers/playlist-url.js";
@@ -61,6 +62,15 @@ router.get(
   validate({ query: z.object({ ...pageQuery, q: z.string().max(100).optional(), status: z.enum(["pending", "active", "expired", "suspended", "blocked", "cancelled"]).optional(), kind: z.enum(["content", "reseller"]).optional() }) }),
   async (req, res) => res.json(await svc.listPartners(req.valid.query)),
 );
+// Busca em lote as fotos somente das contas ativas pertencentes a esses parceiros.
+// O JWT é obrigatório (middleware admin) e partners:read é conferido na rota.
+router.post("/avatars", requirePermission("partners:read"),
+  validate({ body: z.object({ ids: z.array(z.string().uuid()).min(1).max(50) }).strict() }),
+  async (req, res) => {
+    res.set("Cache-Control", "private, no-store");
+    res.json({ data: await getPartnerAvatarImages([...new Set(req.valid.body.ids)]) });
+  });
+
 // Central comercial do Superadmin: paginação no banco e preço real negociado por parceiro.
 router.get("/contract-overview", requirePermission("override"), validate({ query: z.object({
   ...pageQuery, q: z.string().max(100).optional(), kind: z.enum(["content", "reseller"]).optional(),

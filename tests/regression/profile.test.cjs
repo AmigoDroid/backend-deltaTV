@@ -83,7 +83,8 @@ test("trocar avatar NÃO reseta preferências já salvas", async () => {
   request.valid.body = { avatarData: null }; const reply = res();
   await x.routes["PATCH /avatar"](request, reply);
   assert.equal(reply.output.ok, true);
-  assert.deepEqual(Array.from(x.sessions.at(-1).opts.updateOnDuplicate), ["avatarData"]);
+  assert.deepEqual(Array.from(x.sessions.at(-1).opts.updateOnDuplicate), ["avatarData", "updatedAt"]);
+  assert.ok(x.sessions.at(-1).rows[0].updatedAt instanceof Date);
   assert.equal(x.audits.at(-1).action, "profile.avatar.change");
 });
 

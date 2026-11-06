@@ -1,4 +1,5 @@
 import { markPartnerConfigured } from "./partner-onboarding.service.js";
+import { findAvatarOwners, avatarVersion } from "./partner-avatar.service.js";
 import { isPartnerConnected } from "../../realtime/socket.js";
 import { Op, UniqueConstraintError } from "sequelize";
 import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, Invoice, AdminUser, ContentPartnerTerms } from "../../db/models/index.js";
@@ -54,7 +55,8 @@ export async function listPartners({ q, status, kind, page, pageSize }) {
     where, attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"], [sequelize.literal(PORTAL_ACTIVITY), "lastPortalActivityAt"]] },
     order: [["name", "ASC"]], ...pageOf({ page, pageSize }),
   });
-  return paged(rows.map(out), count, { page, pageSize });
+  const owners = await findAvatarOwners(rows.map(row => ({ id: row.id, contactEmail: row.contactEmail })));
+  return paged(rows.map(row => ({ ...out(row), avatarVersion: avatarVersion(owners.get(row.id)) })), count, { page, pageSize });
 }
 
 export async function getPartner(id) {

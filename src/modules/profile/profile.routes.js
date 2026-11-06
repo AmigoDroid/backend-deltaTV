@@ -35,8 +35,10 @@ r.get("/", async (req, res) => {
 async function updateProfile(userId, fields, transaction) {
   // Atualiza SOMENTE os campos enviados: upsert(model) poderia aplicar defaults
   // e restaurar acidentalmente preferências ao editar foto ou telefone.
-  await AdminUserProfile.bulkCreate([{ adminUserId: userId, ...fields }], {
-    updateOnDuplicate: Object.keys(fields), transaction,
+  // Atualizar explicitamente updatedAt no ON CONFLICT. Sem isso, uma troca de foto
+  // não mudaria a revisão exibida no Superadmin e a imagem ficaria em cache.
+  await AdminUserProfile.bulkCreate([{ adminUserId: userId, ...fields, updatedAt: new Date() }], {
+    updateOnDuplicate: [...Object.keys(fields), "updatedAt"], transaction,
   });
 }
 
