@@ -2,12 +2,14 @@ import { z } from "zod";
 
 // Identificadores lógicos de componentes: o cliente nunca executa seletores CSS fornecidos pelo banco.
 export const HELP_SCREENS = ["home", "help", "profile", "servers", "codes", "devices", "licenses", "billing", "studio", "apps", "notifications"];
-export const HELP_TARGETS = [...HELP_SCREENS, "add-server", "new-code", "search-device"];
+export const HELP_TARGETS = [...HELP_SCREENS, "add-server", "new-code", "search-device", "context-help"];
 export const helpStepSchema = z.object({
   title: z.string().trim().min(2).max(120),
   body: z.string().trim().min(5).max(900),
   target: z.enum(HELP_TARGETS).optional(),
   screen: z.enum(HELP_SCREENS).optional(),
+  mode: z.enum(["panel", "external"]).optional(),
+  tip: z.string().trim().max(360).optional(),
 }).strict();
 const optionalLink = z.union([z.string().url().max(800).refine(v => v.startsWith("https://"), "Use HTTPS."), z.literal("")]).nullable().optional();
 export const helpArticleFields = z.object({
