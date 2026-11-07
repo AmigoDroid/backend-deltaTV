@@ -82,6 +82,9 @@ sub onAppearance()
     Txt(m.searchHint, 12, false, t.textDim)
     Txt(m.hint, 13, false, t.textDim)
     Txt(m.empty, 20, false, t.textDim)
+    Txt(m.top.findNode("catalogSubtitle"), 13, false, t.textDim)
+    Txt(m.top.findNode("categoriesHeading"), 15, true, t.text)
+    applyKind()
 end sub
 
 ' cabecalho/legenda conforme o tipo (a tela e criada duas vezes: filmes e series)
@@ -93,6 +96,14 @@ sub applyKind()
     else
         m.header.text = "Filmes"
         m.hint.text = "OK abrir   •   * favoritar   •   ↑ na primeira linha: buscar   •   VOLTAR categorias"
+    end if
+    copyName = "movies"
+    if m.isSeries then copyName = "series"
+    screenCopy = WLScreen(copyName)
+    if screenCopy <> invalid then
+        if ToText(screenCopy.heading) <> "" then m.header.text = ToText(screenCopy.heading)
+        if ToText(screenCopy.subtitle) <> "" then m.top.findNode("catalogSubtitle").text = ToText(screenCopy.subtitle)
+        if ToText(screenCopy.categoriesLabel) <> "" then m.top.findNode("categoriesHeading").text = ToText(screenCopy.categoriesLabel)
     end if
     updateSearchBar()
 end sub
@@ -351,7 +362,14 @@ end sub
 
 sub afterFirstPage()
     if m.count = 0 then
-        setState("Nenhum conteúdo nesta categoria.", true)
+        screenName = "movies"
+        if m.isSeries then screenName = "series"
+        custom = WLScreen(screenName)
+        message = "Nenhum conteúdo nesta categoria."
+        if custom <> invalid then
+            if ToText(custom.emptyLabel) <> "" then message = ToText(custom.emptyLabel)
+        end if
+        setState(message, true)
         m.pendingFocusGrid = false
         return
     end if
@@ -738,6 +756,12 @@ sub updateSearchBar()
             m.searchLabel.text = "Pesquisar em todas as séries"
         else
             m.searchLabel.text = "Pesquisar em todos os filmes"
+        end if
+        screenName = "movies"
+        if m.isSeries then screenName = "series"
+        screenCopy = WLScreen(screenName)
+        if screenCopy <> invalid then
+            if ToText(screenCopy.searchLabel) <> "" then m.searchLabel.text = ToText(screenCopy.searchLabel)
         end if
         m.searchLabel.color = t.textMute
         m.searchIcon.blendColor = t.textMute

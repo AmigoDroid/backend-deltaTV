@@ -49,6 +49,19 @@ sub init()
     m.cats.observeField("itemFocused", "onCatFocused")
     m.chans.observeField("itemFocused", "onChanFocused")
     m.chans.observeField("itemSelected", "onChanSelected")
+    applyAppearance()
+end sub
+
+sub applyAppearance()
+    copy = WLScreen("live")
+    if copy = invalid then return
+    if ToText(copy.heading) <> "" then m.top.findNode("header").text = ToText(copy.heading)
+    if ToText(copy.subtitle) <> "" then
+        node = m.top.findNode("screenSubtitle")
+        node.text = ToText(copy.subtitle)
+        Txt(node, 16, false, Theme().text)
+    end if
+    if ToText(copy.emptyLabel) <> "" and m.shown.count() = 0 then m.empty.text = ToText(copy.emptyLabel)
 end sub
 
 sub onCatalog()
@@ -449,7 +462,12 @@ sub lazyOnItems(r as Object)
     end if
 
     if m.items.count() = 0 then
-        setState("Nenhum canal nesta pasta.", true)
+        custom = WLScreen("live")
+        message = "Nenhum canal nesta pasta."
+        if custom <> invalid then
+            if ToText(custom.emptyLabel) <> "" then message = ToText(custom.emptyLabel)
+        end if
+        setState(message, true)
         return
     end if
     setState("", false)

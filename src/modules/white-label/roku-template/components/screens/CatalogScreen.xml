@@ -24,7 +24,8 @@
         <!-- lateral: categorias -->
         <Label id="header" translation="[32,26]" width="280" height="40" />
         <Label id="catCount" translation="[32,68]" width="280" height="22" />
-        <MarkupList id="cats" translation="[20,106]" itemComponentName="CategoryItem"
+        <Label id="categoriesHeading" translation="[32,94]" width="280" height="26" text="Categorias" />
+        <MarkupList id="cats" translation="[20,126]" itemComponentName="CategoryItem"
             numRows="11" itemSize="[296,46]" itemSpacing="[0,6]"
             focusBitmapUri="pkg:/images/blank.png" drawFocusFeedback="false" />
 
@@ -43,6 +44,7 @@
         <Label id="searchHint" translation="[800,18]" width="144" height="44" vertAlign="center" horizAlign="right" text="↑ ABRIR BUSCA" visible="true" />
 
         <EmojiLabel id="gridTitle" translation="[356,76]" />
+        <Label id="catalogSubtitle" translation="[967,18]" width="287" height="50" wrap="true" />
         <Label id="gridCount" translation="[700,78]" width="548" height="22" horizAlign="right" />
         <MarkupGrid id="grid" translation="[356,116]" itemComponentName="GridPosterItem"
             numColumns="5" numRows="2" itemSize="[164,278]" itemSpacing="[18,14]"

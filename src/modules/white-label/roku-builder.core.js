@@ -32,6 +32,21 @@ function replaceOnly(text, oldText, newText, filename) {
 }
 function xmlEscape(s) { return String(s).replaceAll('&','&amp;').replaceAll('"','&quot;').replaceAll('<','&lt;').replaceAll('>','&gt;'); }
 function brs(s) { return `"${String(s).replaceAll('"','""').replace(/[\r\n]/g,' ')}"`; }
+// BrightScript associative-array literal supporting nested screen settings in Premium offline builds.
+// Only validated data is accepted. No code, paths or arbitrary BrightScript expressions are interpolated.
+export function brsLiteral(value, depth = 0) {
+  if (depth > 5) throw Error('Tema Roku excede a profundidade permitida.');
+  if (typeof value === 'string') return brs(value);
+  if (typeof value === 'boolean') return value ? 'true' : 'false';
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const members = Object.entries(value).map(([key,val]) => {
+      if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(key)) throw Error('Campo visual inválido.');
+      return `${key}: ${brsLiteral(val, depth + 1)}`;
+    });
+    return `{${members.join(', ')}}`;
+  }
+  throw Error('Valor visual incompatível com BrightScript.');
+}
 function manifestUpdate(source, name, mainColor, buildVersion) {
   const map = {
     title: name.slice(0, 30), major_version: '1', minor_version: '0', build_version: String(buildVersion).padStart(5, '0'),
@@ -75,8 +90,7 @@ export function individualize(files, { appKey, appName, appearance, edition, ori
     `function DeltaWhiteLabelApiOrigin() as String\n    return ${brs(origin)}`,'Config.brs');
   src=replaceOnly(src,'function DeltaServerOrigin() as String\n    \' Use um host acessível pelo Roku; localhost aponta para o proprio aparelho.\n    return "https://delta-tv.duckdns.org"',
     `function DeltaServerOrigin() as String\n    return ${brs(origin)}`,'Config.brs');
-  const pairs = Object.entries(config).filter(([k,v])=>typeof v==='string' && /^[a-zA-Z]+$/.test(k)).map(([k,v])=>`${k}: ${brs(v)}`).join(', ');
-  src=replaceOnly(src, "return invalid ' Replaced at packaging with a published snapshot.", `return {${pairs}}`, 'Config.brs');
+  src=replaceOnly(src, "return invalid ' Replaced at packaging with a published snapshot.", `return ${brsLiteral(config)}`, 'Config.brs');
   configFile.data=Buffer.from(src);
   const manifest = file('manifest');
   manifest.data=Buffer.from(manifestUpdate(manifest.data.toString('utf8'), safeName, bg, buildVersion));

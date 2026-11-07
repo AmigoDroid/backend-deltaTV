@@ -58,6 +58,12 @@ sub onAppearance()
     m.top.findNode("sideLine").color = t.bg
     m.top.findNode("footLine").color = t.bg
     config = WLAppearance()
+    homeCopy = WLScreen("home")
+    if homeCopy <> invalid then
+        if ToText(homeCopy.liveLabel) <> "" then m.labels[1].text = ToText(homeCopy.liveLabel)
+        if ToText(homeCopy.moviesLabel) <> "" then m.labels[2].text = ToText(homeCopy.moviesLabel)
+        if ToText(homeCopy.seriesLabel) <> "" then m.labels[3].text = ToText(homeCopy.seriesLabel)
+    end if
     rail = false
     if config <> invalid then
         rail = (config.template = "minimal" or config.template = "mosaic")

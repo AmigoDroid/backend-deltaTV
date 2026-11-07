@@ -178,6 +178,8 @@ sub applyWhiteLabelAppearance()
     m.top.findNode("home").appearanceVersion = m.top.findNode("home").appearanceVersion + 1
     m.top.findNode("movies").appearanceVersion = m.top.findNode("movies").appearanceVersion + 1
     m.top.findNode("series").appearanceVersion = m.top.findNode("series").appearanceVersion + 1
+    m.top.findNode("live").appearanceVersion = m.top.findNode("live").appearanceVersion + 1
+    m.top.findNode("connect").appearanceVersion = m.top.findNode("connect").appearanceVersion + 1
 end sub
 
 ' Certificacao 4.3: marketing pixel Roku_Authenticated (uma vez por execucao, quando ha sessao autenticada)

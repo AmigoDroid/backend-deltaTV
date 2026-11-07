@@ -8,6 +8,7 @@
     <script type="text/brightscript" uri="pkg:/source/Xtream.brs" />
     <script type="text/brightscript" uri="pkg:/source/Lists.brs" />
     <interface>
+        <field id="appearanceVersion" type="integer" value="0" onChange="onLoginAppearance" />
         <field id="closeRequest" type="boolean" alwaysNotify="true" />
         <field id="connected" type="boolean" alwaysNotify="true" />
         <function name="focusContent" />

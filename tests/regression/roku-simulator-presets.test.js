@@ -50,13 +50,13 @@ test('simulator preview stays separate from real Roku playback and supports requ
   for(const key of ['login','home','movies','series','live']) assert.match(sim,new RegExp("id: '"+key+"'"));
   for(const key of ['minimal','mosaic','library']) {
     assert.match(studio,new RegExp("id: '"+key+"'"));
-    assert.match(admin,new RegExp('value="'+key+'"'));
+    assert.match(await fs.readFile(path.join(ROOT,'admin/src/appearance-screen-settings.js'),'utf8'),new RegExp("'"+key+"'"));
   }
   assert.match(sim,/onKeyDown=\{keydown\}/);
   assert.match(sim,/remote\('ok'\)/);
   assert.match(sim,/Dados de demonstração/);
-  assert.match(studio,/<RokuSimulator config=\{draft\}\/>/);
-  assert.match(admin,/<RokuSimulator config=\{cfg\}\/>/);
+  assert.match(studio,/<StudioWorkspace config=\{draft\}/);
+  assert.match(admin,/<StudioWorkspace config=\{cfg\}/);
 });
 
 test('icon rail remains controlled by the same navigation for minimal and mosaic', async () => {

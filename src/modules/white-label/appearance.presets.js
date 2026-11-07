@@ -1,4 +1,5 @@
-// White-label visual contract v1. Keep payloads small for Roku devices.
+import { SCREEN_DEFAULTS } from './appearance.screens.js';
+// White-label visual contract v2. Keep payloads small for Roku devices.
 export const APPEARANCE_PRESETS = Object.freeze({
   classic: Object.freeze({
     name: 'Clássico', description: 'Banner, cartões e linha de destaques.',
@@ -28,7 +29,7 @@ export const APPEARANCE_PRESETS = Object.freeze({
 export const APPEARANCE_KEYS = Object.keys(APPEARANCE_PRESETS);
 export function defaultAppearance(appName = 'Meu aplicativo', logoUrl = '') {
   return {
-    template: 'classic', brandName: String(appName).slice(0, 45), tagline: 'Seu entretenimento em um só lugar.',
+    template: 'classic', screens: structuredClone(SCREEN_DEFAULTS), brandName: String(appName).slice(0, 45), tagline: 'Seu entretenimento em um só lugar.',
     heroTitle: 'Bem-vindo', logoUrl: /^https:\/\//i.test(logoUrl || '') ? logoUrl : '', heroUrl: '',
     primaryColor: APPEARANCE_PRESETS.classic.primaryColor,
     backgroundColor: APPEARANCE_PRESETS.classic.backgroundColor,

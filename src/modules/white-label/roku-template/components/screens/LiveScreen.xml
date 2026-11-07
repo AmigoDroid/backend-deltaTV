@@ -7,6 +7,7 @@
     <script type="text/brightscript" uri="pkg:/source/Config.brs" />
     <script type="text/brightscript" uri="pkg:/source/Http.brs" />
     <interface>
+        <field id="appearanceVersion" type="integer" value="0" onChange="applyAppearance" />
         <field id="catalog" type="assocarray" onChange="onCatalog" />
         <field id="playItem" type="assocarray" alwaysNotify="true" />
         <field id="miniItem" type="assocarray" alwaysNotify="true" />
@@ -25,6 +26,7 @@
         <Rectangle width="284" height="720" color="0x101321FF" />
         <Rectangle translation="[283,0]" width="1" height="720" color="0x1E2038FF" />
 
+        <Label id="screenSubtitle" translation="[304,24]" width="650" height="40" />
         <Label id="header" translation="[32,26]" width="240" height="40" text="TV ao vivo" />
         <Label id="count" translation="[32,68]" width="240" height="22" text="" />
 

@@ -3,6 +3,7 @@ import { AppError, notFound } from '../../shared/errors.js';
 import { audit } from '../../shared/audit.js';
 import { appearanceBody } from './appearance.schema.js';
 import { defaultAppearance } from './appearance.presets.js';
+import { normalizeAppearanceScreens } from './appearance.screens.js';
 const publishedCache = new Map(); // 30-second bounded cache; never stores drafts
 const CACHE_MS = 30_000;
 
@@ -52,7 +53,7 @@ export async function setAppearanceAccess(appId, enabled, actor) {
   });
 }
 export async function saveAppearance(appId, partnerId, rawConfig, actor) {
-  const config = appearanceBody.parse(rawConfig);
+  const config = appearanceBody.parse(normalizeAppearanceScreens(rawConfig));
   return sequelize.transaction(async transaction => {
     const app = await readApp(appId, partnerId, transaction, true);
     ensureEnabled(app, partnerId);
@@ -70,7 +71,7 @@ export async function publishAppearance(appId, partnerId, actor) {
     ensureEnabled(app, partnerId);
     const [record] = await WhiteLabelAppAppearance.findOrCreate({ where: { appId },
       defaults: { appId, draftConfig: initial(app) }, transaction });
-    const published = appearanceBody.parse(record.draftConfig || initial(app));
+    const published = appearanceBody.parse(normalizeAppearanceScreens(record.draftConfig || initial(app)));
     const version = record.publishedVersion + 1;
     await record.update({ publishedConfig: published, publishedVersion: version, publishedAt: new Date(),
       editedBy: actor?.userId || actor?.id || null }, { transaction });

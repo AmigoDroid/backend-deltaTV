@@ -13,10 +13,21 @@ end function
 function WLAppearance() as Dynamic
     raw = RegRead("wl_appearance_v1")
     if raw = "" then return DeltaWhiteLabelEmbeddedAppearance()
-    if Len(raw) > 3000 then return invalid
+    if Len(raw) > 6500 then return invalid
     conf = ParseJson(raw)
     if type(conf) <> "roAssociativeArray" then return invalid
     return conf
+end function
+
+
+' Per-screen labels, compatible with themes saved before screen customization existed.
+function WLScreen(screen as String) as Dynamic
+    theme = WLAppearance()
+    if theme = invalid then return invalid
+    if type(theme.screens) <> "roAssociativeArray" then return invalid
+    item = theme.screens[screen]
+    if type(item) <> "roAssociativeArray" then return invalid
+    return item
 end function
 
 function WLColor(value as Dynamic, fallback as String) as String

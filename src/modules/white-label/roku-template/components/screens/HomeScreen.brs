@@ -89,6 +89,15 @@ sub onAppearance()
         if ToText(config.heroTitle) <> "" then m.slides[0].title = ToText(config.heroTitle)
         if ToText(config.tagline) <> "" then m.slides[0].subText = ToText(config.tagline)
     end if
+    homeCopy = WLScreen("home")
+    if homeCopy <> invalid then
+        if ToText(homeCopy.heading) <> "" then m.slides[0].title = ToText(homeCopy.heading)
+        if ToText(homeCopy.subtitle) <> "" then m.slides[0].subText = ToText(homeCopy.subtitle)
+        if ToText(homeCopy.liveLabel) <> "" then m.top.findNode("ct0").text = ToText(homeCopy.liveLabel)
+        if ToText(homeCopy.moviesLabel) <> "" then m.top.findNode("ct1").text = ToText(homeCopy.moviesLabel)
+        if ToText(homeCopy.seriesLabel) <> "" then m.top.findNode("ct2").text = ToText(homeCopy.seriesLabel)
+        if ToText(homeCopy.featuredLabel) <> "" then m.top.findNode("featTitle").text = ToText(homeCopy.featuredLabel)
+    end if
     m.wlHero = ""
     if config <> invalid then m.wlHero = WLImageUri(config.heroUrl)
     t = Theme()
@@ -106,8 +115,14 @@ sub onAppearance()
     bgLeft = m.top.findNode("heroGradientLeft")
     bgBottom = m.top.findNode("heroGradientBottom")
     m.hideFeatured = (template = "cinema")
+    if homeCopy <> invalid then
+        if homeCopy.showFeatured = false then m.hideFeatured = true
+    end if
     modern = (template = "minimal" or template = "mosaic" or template = "library")
     m.hero.visible = (not modern and template <> "compact" and (config = invalid or m.wlHero <> ""))
+    if homeCopy <> invalid then
+        if homeCopy.showBanner = false then m.hero.visible = false
+    end if
     bgLeft.visible = m.hero.visible
     bgBottom.visible = m.hero.visible
     m.kicker.visible = m.hero.visible
@@ -123,8 +138,8 @@ sub onAppearance()
         Txt(heading, 44, true, t.text)
         Txt(caption, 21, false, t.textDim)
         if config <> invalid then
-            heading.text = ToText(config.heroTitle)
-            caption.text = ToText(config.tagline)
+            heading.text = m.slides[0].title
+            caption.text = m.slides[0].subText
         end if
     end if
 
@@ -237,7 +252,10 @@ end sub
 sub onVisible()
     if m.top.visible then
         conf = WLAppearance()
-        if conf = invalid then
+        homeCopy = WLScreen("home")
+        if homeCopy <> invalid and homeCopy.showBanner = false then
+            m.timer.control = "stop"
+        else if conf = invalid then
             m.timer.control = "start"
         else if not DeltaWhiteLabelMode() and conf.template <> "compact" and conf.template <> "minimal" and conf.template <> "mosaic" and conf.template <> "library" and WLImageUri(conf.heroUrl) = "" then
             m.timer.control = "start"

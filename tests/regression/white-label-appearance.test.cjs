@@ -62,5 +62,6 @@ test('color contrast preserves readability and admin edits exclude feature toggl
   const admin=fs.readFileSync(path.resolve(__dirname,'../../../admin/src/pages/WhiteLabel.jsx'),'utf8');
   assert.match(admin,/delete body\.appearanceEnabled/);
   const studio=fs.readFileSync(path.resolve(__dirname,'../../../parceiro/src/AppearanceStudio.jsx'),'utf8');
-  assert.match(studio,/Baixo contraste/);
+  const workspace=fs.readFileSync(path.resolve(__dirname,'../../../parceiro/src/StudioWorkspace.jsx'),'utf8');
+  assert.match(workspace,/Baixo contraste/);
 });

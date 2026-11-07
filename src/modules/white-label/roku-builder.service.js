@@ -21,7 +21,7 @@ export async function generateRokuBuild(appId, partnerId, edition, actor, buildV
   // Affordable edition uses published theme at runtime, with a simple neutral fallback.
   // Dedicated edition includes a snapshot so it renders branded UI even offline.
   const visual=edition==='dedicated' ? appearance.publishedConfig : defaultAppearance(app.name,app.logoUrl);
-  const sanitized = Object.fromEntries(Object.entries(visual).filter(([k])=>['template','brandName','tagline','heroTitle','logoUrl','heroUrl','primaryColor','backgroundColor','panelColor','textColor'].includes(k)));
+  const sanitized = Object.fromEntries(Object.entries(visual).filter(([k])=>['screens','template','brandName','tagline','heroTitle','logoUrl','heroUrl','primaryColor','backgroundColor','panelColor','textColor'].includes(k)));
   if(edition==='economy') sanitized.heroUrl='';
   const origin = new URL(env.publicBaseUrl).origin;
   if(process.env.NODE_ENV==='production' && !origin.startsWith('https://')) throw new AppError(500,'HTTPS_REQUIRED','Configure PUBLIC_BASE_URL com HTTPS.');

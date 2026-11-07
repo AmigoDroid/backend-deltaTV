@@ -140,6 +140,17 @@ sub init()
     draw()
 end sub
 
+sub onLoginAppearance()
+    if not DeltaWhiteLabelMode() then return
+    screenCopy = WLScreen("login")
+    if screenCopy = invalid then return
+    if ToText(screenCopy.heading) <> "" then m.top.findNode("title").text = ToText(screenCopy.heading)
+    if ToText(screenCopy.subtitle) <> "" then m.top.findNode("sub").text = ToText(screenCopy.subtitle)
+    if ToText(screenCopy.submitLabel) <> "" then m.buttonLabels[0].text = ToText(screenCopy.submitLabel)
+    if ToText(screenCopy.footer) <> "" then m.top.findNode("footer").text = ToText(screenCopy.footer)
+    draw()
+end sub
+
 sub onVisible()
     if not m.top.visible then
         m.pollTimer.control = "stop"
@@ -168,6 +179,7 @@ sub onVisible()
         m.modeBg.visible = false
         m.pollTimer.control = "stop"
         setStatus("Informe seu usuário e senha para começar.", "0xC3C7D8FF")
+        onLoginAppearance()
         draw()
         return
     end if
@@ -249,7 +261,11 @@ sub draw()
 end sub
 
 function FieldLabels() as Object
-    if DeltaWhiteLabelMode() then return ["", "Usuário IPTV", "Senha IPTV"]
+    if DeltaWhiteLabelMode() then
+        screenCopy = WLScreen("login")
+        if screenCopy <> invalid then return ["", ToText(screenCopy.userLabel), ToText(screenCopy.passwordLabel)]
+        return ["", "Usuário IPTV", "Senha IPTV"]
+    end if
     if m.mode = "partner" then return ["Código do parceiro", "Usuário do provedor IPTV", "Senha do provedor IPTV"]
     if RegRead("license_pending_configuration") = "true" then
         return ["", "Nome da lista", "URL HTTP(S) completa da playlist"]
