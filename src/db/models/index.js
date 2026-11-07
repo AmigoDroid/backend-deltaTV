@@ -37,6 +37,26 @@ export const AdminUser = def("AdminUser", "admin_users", {
 });
 
 // Perfil privado; carregado apenas pelas rotas de conta, nunca na verificação JWT.
+// Central de Ajuda: catálogo global e progresso individual. Não mistura usuários de parceiros.
+export const HelpArticle = def("HelpArticle", "help_articles", {
+  slug: str(80, { allowNull: false, unique: true }),
+  title: str(160, { allowNull: false }), summary: str(360, { allowNull: false }),
+  category: str(60, { allowNull: false }), audience: str(16, { allowNull: false, defaultValue: "both" }),
+  body: { type: T.TEXT, allowNull: false }, imageUrl: str(800), videoUrl: str(800),
+  steps: { type: T.JSONB, allowNull: false, defaultValue: [] },
+  status: str(16, { allowNull: false, defaultValue: "draft" }),
+  isOnboarding: { type: T.BOOLEAN, allowNull: false, defaultValue: false },
+  sortOrder: int(0),
+});
+export const HelpUserProgress = sequelize.define("HelpUserProgress", {
+  adminUserId: { type: T.UUID, primaryKey: true, allowNull: false },
+  articleId: { type: T.UUID, primaryKey: true, allowNull: false },
+  stepIndex: int(0), completedAt: ts(),
+}, { tableName: "help_user_progress" });
+export const HelpUserState = sequelize.define("HelpUserState", {
+  adminUserId: { type: T.UUID, primaryKey: true, allowNull: false }, welcomeSeenAt: ts(),
+}, { tableName: "help_user_states" });
+
 export const AdminUserProfile = sequelize.define("AdminUserProfile", {
   adminUserId: { type: T.UUID, primaryKey: true, allowNull: false },
   phone: str(40), avatarData: T.TEXT,

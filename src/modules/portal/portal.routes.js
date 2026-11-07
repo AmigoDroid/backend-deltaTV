@@ -1,3 +1,4 @@
+import { partnerHelpRoutes } from "../help/help.routes.js";
 import { Router } from "express";
 import { partnerRouter as whiteLabelApps } from "../white-label/white-label.routes.js";
 import { resellerServerMonitor } from "../provider-monitor/visibility.routes.js";
@@ -36,6 +37,7 @@ import {getServicePlan} from "../service-plans/plan.service.js";
 const router = Router();
 router.use(authenticate, requirePartnerRole);
 router.use("/notifications", partnerNotificationRoutes);
+router.use("/help", partnerHelpRoutes);
 router.use("/server-monitor", resellerServerMonitor);
 router.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
 router.use("/pix", pixRoutes);

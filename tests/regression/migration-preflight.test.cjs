@@ -39,6 +39,9 @@ test("migration pode continuar com tabela já criada parcialmente", async () => 
 test("pré-verificação recusa esquema incompleto antes de abrir HTTP", async () => {
   const { verifyRequiredSchema } = await import(path.resolve(__dirname, "../../src/db/schema-preflight.js"));
   const tables = {
+    help_articles: { id: {}, slug: {}, audience: {}, status: {}, steps: {}, body: {} },
+    help_user_progress: { admin_user_id: {}, article_id: {}, step_index: {}, completed_at: {} },
+    help_user_states: { admin_user_id: {}, welcome_seen_at: {} },
     white_label_apps: { id: {}, partner_id: {}, app_key: {}, plan_type: {}, activation_limit: {}, monthly_fee_cents: {}, paid_through: {} },
     white_label_app_servers: { app_id: {}, base_url: {}, status: {} },
     white_label_app_activations: { app_id: {}, installation_hash: {}, status: {} },
