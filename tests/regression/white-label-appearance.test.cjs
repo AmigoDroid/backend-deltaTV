@@ -9,7 +9,7 @@ const read = name => fs.readFileSync(path.join(base,name),'utf8');
 
 test('models and presets are distinct and a new app is disabled by default', async () => {
   const { APPEARANCE_PRESETS, applyPreset, defaultAppearance } = await import(path.join(base,'modules/white-label/appearance.presets.js'));
-  assert.deepEqual(Object.keys(APPEARANCE_PRESETS),['classic','cinema','compact']);
+  assert.deepEqual(Object.keys(APPEARANCE_PRESETS),['classic','cinema','compact','minimal','mosaic','library']);
   const p = applyPreset(defaultAppearance('Meu Teste'),'cinema');
   assert.equal(p.template,'cinema');assert.equal(p.primaryColor,'#E7A94B');
   assert.equal(defaultAppearance('Test','http://unsafe.local/logo.png').logoUrl,'');
@@ -48,7 +48,7 @@ test('public route only returns published configuration and is distinct from dra
 
 test('Roku bundle applies three distinct layouts, polls outside the UI thread and removes bundled TMDB key', () => {
   const roku=path.resolve(__dirname,'../../../roku');
-  for (const name of ['classic','cinema','compact']) assert.match(fs.readFileSync(path.join(roku,'components/screens/HomeScreen.brs'),'utf8'),new RegExp('"'+name+'"'));
+  for (const name of ['classic','cinema','compact','minimal','mosaic','library']) assert.match(fs.readFileSync(path.join(roku,'components/screens/HomeScreen.brs'),'utf8'),new RegExp('"'+name+'"'));
   assert.match(fs.readFileSync(path.join(roku,'components/tasks/AppearanceTask.xml'),'utf8'),/extends="Task"/);
   assert.match(fs.readFileSync(path.join(roku,'components/MainScene.brs'),'utf8'),/refreshWhiteLabelAppearance/);
   assert.match(fs.readFileSync(path.join(roku,'source/Config.brs'),'utf8'),/DeltaWhiteLabelAppKey\(\)/);

@@ -8,6 +8,7 @@
     <script type="text/brightscript" uri="pkg:/source/Config.brs" />
     <script type="text/brightscript" uri="pkg:/source/Http.brs" />
     <interface>
+        <field id="appearanceVersion" type="integer" value="0" onChange="onAppearance" />
         <field id="kind" type="string" value="movie" />
         <field id="catalog" type="assocarray" onChange="onCatalog" />
         <field id="openItem" type="assocarray" alwaysNotify="true" />
@@ -16,9 +17,9 @@
         <function name="focusContent" />
     </interface>
     <children>
-        <Rectangle width="1280" height="720" color="0x090B14FF" />
-        <Rectangle width="332" height="720" color="0x101321FF" />
-        <Rectangle translation="[331,0]" width="1" height="720" color="0x1E2038FF" />
+        <Rectangle id="catalogBackground" width="1280" height="720" color="0x090B14FF" />
+        <Rectangle id="catalogPanel" width="332" height="720" color="0x101321FF" />
+        <Rectangle id="catalogDivider" translation="[331,0]" width="1" height="720" color="0x1E2038FF" />
 
         <!-- lateral: categorias -->
         <Label id="header" translation="[32,26]" width="280" height="40" />

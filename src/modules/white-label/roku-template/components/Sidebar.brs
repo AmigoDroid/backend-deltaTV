@@ -58,6 +58,34 @@ sub onAppearance()
     m.top.findNode("sideLine").color = t.bg
     m.top.findNode("footLine").color = t.bg
     config = WLAppearance()
+    rail = false
+    if config <> invalid then
+        rail = (config.template = "minimal" or config.template = "mosaic")
+    end if
+    m.railMode = rail
+    if rail then
+        m.top.findNode("sideBg").width = 148
+        m.top.findNode("sideLine").translation = [147, 0]
+        m.pill.width = 112
+        m.top.findNode("brandLogo").translation = [52, 28]
+    else
+        m.top.findNode("sideBg").width = 260
+        m.top.findNode("sideLine").translation = [259, 0]
+        m.pill.width = 228
+        m.top.findNode("brandLogo").translation = [26, 26]
+    end if
+    for i = 0 to m.labels.count() - 1
+        m.labels[i].visible = not rail
+        if rail then
+            m.icons[i].translation = [60, 127 + i * 57]
+        else
+            m.icons[i].translation = [36, 127 + i * 57]
+        end if
+    end for
+    m.top.findNode("macTitle").visible = not rail
+    m.top.findNode("macValue").visible = not rail
+    m.top.findNode("footLine").visible = not rail
+    m.top.findNode("foot").visible = not rail
     if config <> invalid then
         brand = ToText(config.brandName)
         if brand <> "" then
@@ -74,6 +102,8 @@ sub onAppearance()
             m.top.findNode("brandA").translation = [26, 28]
         end if
     end if
+    m.top.findNode("brandA").visible = not rail
+    m.top.findNode("brandB").visible = not rail
     Txt(m.top.findNode("brandA"), 24, true, t.text)
     Txt(m.top.findNode("brandB"), 24, true, t.accentLight)
     Txt(m.top.findNode("macTitle"), 12, true, t.accentLight)
@@ -95,7 +125,11 @@ sub refresh()
     idx = m.top.activeIndex
     if focused then idx = m.cursor
 
-    m.pill.translation = [16, 116 + idx * 57]
+    if m.railMode = true then
+        m.pill.translation = [18, 116 + idx * 57]
+    else
+        m.pill.translation = [16, 116 + idx * 57]
+    end if
     if focused then
         m.pill.blendColor = t.accent
     else

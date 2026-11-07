@@ -84,7 +84,7 @@ sub onAppearance()
     config = WLAppearance()
     template = "classic"
     if config <> invalid then
-        if config.template = "cinema" or config.template = "compact" then template = config.template
+        if config.template = "cinema" or config.template = "compact" or config.template = "minimal" or config.template = "mosaic" or config.template = "library" then template = config.template
         if ToText(config.brandName) <> "" then m.slides[0].kicker = ToText(config.brandName)
         if ToText(config.heroTitle) <> "" then m.slides[0].title = ToText(config.heroTitle)
         if ToText(config.tagline) <> "" then m.slides[0].subText = ToText(config.tagline)
@@ -106,14 +106,34 @@ sub onAppearance()
     bgLeft = m.top.findNode("heroGradientLeft")
     bgBottom = m.top.findNode("heroGradientBottom")
     m.hideFeatured = (template = "cinema")
-    ' Never show the DeltaTV promotional poster for a different app if no custom banner is supplied.
-    m.hero.visible = (template <> "compact" and (config = invalid or m.wlHero <> ""))
-    bgLeft.visible = (template <> "compact")
-    bgBottom.visible = (template <> "compact")
+    modern = (template = "minimal" or template = "mosaic" or template = "library")
+    m.hero.visible = (not modern and template <> "compact" and (config = invalid or m.wlHero <> ""))
+    bgLeft.visible = m.hero.visible
+    bgBottom.visible = m.hero.visible
     m.kicker.visible = m.hero.visible
     m.title.visible = m.hero.visible
     m.subtitle.visible = m.hero.visible
     m.dotsGroup.visible = m.hero.visible
+
+    heading = m.top.findNode("simpleHeading")
+    caption = m.top.findNode("simpleCaption")
+    heading.visible = modern
+    caption.visible = modern
+    if modern then
+        Txt(heading, 44, true, t.text)
+        Txt(caption, 21, false, t.textDim)
+        if config <> invalid then
+            heading.text = ToText(config.heroTitle)
+            caption.text = ToText(config.tagline)
+        end if
+    end if
+
+    cardHeight = 139
+    titleOffset = 66
+    subOffset = 98
+    iconOffset = 18
+    showSub = true
+    featureY = 486
     if template = "cinema" then
         m.hero.height = 420
         bgLeft.height = 420
@@ -128,6 +148,34 @@ sub onAppearance()
         bgLeft.height = 314
         bgBottom.translation = [0, 184]
         cardsY = 62
+        featureY = 250
+    else if template = "minimal" then
+        cardsY = 170
+        cardHeight = 92
+        titleOffset = 42
+        iconOffset = 16
+        showSub = false
+        featureY = 324
+        heading.translation = [36, 60]
+        caption.translation = [36, 120]
+    else if template = "mosaic" then
+        cardsY = 162
+        cardHeight = 238
+        titleOffset = 146
+        subOffset = 182
+        iconOffset = 30
+        featureY = 451
+        heading.translation = [36, 57]
+        caption.translation = [36, 115]
+    else if template = "library" then
+        cardsY = 134
+        cardHeight = 84
+        titleOffset = 30
+        iconOffset = 20
+        showSub = false
+        featureY = 263
+        heading.translation = [36, 38]
+        caption.translation = [36, 91]
     else
         m.hero.height = 314
         bgLeft.height = 314
@@ -138,27 +186,41 @@ sub onAppearance()
         m.dotsGroup.translation = [38, 274]
         cardsY = 322
     end if
+
     for i = 0 to 2
+        suffix = i.toStr()
         x = 36 + i * 324
-        m.top.findNode("card" + i.toStr()).translation = [x, cardsY]
-        m.top.findNode("ico" + i.toStr()).translation = [x + 22, cardsY + 18]
-        m.top.findNode("ct" + i.toStr()).translation = [x + 22, cardsY + 66]
-        m.top.findNode("cs" + i.toStr()).translation = [x + 22, cardsY + 98]
-        m.top.findNode("ring" + i.toStr()).translation = [x, cardsY]
+        imageCard = m.top.findNode("card" + suffix)
+        imageCard.visible = not modern
+        imageCard.translation = [x, cardsY]
+        tile = m.top.findNode("tileBg" + suffix)
+        tile.visible = modern
+        tile.translation = [x, cardsY]
+        tile.height = cardHeight
+        if template = "mosaic" then
+            if i = 0 then
+                tile.color = t.accent
+            else
+                tile.color = t.panel
+            end if
+        else
+            tile.color = t.panel
+        end if
+        m.top.findNode("ico" + suffix).translation = [x + 22, cardsY + iconOffset]
+        m.top.findNode("ct" + suffix).translation = [x + 22, cardsY + titleOffset]
+        m.top.findNode("cs" + suffix).translation = [x + 22, cardsY + subOffset]
+        m.top.findNode("cs" + suffix).visible = showSub
+        ring = m.top.findNode("ring" + suffix)
+        ring.translation = [x, cardsY]
+        ring.height = cardHeight
+        m.top.findNode("navChev" + suffix).visible = not modern
     end for
-    if template = "compact" then
-        m.top.findNode("featTitle").translation = [36, 250]
-        m.top.findNode("featMore").translation = [800, 252]
-        m.top.findNode("featChev").translation = [958, 257]
-        m.row.translation = [0, 290]
-    else
-        m.top.findNode("featTitle").translation = [36, 486]
-        m.top.findNode("featMore").translation = [800, 488]
-        m.top.findNode("featChev").translation = [958, 493]
-        m.row.translation = [0, 522]
-    end if
+    m.top.findNode("featTitle").translation = [36, featureY]
+    m.top.findNode("featMore").translation = [800, featureY + 2]
+    m.top.findNode("featChev").translation = [958, featureY + 7]
+    m.row.translation = [0, featureY + 36]
     if m.hideFeatured and m.zone = 1 then m.zone = 0
-    if template = "compact" or m.wlHero <> "" then
+    if template = "compact" or modern or m.wlHero <> "" then
         m.timer.control = "stop"
     else if m.top.visible then
         m.timer.control = "start"
@@ -177,7 +239,7 @@ sub onVisible()
         conf = WLAppearance()
         if conf = invalid then
             m.timer.control = "start"
-        else if not DeltaWhiteLabelMode() and conf.template <> "compact" and WLImageUri(conf.heroUrl) = "" then
+        else if not DeltaWhiteLabelMode() and conf.template <> "compact" and conf.template <> "minimal" and conf.template <> "mosaic" and conf.template <> "library" and WLImageUri(conf.heroUrl) = "" then
             m.timer.control = "start"
         end if
         ' a linha de destaque e opcional: se falhou (ex.: catalogo ainda sendo preparado), tenta de novo ao voltar

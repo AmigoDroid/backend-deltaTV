@@ -63,6 +63,25 @@ sub init()
     m.grid.observeField("itemSelected", "onGridSelected")
     m.grid.observeField("itemFocused", "onGridFocused")
     m.top.observeField("visible", "onShown")
+    onAppearance()
+end sub
+
+sub onAppearance()
+    if m.header = invalid then return
+    t = Theme()
+    m.top.findNode("catalogBackground").color = t.bg
+    m.top.findNode("catalogPanel").color = t.panel
+    m.top.findNode("catalogDivider").color = t.accent
+    m.searchRing.blendColor = t.accent
+    m.top.findNode("searchBg").blendColor = t.panel
+    m.searchIcon.blendColor = t.accent
+    Txt(m.header, 30, true, t.text)
+    Txt(m.catCount, 14, false, t.textDim)
+    Txt(m.gridCount, 15, false, t.textDim)
+    Txt(m.searchLabel, 18, false, t.text)
+    Txt(m.searchHint, 12, false, t.textDim)
+    Txt(m.hint, 13, false, t.textDim)
+    Txt(m.empty, 20, false, t.textDim)
 end sub
 
 ' cabecalho/legenda conforme o tipo (a tela e criada duas vezes: filmes e series)

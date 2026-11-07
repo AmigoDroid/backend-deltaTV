@@ -150,7 +150,7 @@ sub onWhiteLabelAppearance(event as Object)
     config = payload.config
     if ToText(config.brandName) = "" or ToText(config.template) = "" then return
     ' Only known layouts may be rendered. Unknown schemas leave the old cache intact.
-    if config.template <> "classic" and config.template <> "cinema" and config.template <> "compact" then return
+    if config.template <> "classic" and config.template <> "cinema" and config.template <> "compact" and config.template <> "minimal" and config.template <> "mosaic" and config.template <> "library" then return
     version = Val(ToText(payload.version))
     oldVersion = Val(RegRead("wl_appearance_version"))
     if version < oldVersion then return
@@ -164,8 +164,20 @@ sub applyWhiteLabelAppearance()
     color = Theme().bg
     m.top.backgroundColor = color
     m.top.findNode("sceneBackground").color = color
+    visual = WLAppearance()
+    rail = false
+    if visual <> invalid then rail = (visual.template = "minimal" or visual.template = "mosaic")
+    if rail then
+        m.top.findNode("screens").translation = [148, 0]
+        m.top.findNode("loading").translation = [148, 330]
+    else
+        m.top.findNode("screens").translation = [260, 0]
+        m.top.findNode("loading").translation = [260, 330]
+    end if
     m.sidebar.appearanceVersion = m.sidebar.appearanceVersion + 1
     m.top.findNode("home").appearanceVersion = m.top.findNode("home").appearanceVersion + 1
+    m.top.findNode("movies").appearanceVersion = m.top.findNode("movies").appearanceVersion + 1
+    m.top.findNode("series").appearanceVersion = m.top.findNode("series").appearanceVersion + 1
 end sub
 
 ' Certificacao 4.3: marketing pixel Roku_Authenticated (uma vez por execucao, quando ha sessao autenticada)

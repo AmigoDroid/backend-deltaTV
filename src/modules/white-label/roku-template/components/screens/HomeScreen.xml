@@ -29,6 +29,12 @@
         <Poster id="card0" translation="[36,322]" width="303" height="139" uri="pkg:/images/card_live.png" />
         <Poster id="card1" translation="[360,322]" width="303" height="139" uri="pkg:/images/card_movies.png" />
         <Poster id="card2" translation="[683,322]" width="303" height="139" uri="pkg:/images/card_series.png" />
+        <!-- White-label models with simple shapes instead of DeltaTV card artwork. -->
+        <Rectangle id="tileBg0" translation="[36,170]" width="303" height="100" color="0x1B2229FF" visible="false" />
+        <Rectangle id="tileBg1" translation="[360,170]" width="303" height="100" color="0x1B2229FF" visible="false" />
+        <Rectangle id="tileBg2" translation="[683,170]" width="303" height="100" color="0x1B2229FF" visible="false" />
+        <Label id="simpleHeading" translation="[36,60]" width="930" height="66" text="Explore seu aplicativo" visible="false" />
+        <Label id="simpleCaption" translation="[36,110]" width="900" height="26" text="Escolha uma categoria" visible="false" />
         <Poster id="ico0" translation="[58,340]" width="36" height="36" uri="pkg:/images/ic_tv.png" blendColor="0xB9A6FFFF" />
         <Poster id="ico1" translation="[382,340]" width="36" height="36" uri="pkg:/images/ic_film.png" blendColor="0x7FB3FFFF" />
         <Poster id="ico2" translation="[705,340]" width="36" height="36" uri="pkg:/images/ic_series.png" blendColor="0xF08CFFFF" />
@@ -38,9 +44,9 @@
         <Label id="cs0" translation="[58,420]" width="230" height="22" text="Assista aos canais" />
         <Label id="cs1" translation="[382,420]" width="230" height="22" text="Explore o catálogo" />
         <Label id="cs2" translation="[705,420]" width="230" height="22" text="Suas séries favoritas" />
-        <Poster translation="[300,432]" width="14" height="14" uri="pkg:/images/ic_chevron.png" blendColor="0xFFFFFFFF" />
-        <Poster translation="[624,432]" width="14" height="14" uri="pkg:/images/ic_chevron.png" blendColor="0xFFFFFFFF" />
-        <Poster translation="[947,432]" width="14" height="14" uri="pkg:/images/ic_chevron.png" blendColor="0xFFFFFFFF" />
+        <Poster id="navChev0" translation="[300,432]" width="14" height="14" uri="pkg:/images/ic_chevron.png" blendColor="0xFFFFFFFF" />
+        <Poster id="navChev1" translation="[624,432]" width="14" height="14" uri="pkg:/images/ic_chevron.png" blendColor="0xFFFFFFFF" />
+        <Poster id="navChev2" translation="[947,432]" width="14" height="14" uri="pkg:/images/ic_chevron.png" blendColor="0xFFFFFFFF" />
         <Poster id="ring0" translation="[36,322]" width="303" height="139" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />
         <Poster id="ring1" translation="[360,322]" width="303" height="139" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />
         <Poster id="ring2" translation="[683,322]" width="303" height="139" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />

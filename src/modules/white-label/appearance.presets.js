@@ -12,6 +12,18 @@ export const APPEARANCE_PRESETS = Object.freeze({
     name: 'Compacto', description: 'Acesso rápido às categorias e aos destaques.',
     primaryColor: '#25B6A6', backgroundColor: '#081519', panelColor: '#10252B', textColor: '#F5FCFC',
   }),
+  minimal: Object.freeze({
+    name: 'Minimalista', description: 'Tipografia limpa e cards discretos, sem banner.',
+    primaryColor: '#D4A45C', backgroundColor: '#11161B', panelColor: '#1B2229', textColor: '#F7F5EE',
+  }),
+  mosaic: Object.freeze({
+    name: 'Mosaico', description: 'Navegação por blocos grandes, sem o banner clássico.',
+    primaryColor: '#EC734F', backgroundColor: '#151316', panelColor: '#29232A', textColor: '#FFF6F0',
+  }),
+  library: Object.freeze({
+    name: 'Biblioteca', description: 'Catálogo em evidência com navegação discreta.',
+    primaryColor: '#93CBAA', backgroundColor: '#0D1615', panelColor: '#1A2B26', textColor: '#F3FBF6',
+  }),
 });
 export const APPEARANCE_KEYS = Object.keys(APPEARANCE_PRESETS);
 export function defaultAppearance(appName = 'Meu aplicativo', logoUrl = '') {
