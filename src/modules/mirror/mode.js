@@ -16,6 +16,7 @@ export const DELIVERY_MODES = Object.freeze(["proxy", "redirect"]);
 const overrideOf = (activation) => (DELIVERY_MODES.includes(activation?.deliveryMode) ? activation.deliveryMode : null);
 
 export function deliveryModeOf(activation) {
+  if (env.proxyAllDelivery) return "proxy";
   const forced = overrideOf(activation);
   if (forced) return forced;
   if (activation?.playlistUrlEnc) return "redirect";
@@ -29,6 +30,7 @@ export function deliveryModeOf(activation) {
  *  - fixed : lista própria do cliente — redirect automático, não depende de configuração.
  */
 export function describeDelivery(activation) {
+  if (env.proxyAllDelivery) return { deliveryMode: "proxy", deliveryModeFixed: true, deliveryModeOverride: false, deliveryProtected: true };
   const forced = overrideOf(activation);
   if (forced) return { deliveryMode: forced, deliveryModeFixed: false, deliveryModeOverride: true };
   if (activation?.playlistUrlEnc) return { deliveryMode: "redirect", deliveryModeFixed: true, deliveryModeOverride: false };
@@ -44,7 +46,7 @@ export function describeDelivery(activation) {
 export const deliveryModesOf = (activation) => {
   const web = activation?.Device?.platform === "web" || /^webtv-/i.test(activation?.installationId || "");
   // HTTPS do Player Web: até acessos antigos com redirect passam pelo espelho.
-  if (env.nginxMediaProxy && web) return Object.fromEntries(MODE_KINDS.map(kind => [kind, "proxy"]));
+  if (env.proxyAllDelivery || (env.nginxMediaProxy && web)) return Object.fromEntries(MODE_KINDS.map(kind => [kind, "proxy"]));
   return resolveModes({ deliveryModes: activation?.deliveryModes, forced: overrideOf(activation), fallback: deliveryModeOf(activation) });
 };
 

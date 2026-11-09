@@ -185,6 +185,7 @@ export async function xtreamConfigFor(activation, { sessionId } = {}) {
     ? { baseUrl: env.publicBaseUrl, username: mirrorTokenFor(activation.id, sessionId), password: MIRROR_PASS }
     : null;
 
+  if (mode === "proxy" && !mirror) throw new AppError(401, "SESSION_REQUIRED", "Uma sessão ativa é necessária para usar o proxy.");
   if (mode === "proxy" && mirror) return { ...mirror, userAgent: XTREAM_UA, account, mode, modes, mirror: true };
   return { baseUrl: cred.baseUrl, username: cred.username, password: cred.password, userAgent: XTREAM_UA, account, mode, modes, mirror };
 }

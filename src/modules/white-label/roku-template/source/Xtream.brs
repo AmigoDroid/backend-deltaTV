@@ -13,27 +13,6 @@
 
 function XtGetConfig() as Object
     res = { ok: false, message: "", clearAuth: false, cfg: invalid }
-    if DeltaWhiteLabelMode() then
-        if RegRead("wl_session") = "" then
-            res.message = "Entre com sua conta IPTV."
-            res.clearAuth = true
-            return res
-        end if
-        cfg = ParseJson(RegRead("wl_cfg"))
-        if type(cfg) <> "roAssociativeArray" then
-            res.message = "Dados de acesso não disponíveis. Faça login novamente."
-            res.clearAuth = true
-            return res
-        end if
-        if ToText(cfg.baseUrl) = "" or ToText(cfg.username) = "" or ToText(cfg.password) = "" then
-            res.message = "Dados de acesso incompletos."
-            res.clearAuth = true
-            return res
-        end if
-        res.ok = true
-        res.cfg = cfg
-        return res
-    end if
     if not DeltaServerConfigured() then
         res.message = "Servidor não configurado (edite source/Config.brs)."
         return res
@@ -102,6 +81,8 @@ function XtGetConfig() as Object
         username: ToText(r.data.username),
         password: ToText(r.data.password),
         userAgent: ua,
+        mode: ToText(r.data.mode),
+        configVersion: 44,
         at: CreateObject("roDateTime").AsSeconds()
     }
     if previousCfg <> invalid and type(previousCfg) = "roAssociativeArray" then
@@ -122,6 +103,8 @@ function XtReadCachedConfig() as Object
     if c = invalid then return invalid
     if type(c) <> "roAssociativeArray" then return invalid
     if c.at = invalid or c.baseUrl = invalid or c.username = invalid or c.password = invalid then return invalid
+    if c.configVersion = invalid then return invalid
+    if c.configVersion <> 44 then return invalid
     now = CreateObject("roDateTime").AsSeconds()
     age = now - c.at
     if age < 0 or age > 60 then return invalid

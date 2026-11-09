@@ -4,7 +4,7 @@
  */
 import net from 'node:net';
 import { createHash } from 'node:crypto';
-import { isPlaylistHead, readMediaHead } from '../modules/sources/hls-rewrite.js';
+import { isPlaylistHead, readMediaHead, isHlsContentType } from '../modules/sources/hls-rewrite.js';
 import { env } from '../config/env.js';
 import { AppError } from './errors.js';
 import { safeGet, parseHttpUrl, isPrivateAddress } from './ssrf.js';
@@ -12,7 +12,6 @@ import { safeGet, parseHttpUrl, isPrivateAddress } from './ssrf.js';
 export const NGINX_MEDIA_LOCATION = '/_deltatv_media';
 export const NGINX_MEDIA_MARKER = 'deltatv-media-v1';
 const UA = ['Mozilla/5.0', 'VLC/3.0.18 LibVLC/3.0.18', null];
-const HLS_TYPE = /(?:application|audio|video)\/(?:vnd\.apple\.mpegurl|x-mpegurl|mpegurl)/i;
 const cache = new Map();
 const pending = new Map();
 const TTL_MS = 15000;
@@ -62,7 +61,7 @@ async function probe(raw, { signal } = {}) {
       }
       let finalUrl = response.finalUrl || raw;
       let contentType = String(response.headers['content-type'] || '');
-      let playlist = HLS_TYPE.test(contentType) || /\.m3u8$/i.test(new URL(finalUrl).pathname);
+      let playlist = isHlsContentType(contentType) || /\.m3u8$/i.test(new URL(finalUrl).pathname);
       // Origens sem MIME confiável também podem entregar uma playlist num .php,
       // .ts ou URL sem extensão. Inspecione apenas o prefixo nesses casos.
       if (!playlist && !/^(?:video|audio)\//i.test(contentType)) {
@@ -73,7 +72,7 @@ async function probe(raw, { signal } = {}) {
           finalUrl = response.finalUrl || finalUrl;
           contentType = String(response.headers['content-type'] || '');
         }
-        playlist = HLS_TYPE.test(contentType) || isPlaylistHead((await readMediaHead(response[Symbol.asyncIterator]())).value);
+        playlist = isHlsContentType(contentType) || isPlaylistHead((await readMediaHead(response[Symbol.asyncIterator]())).value);
       }
       const pinned = pinnedMediaTarget(finalUrl, response.connectedAddress);
       return { ...pinned, finalUrl, userAgent, playlist };

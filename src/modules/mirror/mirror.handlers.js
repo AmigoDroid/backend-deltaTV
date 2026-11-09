@@ -131,6 +131,7 @@ export async function getPhp(ctx, req, res, query = {}) {
         base: ctx.publicBase,
         mirrorUser: ctx.token,
         mirrorPass: MIRROR_PASS,
+        wrapOther: ["live", "movie", "series"].every(kind => modeFor(ctx, kind) === "proxy") ? hlsWrapFor(ctx) : undefined,
       }),
     recheck: ctx.recheck,
   });

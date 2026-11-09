@@ -34,6 +34,11 @@ sub init()
     m.cands = []
     m.candIdx = 0
     m.pendingFmt = ""
+    m.gatewayRetries = 0
+    m.gatewayRetryTimer = CreateObject("roSGNode", "Timer")
+    m.gatewayRetryTimer.duration = 1.5
+    m.gatewayRetryTimer.repeat = false
+    m.gatewayRetryTimer.observeField("fire", "onGatewayRetry")
     m.uaTry = 0 ' tentativa de cabecalho: 0=preferido, 1=alternativo, 2=Roku nativo
     m.curUrl = ""
     m.curItem = invalid
@@ -272,6 +277,7 @@ sub stopMini()
 end sub
 
 sub beginPlayback()
+    m.gatewayRetryTimer.control = "stop"
     d = m.top.item
     if d = invalid then return
 
@@ -310,6 +316,7 @@ sub beginPlayback()
         VodClearPosition(d)
         m.restartFromBeginning = false
     end if
+    m.gatewayRetries = 0
     m.seekRecoveryPos = 0.0
     if not IsLiveItem(d) then m.seekRecoveryPos = VodReadPosition(d)
     m.vodPositionReady = false
@@ -603,6 +610,7 @@ sub onState()
         end if
         if TryNextCandidate() then return
         if RetryOtherUserAgent() then return
+        if RetryGateway() then return
         m.loading.visible = false
         msg = ToText(m.video.errorMsg)
         if http406 then
@@ -613,6 +621,26 @@ sub onState()
         msg = msg + "  [cód. " + ToText(m.video.errorCode) + "]"
         showError(msg)
     end if
+end sub
+
+ ' No máximo duas novas conexões ao gateway por reprodução. Não promete troca de família IP.
+function RetryGateway() as Boolean
+    if m.curItem = invalid or m.curUrl = "" then return false
+    origin = DeltaServerOrigin()
+    if Left(m.curUrl, Len(origin) + 1) <> origin + "/" then return false
+    if m.gatewayRetries >= 2 then return false
+    m.gatewayRetries = m.gatewayRetries + 1
+    m.video.control = "stop"
+    m.errorBox.visible = false
+    m.loading.text = "Reconectando pelo servidor..."
+    m.loading.visible = true
+    m.gatewayRetryTimer.control = "start"
+    return true
+end function
+
+sub onGatewayRetry()
+    if m.curItem = invalid or m.curUrl = "" then return
+    playContent(m.curItem, m.curUrl, m.curFmt)
 end sub
 
 ' Filme/serie recusado pelo provedor (406/403/erro HTTP): tenta sozinho com outro User-Agent, sem o usuario precisar apertar OK de novo.
@@ -687,6 +715,7 @@ sub RememberLiveFormat()
 end sub
 
 sub closePlayer()
+    m.gatewayRetryTimer.control = "stop"
     ResetNextEpisode()
     HideVodSeek()
     if m.fromMini and not m.mini then

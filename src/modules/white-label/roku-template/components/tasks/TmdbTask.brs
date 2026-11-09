@@ -172,27 +172,27 @@ function TmdbYear(value as String) as String
 end function
 
 function TmdbCleanTitle(original as String) as String
-    txt = TrimText(original)
+    cleanTitle = TrimText(original)
     ' Remove marcas de resolução e idioma comuns em nomes de listas IPTV.
     quality = ["[4K]", "[FHD]", "[HD]", "[SD]", "[UHD]", "[DUB]", "[LEG]", "4K", "1080P", "720P", "DUBLADO", "LEGENDADO", "BLURAY", "WEB-DL", ".MKV", ".MP4"]
     for each q in quality
-        txt = txt.Replace(q, "")
-        txt = txt.Replace(LCase(q), "")
+        cleanTitle = cleanTitle.Replace(q, "")
+        cleanTitle = cleanTitle.Replace(LCase(q), "")
     end for
-    y = TmdbYear(txt)
+    y = TmdbYear(cleanTitle)
     if y <> "" then
-        txt = txt.Replace("(" + y + ")", "")
-        txt = txt.Replace("[" + y + "]", "")
-        txt = txt.Replace(" " + y, "")
+        cleanTitle = cleanTitle.Replace("(" + y + ")", "")
+        cleanTitle = cleanTitle.Replace("[" + y + "]", "")
+        cleanTitle = cleanTitle.Replace(" " + y, "")
     end if
-    txt = TrimText(txt)
-    while Len(txt) > 0 and (Left(txt, 1) = "-" or Left(txt, 1) = ":")
-        txt = TrimText(Mid(txt, 2))
+    cleanTitle = TrimText(cleanTitle)
+    while Len(cleanTitle) > 0 and (Left(cleanTitle, 1) = "-" or Left(cleanTitle, 1) = ":")
+        cleanTitle = TrimText(Mid(cleanTitle, 2))
     end while
-    while Len(txt) > 0 and (Right(txt, 1) = "-" or Right(txt, 1) = ":")
-        txt = TrimText(Left(txt, Len(txt) - 1))
+    while Len(cleanTitle) > 0 and (Right(cleanTitle, 1) = "-" or Right(cleanTitle, 1) = ":")
+        cleanTitle = TrimText(Left(cleanTitle, Len(cleanTitle) - 1))
     end while
-    return txt
+    return cleanTitle
 end function
 
 function TmdbCanonical(value as String) as String

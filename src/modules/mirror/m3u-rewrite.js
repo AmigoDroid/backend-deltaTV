@@ -12,7 +12,7 @@ import { StringDecoder } from "node:string_decoder";
  */
 const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-export function m3uMirrorRewriter({ username, password, base, mirrorUser, mirrorPass }) {
+export function m3uMirrorRewriter({ username, password, base, mirrorUser, mirrorPass, wrapOther }) {
   const u = `(?:${esc(username)}|${esc(encodeURIComponent(username))})`;
   const p = `(?:${esc(password)}|${esc(encodeURIComponent(password))})`;
   const re = new RegExp(`^https?://[^/\\s]+/(?:(live|movie|series)/)?${u}/${p}/([^/\\s?]+)(\\?.*)?$`, "i");
@@ -21,7 +21,10 @@ export function m3uMirrorRewriter({ username, password, base, mirrorUser, mirror
     const t = line.trimEnd();
     if (!t || t.startsWith("#")) return line;
     const m = t.match(re);
-    if (!m) return line;
+    if (!m) {
+      if (wrapOther && /^https?:\/\//i.test(t)) return wrapOther(t);
+      return line;
+    }
     const kind = m[1] ? `/${m[1].toLowerCase()}` : "";
     return `${out}${kind}/${encodeURIComponent(mirrorUser)}/${encodeURIComponent(mirrorPass)}/${m[2]}${m[3] ?? ""}`;
   };

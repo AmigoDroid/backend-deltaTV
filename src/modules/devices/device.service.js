@@ -218,6 +218,9 @@ export async function editActivation(id, input, actor) {
   const changes = {};
   if (input.deliveryMode !== undefined) {
     patch.deliveryMode = input.deliveryMode;
+    // A escolha global feita pelo admin substitui overrides antigos por tipo.
+    patch.deliveryModes = null;
+    changes.deliveryModes = null;
     changes.deliveryMode = input.deliveryMode;
   }
   if (input.removeList) {

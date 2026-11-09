@@ -9,6 +9,15 @@
 
 const MAX_URI_LEN = 4096;
 
+export function isHlsContentType(value) {
+  return /^(?:application|audio|video)\/(?:vnd\.apple\.mpegurl|x-mpegurl|mpegurl)(?:\s*;|\s*$)/i.test(String(value || "").trim());
+}
+
+export function shouldInspectPlaylist(status, range, contentType, target = "") {
+  return status === 200 && (!range || isHlsContentType(contentType) || /\.m3u8(?:[?#]|$)/i.test(target)) &&
+    (isHlsContentType(contentType) || /\.m3u8(?:[?#]|$)/i.test(target) || !/^(video|audio)\//i.test(contentType));
+}
+
 /** true se o início do corpo é uma playlist HLS. */
 export function isPlaylistHead(buf) {
   const head = Buffer.from(buf).subarray(0, 32).toString("utf8").replace(/^\uFEFF/, "").trimStart();

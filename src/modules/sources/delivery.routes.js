@@ -9,7 +9,7 @@ import { parseHttpUrl, isPrivateAddress, safeGet } from "../../shared/ssrf.js";
 import { requireDevice } from "../access/access.middleware.js";
 import { checkActivation } from "../access/access.service.js";
 import { decryptSecret, encryptSecret } from "../../shared/crypto.js";
-import { isPlaylistHead, readMediaHead, rewritePlaylist } from "./hls-rewrite.js";
+import { isPlaylistHead, readMediaHead, rewritePlaylist, shouldInspectPlaylist, isHlsContentType } from "./hls-rewrite.js";
 import { liveVariantOrigin } from "./live-variant.js";
 import { repo as catalogRepo } from "../catalog/catalog.runtime.js";
 import { resolvePlayable, isUuid } from "../catalog/query.service.js";
@@ -80,7 +80,7 @@ router.get("/:sourceId/:ref", requireDevice("play"), async (req, res) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer"); // não vaza o token de reprodução para a origem
 
-  if (deliveryMode === "proxy" || env.nginxMediaProxy)
+  if (deliveryMode === "proxy" || env.nginxMediaProxy || env.proxyAllDelivery)
     return proxyStream(req, res, target, activation.id, hlsCtx(req));
 
   const url = parseHttpUrl(target);
@@ -144,17 +144,21 @@ async function nodeProxyStream(req, res, target, activationId, ctx) {
   try {
     // Sem User-Agent muitos painéis respondem 403; mesmo UA do relay do espelho.
     const headers = { "user-agent": "Mozilla/5.0", accept: "*/*" };
-    if (req.headers.range) headers.range = req.headers.range;
-    const upstream = await safeGet(target, { headers, signal: ac.signal });
+    if (req.headers.range && !/\.m3u8(?:[?#]|$)/i.test(target)) headers.range = req.headers.range;
+    let upstream = await safeGet(target, { headers, signal: ac.signal });
+    if (upstream.statusCode === 206 && isHlsContentType(upstream.headers['content-type'])) {
+      upstream.destroy();
+      delete headers.range;
+      upstream = await safeGet(target, { headers, signal: ac.signal });
+      if (upstream.statusCode !== 200) { upstream.destroy(); throw new AppError(502, 'PARTIAL_PLAYLIST', 'A origem não entregou uma playlist completa.'); }
+    }
 
     // HLS: se a origem devolveu uma playlist, reescreve as URIs para o gateway (ver hls-rewrite.js).
     // Só inspeciona quando não é claramente mídia (video/*, audio/*) nem Range; streams contínuos (MPEG-TS) seguem direto.
     let body = upstream;
     const ct = String(upstream.headers["content-type"] || "");
     const inspect =
-      upstream.statusCode === 200 &&
-      !req.headers.range &&
-      !/^(video|audio)\//i.test(ct);
+      shouldInspectPlaylist(upstream.statusCode, req.headers.range, ct, target);
     if (inspect) {
       const it = upstream[Symbol.asyncIterator]();
       const first = await readMediaHead(it);

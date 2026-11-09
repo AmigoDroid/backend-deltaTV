@@ -5,7 +5,7 @@ import { env } from "../config/env.js";
 import { AppError } from "./errors.js";
 import { tryNginxMedia } from "./nginx-media.js";
 import { safeGet } from "./ssrf.js";
-import { isPlaylistHead, readMediaHead, rewritePlaylist } from "../modules/sources/hls-rewrite.js";
+import { isPlaylistHead, readMediaHead, rewritePlaylist, shouldInspectPlaylist, isHlsContentType } from "../modules/sources/hls-rewrite.js";
 
 /**
  * Núcleo de retransmissão (modo PROXY): o servidor busca o conteúdo na origem e entrega ao cliente.
@@ -77,8 +77,8 @@ async function peekBody(up, max = 300, waitMs = 1500) {
 }
 
 /** Abre a origem; em 403/406 repete com outro User-Agent e, por fim, sem `Range: bytes=0-`. */
-async function openUpstream(req, target, signal, timeoutMs) {
-  const range = req.headers.range;
+async function openUpstream(req, target, signal, timeoutMs, omitRange = false) {
+  const range = omitRange || /\.m3u8(?:[?#]|$)/i.test(target) ? undefined : req.headers.range;
   let host = "";
   try { host = new URL(target).host; } catch { /* safeGet rejeita */ }
   const first = uaPref.get(host) ?? 0;
@@ -142,7 +142,9 @@ async function readAll(it, first, limit, tooBig) {
  */
 export async function relay(req, res, target, opts = {}) {
   const { stream = false, hlsWrap, transform, through, recheck, sessionKey, timeoutMs, gzip = false } = opts;
-  if (opts.media && env.nginxMediaProxy && await tryNginxMedia(req, res, target)) return;
+  // Somente o location interno do Nginx injeta este marcador. A rota continua autenticada.
+  const nodeFallback = req.headers['x-delta-media-fallback'] === 'deltatv-node-v1';
+  if (opts.media && env.nginxMediaProxy && !nodeFallback && await tryNginxMedia(req, res, target)) return;
   if (stream && env.proxyMaxConcurrent > 0 && activeStreams >= env.proxyMaxConcurrent) {
     throw new AppError(503, "PROXY_BUSY", "Capacidade de retransmissão esgotada.");
   }
@@ -163,6 +165,11 @@ export async function relay(req, res, target, opts = {}) {
     let upstream;
     try {
       upstream = await openUpstream(req, target, ac.signal, timeoutMs);
+      if (hlsWrap && upstream.statusCode === 206 && isHlsContentType(upstream.headers['content-type'])) {
+        upstream.destroy();
+        upstream = await openUpstream(req, target, ac.signal, timeoutMs, true);
+        if (upstream.statusCode !== 200) { upstream.destroy(); throw new AppError(502, 'PARTIAL_PLAYLIST', 'A origem não entregou uma playlist completa.'); }
+      }
     } catch (e) {
       if (e?.name === "AbortError") return;
       throw originError(e);
@@ -184,7 +191,7 @@ export async function relay(req, res, target, opts = {}) {
     const ct = String(upstream.headers["content-type"] || "");
     const isMedia = /^(video|audio)\//i.test(ct);
     const finalUrl = upstream.finalUrl || target;
-    const wantsHls = !!hlsWrap && status === 200 && !req.headers.range && !isMedia;
+    const wantsHls = !!hlsWrap && shouldInspectPlaylist(status, req.headers.range, ct, target);
     const wantsTransform = !!transform && status === 200;
 
     let body = upstream;
