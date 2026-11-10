@@ -1,3 +1,4 @@
+import { auditParams, auditRead } from '../connection-audit/routes.js';
 import { partnerHelpRoutes } from "../help/help.routes.js";
 import { Router } from "express";
 import { partnerRouter as whiteLabelApps } from "../white-label/white-label.routes.js";
@@ -48,6 +49,7 @@ router.use("/app-downloads", appDownloadsRoutes);
 router.use("/white-label", whiteLabelApps);
 const scope = (req) => ({ partnerId: req.user.partnerId });
 const id = z.object({ id: z.string().uuid() });
+router.get("/devices/:id/connection-audit", auditParams, auditRead(true));
 
 router.get("/me", async (req, res) => {
   const p = await Partner.findByPk(req.user.partnerId, {

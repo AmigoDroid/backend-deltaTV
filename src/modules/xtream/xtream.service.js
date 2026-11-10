@@ -1,3 +1,5 @@
+import { signJwt } from '../../shared/crypto.js';
+import { observe } from '../connection-audit/service.js';
 import { createHash } from "node:crypto";
 import { resolveForActivation } from "../provider-monitor/resolve.service.js";
 import { PartnerProvider } from "../../db/models/index.js";
@@ -168,9 +170,13 @@ export const forgetProbe = () => probeCache.clear();
  * `sessionId` (sessão do app) é necessário para gerar a credencial do espelho.
  */
 export async function xtreamConfigFor(activation, { sessionId } = {}) {
-  const cred = await xtreamCredentialsOf(activation);
+  let cred;
+  try { cred=await xtreamCredentialsOf(activation); }
+  catch(e){observe({activationId:activation.id,sessionId,source:'selection',state:'error',errorCode:e.code||'RESOLUTION_FAILED'});throw e;}
+  observe({activationId:activation.id,sessionId,source:'selection',state:'selected',origin:cred.baseUrl,selectedOrigin:cred.baseUrl,providerId:cred.selectedProvider?.id,transport:needsMirror(deliveryModesOf(activation))?'proxy':deliveryModeOf(activation)});
   // URL alternativa já autenticada pelo resolvedor: não repetir a requisição à origem.
   const probe = cred.verifiedAlternative ? {ok:true,account:null} : await probeAccount(cred);
+  if(!probe.ok)observe({activationId:activation.id,sessionId,source:'selection',state:'error',origin:cred.baseUrl,selectedOrigin:cred.baseUrl,providerId:cred.selectedProvider?.id,errorCode:probe.reason==='invalid'?'PROVIDER_ACCOUNT_INVALID':'PROVIDER_PROBE_UNREACHABLE'});
   if (!probe.ok && probe.reason === "invalid") {
     throw new AppError(403, "PROVIDER_ACCOUNT_INVALID", probe.status
       ? `A conta no provedor está ${probe.status}. Contate seu fornecedor.`
@@ -186,6 +192,7 @@ export async function xtreamConfigFor(activation, { sessionId } = {}) {
     : null;
 
   if (mode === "proxy" && !mirror) throw new AppError(401, "SESSION_REQUIRED", "Uma sessão ativa é necessária para usar o proxy.");
-  if (mode === "proxy" && mirror) return { ...mirror, userAgent: XTREAM_UA, account, mode, modes, mirror: true };
-  return { baseUrl: cred.baseUrl, username: cred.username, password: cred.password, userAgent: XTREAM_UA, account, mode, modes, mirror };
+  const telemetryToken = sessionId ? signJwt({typ:'telemetry',aid:activation.id,sid:sessionId},2592000) : null;
+  if (mode === "proxy" && mirror) return { telemetryToken, ...mirror, userAgent: XTREAM_UA, account, mode, modes, mirror: true };
+  return { telemetryToken, baseUrl: cred.baseUrl, username: cred.username, password: cred.password, userAgent: XTREAM_UA, account, mode, modes, mirror };
 }

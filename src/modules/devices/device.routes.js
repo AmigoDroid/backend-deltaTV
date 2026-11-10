@@ -1,3 +1,4 @@
+import { auditParams, auditRead } from '../connection-audit/routes.js';
 import { Router } from "express";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
@@ -19,6 +20,7 @@ import { credentialsOf } from "../clients/client.service.js";
 import { notFound } from "../../shared/errors.js";
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
+router.get("/activations/:id/connection-audit", requirePermission("devices:read"), auditParams, auditRead(false));
 
 router.get(
   "/registrations",

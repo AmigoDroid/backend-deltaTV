@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import zlib from "node:zlib";
@@ -144,8 +145,15 @@ export async function relay(req, res, target, opts = {}) {
   const { stream = false, hlsWrap, transform, through, recheck, sessionKey, timeoutMs, gzip = false } = opts;
   // Somente o location interno do Nginx injeta este marcador. A rota continua autenticada.
   const nodeFallback = req.headers['x-delta-media-fallback'] === 'deltatv-node-v1';
-  if (opts.media && env.nginxMediaProxy && !nodeFallback && await tryNginxMedia(req, res, target)) return;
+  const auditStarted=Date.now();
+  let auditLast={origin:target,transport:'node'};
+  const report = detail => { auditLast={...auditLast,latencyMs:Date.now()-auditStarted,...detail};opts.onConnection?.(auditLast); };
+  if (opts.media && env.nginxMediaProxy && !nodeFallback) {
+    try { if(await tryNginxMedia(req,res,target,report)) return; }
+    catch(e){report({state:'error',errorCode:e.code||'ORIGIN_UNAVAILABLE',statusCode:e.details?.upstreamStatus});throw e;}
+  }
   if (stream && env.proxyMaxConcurrent > 0 && activeStreams >= env.proxyMaxConcurrent) {
+    report({state:"error",errorCode:"PROXY_BUSY",statusCode:503});
     throw new AppError(503, "PROXY_BUSY", "Capacidade de retransmissão esgotada.");
   }
   if (stream) activeStreams++;
@@ -180,6 +188,7 @@ export async function relay(req, res, target, opts = {}) {
     });
 
     const status = upstream.statusCode;
+    report({state:status>=400?'error':'response',origin:upstream.finalUrl||target,statusCode:status,upstreamFamily:isIP(String(upstream.connectedAddress||'').replace(/^::ffff:/i,''))||null});
     if (status >= 400 && status !== 416) {
       const hint = await peekBody(upstream);
       const via = [upstream.headers.server, upstream.headers["cf-ray"] && "cloudflare"].filter(Boolean).join("/") || "-";
@@ -281,6 +290,7 @@ export async function relay(req, res, target, opts = {}) {
     await pipeline(body, res);
   } catch (e) {
     if (e?.code === "ERR_STREAM_PREMATURE_CLOSE" || e?.name === "AbortError") return;
+    report({state:'error',errorCode:e.code||'ORIGIN_UNAVAILABLE'});
     if (!res.headersSent) throw e;
     res.destroy();
   } finally {

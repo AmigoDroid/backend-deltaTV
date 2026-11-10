@@ -115,10 +115,11 @@ export function sendNginxMedia(req, res, resolved) {
 }
 
 /** true = Nginx assumiu o corpo; false = playlist continua no Node para reescrita. */
-export async function tryNginxMedia(req, res, target) {
+export async function tryNginxMedia(req, res, target, report) {
   assertNginxMediaGateway(req);
   const resolved = await resolveNginxMedia(target);
   if (resolved.playlist) { res.setHeader("X-Delta-Media-Transport", "node-playlist"); return false; }
+  report?.({state:'handoff',origin:resolved.finalUrl,transport:'nginx',upstreamFamily:net.isIP(new URL(resolved.target).hostname.replace(/^\[|\]$/g,''))||null});
   sendNginxMedia(req, res, resolved);
   return true;
 }

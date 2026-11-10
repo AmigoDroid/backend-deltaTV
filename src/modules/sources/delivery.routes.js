@@ -1,3 +1,4 @@
+import { connectionObserver, ipFamily } from '../connection-audit/service.js';
 import { pipeline } from "node:stream/promises";
 import { Router } from "express";
 import { relay } from "../../shared/relay.js";
@@ -91,6 +92,7 @@ router.get("/:sourceId/:ref", requireDevice("play"), async (req, res) => {
   ) {
     throw new AppError(502, "ORIGIN_NOT_ALLOWED", "Origem não permitida.");
   }
+  connectionObserver(req.device,req,url.href)({state:'redirect',origin:url.href,transport:'redirect'});
   return res.redirect(302, url.href);
 });
 
@@ -124,6 +126,7 @@ const hlsCtx = (req) => ({
 
 async function proxyStream(req, res, target, activationId, ctx) {
   if (env.nginxMediaProxy) return relay(req, res, target, {
+    onConnection: connectionObserver(req.device,req,target),
     media: true,
     hlsWrap: abs => `/api/v1/play/${ctx.sourceId}/_hls/${encryptSecret(abs)}?t=${encodeURIComponent(ctx.token)}`,
     recheck: async () => (await checkActivation(activationId)).decision.allowed,
@@ -138,6 +141,8 @@ async function nodeProxyStream(req, res, target, activationId, ctx) {
       "PROXY_BUSY",
       "Capacidade de retransmissão esgotada.",
     );
+  const auditStarted=Date.now();
+  const report=connectionObserver(req.device,req,target);
   activeProxies++;
   const ac = new AbortController();
   let timer;
@@ -153,6 +158,7 @@ async function nodeProxyStream(req, res, target, activationId, ctx) {
       if (upstream.statusCode !== 200) { upstream.destroy(); throw new AppError(502, 'PARTIAL_PLAYLIST', 'A origem não entregou uma playlist completa.'); }
     }
 
+    report({state:upstream.statusCode>=400?'error':'response',origin:upstream.finalUrl||target,transport:'node',statusCode:upstream.statusCode,latencyMs:Date.now()-auditStarted,upstreamFamily:ipFamily(upstream.connectedAddress)});
     // HLS: se a origem devolveu uma playlist, reescreve as URIs para o gateway (ver hls-rewrite.js).
     // Só inspeciona quando não é claramente mídia (video/*, audio/*) nem Range; streams contínuos (MPEG-TS) seguem direto.
     let body = upstream;
@@ -233,6 +239,7 @@ async function nodeProxyStream(req, res, target, activationId, ctx) {
   } catch (e) {
     if (e?.code === "ERR_STREAM_PREMATURE_CLOSE" || e?.name === "AbortError")
       return;
+    report({state:'error',transport:'node',errorCode:e.code||'ORIGIN_UNAVAILABLE'});
     if (!res.headersSent) throw e;
     res.destroy();
   } finally {

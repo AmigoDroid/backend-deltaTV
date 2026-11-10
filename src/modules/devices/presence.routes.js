@@ -1,3 +1,4 @@
+import { telemetryValidate, telemetry, requireTelemetry } from '../connection-audit/routes.js';
 import { Router } from "express";
 import { requireDevice } from "../access/access.middleware.js";
 import { heartbeatLimiter } from "../../middleware/security.js";
@@ -18,4 +19,5 @@ router.post("/", heartbeatLimiter, requireDevice("device", { enforce: false }), 
     serverTime: new Date().toISOString(),
   });
 });
+router.post("/connection", heartbeatLimiter, requireTelemetry, telemetryValidate, telemetry);
 export default router;

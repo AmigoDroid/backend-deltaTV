@@ -23,6 +23,7 @@ async function loadAuth(token) {
     activationId: payload.aid,
     value: {
       token,
+      activationId: payload.aid, sessionId: payload.sid,
       deviceId: activation.deviceId, // presença: cada request autorizado conta como sinal de vida
       mode: deliveryModeOf(activation),
       modes: deliveryModesOf(activation), // por tipo: api, live, movie, series

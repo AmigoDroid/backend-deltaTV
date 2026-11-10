@@ -1,3 +1,4 @@
+import { auditParams, auditRead } from '../connection-audit/routes.js';
 import { Router } from "express";
 import { broadcastChange } from "../../realtime/socket.js";
 import partnerOperations from "./partner-operations.routes.js";
@@ -30,6 +31,7 @@ r.use((req,res,next)=>{
   next();
 });
 r.use("/", partnerOperations);
+r.get("/devices/:id/connection-audit", auditParams, auditRead(true));
 r.get("/overview",async(req,res)=>res.set("Cache-Control","no-store").json(await overview(req.user.partnerId)));
 r.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
 r.get("/servers/:id/history",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{
