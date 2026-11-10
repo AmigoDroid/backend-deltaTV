@@ -3,7 +3,7 @@ import { DeviceSession } from '../../db/models/index.js';
 import { AppError } from '../../shared/errors.js';
 import { z } from 'zod';
 import { validate } from '../../shared/validate.js';
-import { readAudit, record, ipFamily } from './service.js';
+import { readAudit, observe, ipFamily } from './service.js';
 export const auditParams=validate({params:z.object({id:z.string().uuid()}),query:z.object({before:z.string().datetime().optional(),beforeId:z.string().uuid().optional()})});
 export const auditRead=partner=>(req,res)=>readAudit(req.valid.params.id,partner?req.user.partnerId:null,req.valid.query.before,req.valid.query.beforeId).then(data=>res.set('Cache-Control','no-store').json(data));
 export const telemetrySchema=z.object({
@@ -16,7 +16,7 @@ export const telemetryValidate=validate({body:telemetrySchema});
 export async function telemetry(req,res){
  if(req.device.session.expiresAt < new Date())throw new AppError(401,'SESSION_EXPIRED','Sessão encerrada.');
  const b=req.valid.body;
- await record({activationId:req.device.activation.id,sessionId:req.device.session.id,source:'tv',state:b.state,clientFamily:ipFamily(req.ip),
+ observe({activationId:req.device.activation.id,sessionId:req.device.session.id,source:'tv',state:b.state,clientFamily:ipFamily(req.ip),
  origin:b.origin,playbackId:b.playback_id,position:b.position,errorCode:b.error_code,build:b.build});
  res.set('Cache-Control','no-store').json({ok:true});
 }

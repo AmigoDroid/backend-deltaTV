@@ -12,8 +12,18 @@ export function requestContext(req, res, next) {
     // Credenciais/tokens que viajam no caminho (JWT, blob cifrado do HLS) são mascarados.
     const safePath = req.originalUrl.split("?")[0]
       .replace(/[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/g, ":token")
-      .replace(/\/_?hls\/.*$/, "/hls/:blob");
-    console.log(`[${req.id}] ${req.method} ${safePath} ${res.statusCode} ${Date.now() - start}ms`);
+      .replace(/\/_?hls\/.*$/, "/hls/:blob")
+      .replace(/\/(live|movie|series)\/[^/]+\/[^/]+\//, "/$1/:user/:pass/");
+    // Não escrever no stdout milhares de linhas por minuto para heartbeats e
+    // mídia bem-sucedida. Erros e chamadas lentas continuam observáveis.
+    const elapsed = Date.now() - start;
+    const heartbeat = safePath.startsWith("/api/v1/client/heartbeat");
+    const normalLongPoll = req.method === "GET" && safePath === "/api/v1/client/heartbeat/realtime/poll";
+    const media = safePath.startsWith("/api/v1/play") || /^\/(?:live|movie|series)\//.test(safePath);
+    const routineClient = /^\/api\/v1\/client\/(?:catalog\/|xtream(?:\/|$)|resources(?:\/|$)|status(?:\/|$))/.test(safePath);
+    if (res.statusCode >= 400 || (elapsed >= (normalLongPoll ? 55000 : 3000)) || (!heartbeat && !media && !routineClient) || process.env.REQUEST_LOG_ALL === "true") {
+      console.log(`[${req.id}] ${req.method} ${safePath} ${res.statusCode} ${elapsed}ms`);
+    }
   });
   next();
 }

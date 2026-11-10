@@ -1,3 +1,4 @@
+import { legacyPoll } from "../../realtime/device-channel.js";
 import { telemetryValidate, telemetry, requireTelemetry } from '../connection-audit/routes.js';
 import { Router } from "express";
 import { requireDevice } from "../access/access.middleware.js";
@@ -20,4 +21,6 @@ router.post("/", heartbeatLimiter, requireDevice("device", { enforce: false }), 
   });
 });
 router.post("/connection", heartbeatLimiter, requireTelemetry, telemetryValidate, telemetry);
+// Pseudo-WebSocket HTTPS para Roku legado: nunca usar ws:// sem TLS.
+router.get("/realtime/poll", heartbeatLimiter, legacyPoll);
 export default router;

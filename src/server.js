@@ -7,6 +7,7 @@ import { startScheduler } from "./jobs/scheduler.js";
 import { startPresence, stopPresence, countOnline } from "./modules/devices/presence.js";
 import { attachRealtime, broadcastDevicePresence } from "./realtime/socket.js";
 import dotenv from "dotenv";
+import { startAudit, stopAudit } from "./modules/connection-audit/service.js";
 import { startProviderMonitor,stopProviderMonitor } from "./modules/provider-monitor/monitor.service.js";
 dotenv.config();
 
@@ -23,6 +24,7 @@ const stopRealtime = attachRealtime(server);
 server.requestTimeout = (Number.parseInt(process.env.DOWNLOAD_UPLOAD_TIMEOUT_MIN ?? "", 10) || 30) * 60_000;
 // O flush da presença roda em TODA instância (não depende do scheduler): cada processo grava os sinais que recebeu.
 startPresence();
+startAudit();
 // Publica somente mudanças de contagem. O prazo de expiração dos heartbeats também
 // é observado, mesmo quando nenhum aparelho faz nova requisição.
 let previousOnline = null;
@@ -50,6 +52,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     stopProviderMonitor();
     stopRealtime();
     server.close(async () => {
+      await stopAudit(); // descarrega a fila de auditoria antes de fechar o PostgreSQL
       await stopPresence(); // grava os últimos sinais antes de fechar o banco
       await sequelize.close();
       process.exit(0);

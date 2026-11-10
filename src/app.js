@@ -1,3 +1,4 @@
+import { broadcastDeviceHint } from "./realtime/device-channel.js";
 import express from "express";
 import { broadcastChange } from "./realtime/socket.js";
 import { invalidateDashboardCache } from "./modules/dashboard/dashboard.routes.js";
@@ -72,6 +73,9 @@ export function createApp() {
           /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(segments[4] || "") ? segments[4] : null;
         invalidateDashboardCache();
         broadcastChange({ partnerId: isPartner ? req.user.partnerId : modifiedPartner, topic });
+        if (["devices", "activations", "licenses", "partners", "providers", "provider-monitor", "codes", "config", "settings"].includes(topic)) {
+          broadcastDeviceHint({ topic });
+        }
       }
     });
     next();

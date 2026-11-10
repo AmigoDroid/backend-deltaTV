@@ -1,3 +1,4 @@
+import { createDeviceWebSocketServer, currentDeviceChannelStats } from "./device-channel.js";
 import { WebSocketServer, WebSocket } from "ws";
 import { readHostMetrics } from "../modules/system/metrics.js";
 import { AdminUser, AuthSession } from "../db/models/index.js";
@@ -103,10 +104,12 @@ async function touch(user) {
 }
 export function attachRealtime(server) {
   wss = new WebSocketServer({ noServer: true, maxPayload: 4096, perMessageDeflate: false });
+  const deviceSocketServer = createDeviceWebSocketServer();
   server.on("upgrade", (req, socket, head) => {
     const origin = req.headers.origin;
     let pathname;
     try { pathname = new URL(req.url, "http://localhost").pathname; } catch { socket.destroy(); return; }
+    if (pathname === "/ws/device") { deviceSocketServer.handleUpgrade(req, socket, head); return; }
     if (pathname !== "/ws") { socket.destroy(); return; }
     if (!origin || !env.corsOrigins.includes(origin)) { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return; }
     wss.handleUpgrade(req, socket, head, (client) => wss.emit("connection", client));
@@ -157,7 +160,7 @@ export function attachRealtime(server) {
         // Nunca expor o uso do host a administradores comuns ou revendas.
         if (peer.user.role !== "superadmin") { socket.close(1008, "Forbidden"); return; }
         peer.systemMetricsSubscribed = packet.enabled === true;
-        if (peer.systemMetricsSubscribed) emit(socket, { type: "system-metrics", metrics: readHostMetrics() });
+        if (peer.systemMetricsSubscribed) emit(socket, { type: "system-metrics", metrics: { ...readHostMetrics(), deviceRealtime: currentDeviceChannelStats() } });
         return;
       }
       if (packet?.type === "heartbeat" && peer.user.role === "partner" && now() - lastTouch >= 60000) {
@@ -172,7 +175,7 @@ export function attachRealtime(server) {
   const metricsTimer = setInterval(() => {
     const subscribers = [...peers].filter((p) => p.systemMetricsSubscribed && p.user.role === "superadmin" && p.socket.readyState === WebSocket.OPEN);
     if (!subscribers.length) return;
-    const packet = { type: "system-metrics", metrics: readHostMetrics() };
+    const packet = { type: "system-metrics", metrics: { ...readHostMetrics(), deviceRealtime: currentDeviceChannelStats() } };
     for (const peer of subscribers) {
       if (peer.socket.bufferedAmount < 16 * 1024) emit(peer.socket, packet);
     }
@@ -189,5 +192,5 @@ export function attachRealtime(server) {
     void verifyActivePeers().catch(err => console.warn("[ws-auth] Falha de revalidação:", err.message));
   }, 60000);
   revocationTimer.unref();
-  return () => { clearInterval(revocationTimer); clearInterval(timer); clearInterval(metricsTimer); for (const peer of [...peers]) peer.socket.close(1001); wss.close(); };
+  return () => { clearInterval(revocationTimer); clearInterval(timer); clearInterval(metricsTimer); deviceSocketServer.stop(); for (const peer of [...peers]) peer.socket.close(1001); wss.close(); };
 }

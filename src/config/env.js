@@ -139,7 +139,7 @@ export const env = Object.freeze({
   catalogRefreshHours: int("CATALOG_REFRESH_HOURS", 12),
   playlistMaxBytes: int("PLAYLIST_MAX_MB", 0) * 1024 * 1024,
   // Catálogo Xtream sob demanda (cache em memória).
-  xtreamCacheMaxBytes: int("XTREAM_CACHE_MAX_MB", 256) * 1024 * 1024,
+  xtreamCacheMaxBytes: int("XTREAM_CACHE_MAX_MB", 128) * 1024 * 1024,
   xtreamCacheTtlSeconds: int("XTREAM_CACHE_TTL_SECONDS", 600),
   xtreamCategoryTtlSeconds: int("XTREAM_CATEGORY_TTL_SECONDS", 3600),
   xtreamServerInfoTtlSeconds: int("XTREAM_SERVER_INFO_TTL_SECONDS", 3600),
