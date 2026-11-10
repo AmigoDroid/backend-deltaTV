@@ -20,6 +20,37 @@ const POLL_MS = 40000; // menos consultas de reautenticacao; Nginx timeout >= 60
 const peers = new Set();
 const waiting = new Set();
 const recent = [];
+// Só metadados e RTT; não armazenar tokens, URL completa ou payload de mídia.
+const deviceLinks = new Map();
+const MAX_LINKS = 10000;
+export function noteDeviceTransport(activationId, transport, build = '') {
+  if (!activationId) return;
+  const key = String(activationId);
+  const current = deviceLinks.get(key) || { latencyMs: null, minMs: null, maxMs: null, samples: 0 };
+  if (deviceLinks.size >= MAX_LINKS && !deviceLinks.has(key)) deviceLinks.delete(deviceLinks.keys().next().value);
+  const actual = transport === 'https-legacy' && current.transport === 'wss' && Date.now() - (current.seenAt || 0) < 90000 ? 'wss' : transport;
+  deviceLinks.set(key, { ...current, transport: actual, build: String(build || current.build || '').slice(0, 16), seenAt: Date.now() });
+}
+export function noteDeviceLatency(activationId, ms) {
+  if (!Number.isFinite(ms) || ms < 0 || ms > 30000 || !activationId) return;
+  const key = String(activationId);
+  const current = deviceLinks.get(key) || {};
+  const value = Math.round(ms);
+  deviceLinks.set(key, { ...current, latencyMs: value, minMs: Math.min(current.minMs ?? value, value),
+    maxMs: Math.max(current.maxMs ?? value, value), samples: Math.min(1000000, (current.samples || 0) + 1),
+    latencyAt: Date.now() });
+}
+export function transportForActivation(activationId) {
+  const item = deviceLinks.get(String(activationId));
+  if (!item) return { transport: 'unknown', connected: false, latencyMs: null, supported: false };
+  const online = Date.now() - item.seenAt < (item.transport === 'wss' ? 100000 : 95000);
+  return { transport: online ? item.transport : 'offline', connected: online,
+    build: item.build || null, supported: Number(item.build || 0) >= 48,
+    latencyMs: item.latencyAt && Date.now() - item.latencyAt < 300000 ? item.latencyMs : null,
+    minMs: item.minMs ?? null, maxMs: item.maxMs ?? null, samples: item.samples || 0,
+    lastSeenAt: new Date(item.seenAt).toISOString(), latencyMeasuredAt: item.latencyAt ? new Date(item.latencyAt).toISOString() : null,
+    latencyMethod: item.transport === 'wss' ? 'WSS aplicação (RTT)' : 'HTTPS cliente (RTT)' };
+}
 let sequence = 0;
 let rechecking = false;
 let pendingAuth = 0;
@@ -38,7 +69,7 @@ function readHints(since, aid) {
   // solicita checagem do estado por HTTPS, em vez de presumir que nada mudou.
   if (recent.length && from > 0 && from < recent[0].seq - 1) return [{ type: 'check-status' }];
   if (from > sequence) return [{ type: 'check-status' }];
-  return recent.filter(x => x.seq > from && isRelevant(x, aid)).map(x => ({ type: 'check-status', topic: x.topic }));
+  return recent.filter(x => x.seq > from && isRelevant(x, aid)).map(x => ({ type: x.topic === 'remote-command' ? 'command-ready' : 'check-status', topic: x.topic }));
 }
 
 export function broadcastDeviceHint({ topic = 'devices', activationId = null } = {}) {
@@ -47,7 +78,7 @@ export function broadcastDeviceHint({ topic = 'devices', activationId = null } =
   const hint = { seq: sequence, topic: String(topic).slice(0, 32), activationId };
   recent.push(hint);
   if (recent.length > 256) recent.shift();
-  for (const peer of peers) if (isRelevant(hint, peer.activationId)) safeSend(peer.ws, { type: 'check-status', topic: hint.topic });
+  for (const peer of peers) if (isRelevant(hint, peer.activationId)) safeSend(peer.ws, { type: hint.topic === 'remote-command' ? 'command-ready' : 'check-status', topic: hint.topic });
   for (const waiter of [...waiting]) if (isRelevant(hint, waiter.activationId)) waiter.finish();
 }
 
@@ -99,21 +130,28 @@ export function createDeviceWebSocketServer() {
         try {
           const auth = await authorizeDevice(msg.token);
           if (ws.readyState !== WebSocket.OPEN) return;
-          peer = { ...auth, ws, alive: true, lastSeen: Date.now() };
+          peer = { ...auth, ws, alive: true, lastSeen: Date.now(), build: String(msg.build || '').slice(0,16), lastProbe: 0, pendingProbe: null };
+          noteDeviceTransport(peer.activationId, 'wss', peer.build);
           peers.add(peer);
           if (pending) { pendingAuth--; pending = false; }
           touchDevice(peer.deviceId);
           clearTimeout(timeout);
           safeSend(ws, { type: 'ready', transport: 'websocket', heartbeatSeconds: 45, sequence });
+          safeSend(ws, { type: 'command-ready' });
         } catch { ws.close(1008, 'Unauthorized'); }
         return;
       }
       if (Date.now() >= peer.tokenExp) { ws.close(1008, 'Token expired'); return; }
       if (msg?.type === 'heartbeat') {
-        if (Date.now() - peer.lastSeen > 15000) { peer.lastSeen = Date.now(); touchDevice(peer.deviceId); }
+        if (Date.now() - peer.lastSeen > 15000) { peer.lastSeen = Date.now(); touchDevice(peer.deviceId); noteDeviceTransport(peer.activationId, 'wss', peer.build); }
         safeSend(ws, { type: 'heartbeat-ack' });
       } else if (msg?.type === 'telemetry') {
         if (!observeSocketEvent(peer, msg, req.socket.remoteAddress)) safeSend(ws, { type: 'telemetry-rejected' });
+      } else if (msg?.type === 'latency-reply') {
+        if (peer.pendingProbe && msg.nonce === peer.pendingProbe.nonce && Date.now() - peer.pendingProbe.sentAt < 30000) {
+          noteDeviceLatency(peer.activationId, Date.now() - peer.pendingProbe.sentAt);
+          peer.pendingProbe = null;
+        }
       } else if (msg?.type !== 'ping') {
         ws.close(1008, 'Unsupported action');
       } else safeSend(ws, { type: 'pong' });
@@ -127,7 +165,15 @@ export function createDeviceWebSocketServer() {
     for (const p of [...peers]) {
       if (p.ws.readyState !== WebSocket.OPEN || !p.alive || Date.now() >= p.tokenExp) { p.ws.terminate(); continue; }
       p.alive = false;
-      try { p.ws.ping(); } catch { p.ws.terminate(); }
+      try {
+        p.ws.ping();
+        if (Date.now() - p.lastProbe >= 120000) {
+          const nonce = String(Date.now()) + ':' + Math.random().toString(36).slice(2, 12);
+          p.pendingProbe = { nonce, sentAt: Date.now() };
+          p.lastProbe = Date.now();
+          safeSend(p.ws, { type: 'latency-probe', nonce });
+        }
+      } catch { p.ws.terminate(); }
     }
     if (rechecking) return;
     rechecking = true;
@@ -172,6 +218,7 @@ export async function legacyPoll(req, res) {
     auth = await authorizeDevice(header.slice(7));
   } catch { res.status(401).set('Cache-Control', 'no-store').json({ ok: false, code: 'SESSION_REVOKED' }); return; }
   touchDevice(auth.deviceId);
+  noteDeviceTransport(auth.activationId, 'https-legacy', req.query.build);
   const requested = Number(req.query.since);
   const since = Number.isSafeInteger(requested) && requested >= 0 ? requested : 0;
   const hints = readHints(since, auth.activationId);

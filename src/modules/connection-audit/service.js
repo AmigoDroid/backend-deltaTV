@@ -16,7 +16,7 @@ export const ipFamily = value => isIP(String(value || '').replace(/^::ffff:/i, '
 const query = (sql, replacements) => sequelize.query(sql, { replacements, type: QueryTypes.SELECT });
 
 export async function ownership(id) {
-  return (await query(`SELECT a.id, a.device_id, a.partner_id,
+  return (await query(`SELECT a.id, a.status, a.device_id, a.partner_id,
     COALESCE(g.owner_partner_id,l.owner_partner_id) reseller_id
     FROM activations a LEFT JOIN licenses g ON g.id=a.granted_license_id
     LEFT JOIN licenses l ON l.id=a.license_id WHERE a.id=:id`, { id }))[0];

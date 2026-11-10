@@ -7,6 +7,7 @@ import { startScheduler } from "./jobs/scheduler.js";
 import { startPresence, stopPresence, countOnline } from "./modules/devices/presence.js";
 import { attachRealtime, broadcastDevicePresence } from "./realtime/socket.js";
 import dotenv from "dotenv";
+import { pruneRemoteCommands } from './realtime/remote-control.service.js';
 import { startAudit, stopAudit } from "./modules/connection-audit/service.js";
 import { startProviderMonitor,stopProviderMonitor } from "./modules/provider-monitor/monitor.service.js";
 dotenv.config();
@@ -44,11 +45,14 @@ async function publishOnlineIfChanged() {
 void publishOnlineIfChanged();
 const devicePresenceTimer = setInterval(() => { void publishOnlineIfChanged(); }, 10000);
 devicePresenceTimer.unref();
+const remotePruneTimer = setInterval(() => { void pruneRemoteCommands().catch(e => console.warn('[remote-command] cleanup',e.message)); }, 24*60*60*1000);
+remotePruneTimer.unref();
 if (env.enableScheduler) { startScheduler(); startProviderMonitor(); }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     clearInterval(devicePresenceTimer);
+    clearInterval(remotePruneTimer);
     stopProviderMonitor();
     stopRealtime();
     server.close(async () => {

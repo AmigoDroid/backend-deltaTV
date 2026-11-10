@@ -1,3 +1,4 @@
+import { queueRemoteCommand, remoteControlOverview } from '../../realtime/remote-control.service.js';
 import { auditParams, auditRead } from '../connection-audit/routes.js';
 import { partnerHelpRoutes } from "../help/help.routes.js";
 import { Router } from "express";
@@ -50,6 +51,14 @@ router.use("/white-label", whiteLabelApps);
 const scope = (req) => ({ partnerId: req.user.partnerId });
 const id = z.object({ id: z.string().uuid() });
 router.get("/devices/:id/connection-audit", auditParams, auditRead(true));
+router.get('/devices/:id/remote', validate({ params: id }), async(req,res)=>
+  res.set('Cache-Control','no-store').json(await remoteControlOverview(req.valid.params.id,req.user.partnerId)));
+router.post('/devices/:id/remote', macWriteLimiter,
+  validate({ params: id, body: z.object({ type:z.enum(['refresh-catalog','switch-list','sync-access','ping']),
+    targetActivationId:z.string().uuid().optional(),note:z.string().trim().max(300).optional() }).strict() }),
+  async(req,res)=>res.status(202).json(await queueRemoteCommand({activationId:req.valid.params.id,
+    ...req.valid.body, actor:actorOf(req), partnerId:req.user.partnerId})));
+
 
 router.get("/me", async (req, res) => {
   const p = await Partner.findByPk(req.user.partnerId, {

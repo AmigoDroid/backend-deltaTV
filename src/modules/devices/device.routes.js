@@ -1,3 +1,4 @@
+import { queueRemoteCommand, remoteControlOverview } from '../../realtime/remote-control.service.js';
 import { auditParams, auditRead } from '../connection-audit/routes.js';
 import { Router } from "express";
 import { z } from "zod";
@@ -21,6 +22,14 @@ import { notFound } from "../../shared/errors.js";
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
 router.get("/activations/:id/connection-audit", requirePermission("devices:read"), auditParams, auditRead(false));
+router.get('/activations/:id/remote', requirePermission('devices:read'), validate({ params: id }), async(req,res)=>
+  res.set('Cache-Control','no-store').json(await remoteControlOverview(req.valid.params.id)));
+router.post('/activations/:id/remote', requirePermission('devices:write'), macWriteLimiter,
+  validate({ params: id, body: z.object({ type: z.enum(['refresh-catalog','switch-list','disconnect','sync-access','ping']),
+    targetActivationId: z.string().uuid().optional(), note: z.string().trim().max(300).optional() }).strict() }),
+  async(req,res)=>res.status(202).json(await queueRemoteCommand({ activationId:req.valid.params.id,
+    ...req.valid.body, actor:actorOf(req) })));
+
 
 router.get(
   "/registrations",

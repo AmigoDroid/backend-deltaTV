@@ -1,3 +1,5 @@
+import { queueRemoteCommand, remoteControlOverview } from '../../realtime/remote-control.service.js';
+import { macWriteLimiter } from "../../middleware/security.js";
 import { auditParams, auditRead } from '../connection-audit/routes.js';
 import { Router } from "express";
 import { broadcastChange } from "../../realtime/socket.js";
@@ -32,6 +34,14 @@ r.use((req,res,next)=>{
 });
 r.use("/", partnerOperations);
 r.get("/devices/:id/connection-audit", auditParams, auditRead(true));
+r.get('/devices/:id/remote',validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>
+  res.set('Cache-Control','no-store').json(await remoteControlOverview(req.valid.params.id,req.user.partnerId)));
+r.post('/devices/:id/remote',macWriteLimiter,validate({params:z.object({id:z.string().uuid()}),
+  body:z.object({type:z.enum(['refresh-catalog','switch-list','sync-access','ping']),
+   targetActivationId:z.string().uuid().optional(),note:z.string().trim().max(300).optional()}).strict()}),
+  async(req,res)=>res.status(202).json(await queueRemoteCommand({activationId:req.valid.params.id,
+   ...req.valid.body,actor:actorOf(req),partnerId:req.user.partnerId})));
+
 r.get("/overview",async(req,res)=>res.set("Cache-Control","no-store").json(await overview(req.user.partnerId)));
 r.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
 r.get("/servers/:id/history",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{

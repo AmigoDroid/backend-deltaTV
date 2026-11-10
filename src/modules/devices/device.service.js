@@ -204,6 +204,15 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
     return a;
   });
   dropMirrorAuth(changed.id); // bloquear/desbloquear/remover valem já para o espelho (depois do commit)
+  // A licença já está alterada no banco: o comando apenas solicita que a TV
+  // confira o novo estado. Não invalidar a alteração se a fila falhar.
+  if (action === 'block' || action === 'unblock') {
+    try {
+      const { queueRemoteCommand } = await import('../../realtime/remote-control.service.js');
+      await queueRemoteCommand({ activationId: changed.id, type: 'sync-access',
+        actor, partnerId: scope.partnerId || null });
+    } catch (e) { console.warn('[remote-command] estado atualizado sem ACK pendente:', e.message); }
+  }
   return changed;
 }
 
