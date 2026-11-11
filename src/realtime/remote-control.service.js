@@ -11,9 +11,12 @@ import { audit } from '../shared/audit.js';
 import { checkActivation } from '../modules/access/access.service.js';
 import { ownership, canRead } from '../modules/connection-audit/service.js';
 import { broadcastDeviceHint, transportForActivation } from './device-channel.js';
+import { qualityForActivation } from '../modules/provider-monitor/quality.service.js';
+import { commandPayload } from './remote-payload.js';
 
 const read = (sql, replacements) => sequelize.query(sql, { replacements, type: QueryTypes.SELECT });
-const commands = new Set(['refresh-catalog', 'switch-list', 'disconnect', 'sync-access', 'ping']);
+const commands = new Set(['refresh-catalog', 'switch-list', 'disconnect', 'sync-access', 'ping', 'diagnose', 'show-message', 'set-telemetry', 'failover']);
+const v51Commands = new Set(['diagnose','show-message','set-telemetry','failover']);
 const resultStatuses = new Set(['executed', 'failed', 'refused']);
 const maxMinutes = 3;
 
@@ -35,9 +38,16 @@ export async function accessibleLists(source, partnerId = null) {
     .map(x => ({ id: x.id, name: x.name || 'Lista', status: x.status }));
 }
 
-export async function queueRemoteCommand({ activationId, type, targetActivationId, note, actor, partnerId = null }) {
+
+export async function queueRemoteCommand({ activationId, type, targetActivationId, note, telemetryIntervalSeconds, actor, partnerId = null }) {
   if (!commands.has(type)) throw new AppError(422, 'INVALID_COMMAND', 'Comando não reconhecido.');
   const source = await assertControlScope(activationId, partnerId);
+  const payload = commandPayload(type,{note,telemetryIntervalSeconds});
+  if (v51Commands.has(type)) {
+    const device = transportForActivation(activationId);
+    if (device.connected && Number(device.build || 0) < 51)
+      throw new AppError(409,'REQUIRES_BUILD_51','Esta TV precisa da build 51 para executar o novo comando.');
+  }
   if (type === 'switch-list') {
     if (!targetActivationId) throw new AppError(422, 'TARGET_REQUIRED', 'Selecione a lista de destino.');
     const target = await assertControlScope(targetActivationId, partnerId);
@@ -53,11 +63,12 @@ export async function queueRemoteCommand({ activationId, type, targetActivationI
   const id = randomUUID();
   await sequelize.query(`INSERT INTO device_remote_commands
     (id, activation_id, device_id, type, target_activation_id, status, actor_type, actor_id,
-      note, expires_at, created_at, updated_at)
+      note, payload, expires_at, created_at, updated_at)
     VALUES (:id,:activationId,:deviceId,:type,:target,'pending',:actorType,:actorId,
-      :note,now()+interval '3 minutes',now(),now())`, { replacements: {
+      :note,CAST(:payload AS jsonb),now()+interval '3 minutes',now(),now())`, { replacements: {
     id, activationId, deviceId: source.device_id, type, target: type === 'switch-list' ? targetActivationId : null,
-    actorType: String(actor?.type || 'admin'), actorId: String(actor?.id || 'unknown'), note: note || null,
+    actorType: String(actor?.type || 'admin'), actorId: String(actor?.id || 'unknown'),
+    note: type === 'show-message' ? null : (note || null), payload: payload ? JSON.stringify(payload) : null,
   } });
   await audit({ actor, action: 'device.remote.command', entityType: 'activation', entityId: activationId,
     metadata: { commandId: id, type, targetActivationId: type === 'switch-list' ? targetActivationId : null } });
@@ -83,17 +94,29 @@ export async function claimRemoteCommands(activationId, transport = 'https') {
       SET status='delivered', delivered_at=now(), updated_at=now(), delivery_count=delivery_count+1,
           transport=:transport
       FROM chosen WHERE d.id=chosen.id
-      RETURNING d.id, d.type, d.target_activation_id AS "targetActivationId", d.expires_at AS "expiresAt"`,
+      RETURNING d.id, d.type, d.payload, d.target_activation_id AS "targetActivationId", d.expires_at AS "expiresAt"`,
     { activationId, transport: String(transport).slice(0, 24) });
 }
 
-export async function acknowledgeRemoteCommand({ id, activationId, status, errorCode = null }) {
+const safeResult = input => {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null;
+  const allowed = ['rttMs','networkUp','osMajor','transport','failoverAccepted','originRttMs','originHttpStatus'];
+  const output = {};
+  for (const key of allowed) {
+    const value = input[key];
+    if (typeof value === 'boolean') output[key] = value;
+    else if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 30000) output[key] = Math.round(value);
+    else if (key === 'transport' && ['wss','https-legacy'].includes(value)) output[key] = value;
+  }
+  return output;
+};
+export async function acknowledgeRemoteCommand({ id, activationId, status, errorCode = null, result = null }) {
   if (!resultStatuses.has(status)) throw new AppError(422, 'INVALID_ACK', 'Resultado de comando inválido.');
   const [updated] = await read(`UPDATE device_remote_commands SET
-      status=:status, error_code=:errorCode, executed_at=now(), updated_at=now()
+      status=:status, error_code=:errorCode, result=CAST(:result AS jsonb), executed_at=now(), updated_at=now()
     WHERE id=:id AND activation_id=:activationId AND expires_at>now()
       AND status='delivered'
-    RETURNING id,type,status`, { id, activationId, status, errorCode });
+    RETURNING id,type,status`, { id, activationId, status, errorCode, result: result ? JSON.stringify(safeResult(result)) : null });
   if (!updated) {
     const [existing] = await read(`SELECT status FROM device_remote_commands WHERE id=:id AND activation_id=:activationId`, { id, activationId });
     if (existing?.status === status) return { ok: true, duplicate: true };
@@ -112,12 +135,12 @@ export async function remoteControlOverview(activationId, partnerId = null) {
   await sequelize.query(`UPDATE device_remote_commands SET status='expired',updated_at=now()
     WHERE activation_id=:activationId AND status IN ('pending','delivered') AND expires_at<=now()`, { replacements: { activationId } });
   const history = await read(`SELECT id,type,target_activation_id AS "targetActivationId",status,transport,
-     error_code AS "errorCode",created_at AS "createdAt",delivered_at AS "deliveredAt",
+     error_code AS "errorCode",result,created_at AS "createdAt",delivered_at AS "deliveredAt",
      executed_at AS "executedAt", expires_at AS "expiresAt"
      FROM device_remote_commands WHERE activation_id=:activationId
      ORDER BY created_at DESC LIMIT 15`, { activationId });
   return { deviceId: source.device_id, activationId, activationStatus: source.status, connection: transportForActivation(activationId),
-    lists: await accessibleLists(source, partnerId), history };
+    lists: await accessibleLists(source, partnerId), quality:await qualityForActivation(activationId,partnerId), history };
 }
 
 // Retenção limitada: só apaga registros antigos, sem tocar em comandos pendentes recentes.

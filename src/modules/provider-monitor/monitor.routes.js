@@ -1,4 +1,5 @@
 import { queueRemoteCommand, remoteControlOverview } from '../../realtime/remote-control.service.js';
+import { providerQuality, recentQualityAlerts } from './quality.service.js';
 import { macWriteLimiter } from "../../middleware/security.js";
 import { auditParams, auditRead } from '../connection-audit/routes.js';
 import { Router } from "express";
@@ -37,11 +38,15 @@ r.get("/devices/:id/connection-audit", auditParams, auditRead(true));
 r.get('/devices/:id/remote',validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>
   res.set('Cache-Control','no-store').json(await remoteControlOverview(req.valid.params.id,req.user.partnerId)));
 r.post('/devices/:id/remote',macWriteLimiter,validate({params:z.object({id:z.string().uuid()}),
-  body:z.object({type:z.enum(['refresh-catalog','switch-list','sync-access','ping']),
-   targetActivationId:z.string().uuid().optional(),note:z.string().trim().max(300).optional()}).strict()}),
+  body:z.object({type:z.enum(['refresh-catalog','switch-list','sync-access','ping','diagnose','show-message','set-telemetry','failover']),
+   targetActivationId:z.string().uuid().optional(),telemetryIntervalSeconds:z.number().int().min(45).max(180).optional(),note:z.string().trim().max(300).optional()}).strict()}),
   async(req,res)=>res.status(202).json(await queueRemoteCommand({activationId:req.valid.params.id,
    ...req.valid.body,actor:actorOf(req),partnerId:req.user.partnerId})));
 
+r.get('/quality/servers',async(req,res)=>res.set('Cache-Control','no-store').json({
+  servers:await providerQuality(req.user.partnerId),alerts:await recentQualityAlerts(req.user.partnerId),
+  caveat:'Atribuição ao último servidor selecionado; redirects externos não são observados pelo gateway.'
+}));
 r.get("/overview",async(req,res)=>res.set("Cache-Control","no-store").json(await overview(req.user.partnerId)));
 r.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
 r.get("/servers/:id/history",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{

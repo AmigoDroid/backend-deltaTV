@@ -5,6 +5,8 @@ import { xtreamApiUrl } from "./url-utils.js";
 import { freshnessWindowSeconds } from "./visibility.service.js";
 import { createHash } from "node:crypto";
 import { PartnerCode, ProviderHealth } from "../../db/models/index.js";
+import { sequelize } from "../../db/sequelize.js";
+import { QueryTypes } from "sequelize";
 import { safeGet } from "../../shared/ssrf.js";
 import { serversForCode } from "./code-pool.service.js";
 import {getServicePlan} from "../service-plans/plan.service.js";
@@ -77,15 +79,21 @@ export async function resolveForActivation(activation, original, credentials) {
     // Se o parceiro removeu explicitamente a origem antiga do pool, ela NÃO pode ser entregue novamente.
     const fallback={provider:servers.some(s=>s.id===original?.id)?original:null,verified:false};
     const states=await statesOf(servers);
+    // Preferência temporária deste dispositivo após erro real de reprodução. Não
+    // altera a saúde global do provedor nem as escolhas das outras TVs.
+    const [request] = await sequelize.query(`SELECT avoid_provider_id FROM device_failover_requests
+      WHERE activation_id=:aid AND expires_at>now() LIMIT 1`,
+      { replacements:{aid:activation.id},type:QueryTypes.SELECT });
+    const avoidId = request?.avoid_provider_id || null;
     const now=Date.now();
     const freshMs = (await freshnessWindowSeconds()) * 1000;
     const automatic=plan.features.autoPriority;
-    const ranked=servers.filter(s=>s.status==="active" && ["healthy", "slow"].includes(states.get(s.id)?.state)
+    const ranked=servers.filter(s=>s.id!==avoidId && s.status==="active" && ["healthy", "slow"].includes(states.get(s.id)?.state)
       && now-new Date(states.get(s.id).lastCheckedAt).getTime()<freshMs)
       .sort((a,b)=>(states.get(a.id).state === "slow")-(states.get(b.id).state === "slow") || (automatic?(states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999) || a.priority-b.priority
         :a.priority-b.priority || (states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999)));
     if(!ranked.length)return fallback;
-    const pinned=pins.get(activation.id);
+    const pinned = avoidId ? null : pins.get(activation.id);
     // Para evitar flapping, só troca por ganho significativo (>=50 ms e >=15%).
     const scored=ranked.map(s=>({...s,latencyMs:states.get(s.id)?.latencyMs??99999}));
     const selected = pinned && states.get(pinned.providerId)?.state === "slow" &&

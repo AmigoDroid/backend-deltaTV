@@ -2,7 +2,9 @@
 export async function verifyRequiredSchema(sequelize) {
   const qi = sequelize.getQueryInterface();
   const required = {
-    device_remote_commands: ["id", "activation_id", "device_id", "status", "expires_at", "delivered_at", "executed_at"],
+    device_remote_commands: ["id", "activation_id", "device_id", "status", "expires_at", "delivered_at", "executed_at", "payload", "result"],
+    device_failover_requests: ["activation_id", "avoid_provider_id", "requested_at", "expires_at"],
+    provider_quality_alerts: ["id", "provider_id", "severity", "resolved_at"],
     help_articles: ["id", "slug", "audience", "status", "steps", "body"],
     help_user_progress: ["admin_user_id", "article_id", "step_index", "completed_at"],
     help_user_states: ["admin_user_id", "welcome_seen_at"],

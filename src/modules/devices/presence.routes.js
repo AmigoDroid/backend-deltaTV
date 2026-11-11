@@ -1,4 +1,5 @@
 import { legacyPoll, noteDeviceLatency, noteDeviceTransport } from "../../realtime/device-channel.js";
+import { requestDeviceFailover } from '../provider-monitor/device-failover.service.js';
 import { claimRemoteCommands, acknowledgeRemoteCommand } from '../../realtime/remote-control.service.js';
 import { z } from 'zod';
 import { validate } from '../../shared/validate.js';
@@ -31,11 +32,13 @@ router.get("/realtime/poll", heartbeatLimiter, legacyPoll);
 router.get('/realtime/commands', heartbeatLimiter, requireTelemetry, async (req, res) =>
   res.set('Cache-Control','no-store').json({ ok: true, commands: await claimRemoteCommands(req.device.activation.id, req.get('x-deltatv-transport') || 'https') }));
 router.post('/realtime/commands/:id/ack', heartbeatLimiter, requireTelemetry,
-  validate({ params: z.object({ id: z.string().uuid() }), body: z.object({ status: z.enum(['executed','failed','refused']), errorCode: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(), errorcode: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional() }).strict() }),
+  validate({ params: z.object({ id: z.string().uuid() }), body: z.object({ status: z.enum(['executed','failed','refused']), errorCode: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(), errorcode: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional(), result: z.object({rttMs:z.number().int().min(0).max(30000).optional(),networkUp:z.boolean().optional(),osMajor:z.number().int().min(0).max(100).optional(),transport:z.enum(['wss','https-legacy']).optional(),failoverAccepted:z.boolean().optional(),originRttMs:z.number().int().min(0).max(30000).optional(),originHttpStatus:z.number().int().min(100).max(599).optional()}).strict().optional() }).strict() }),
   async (req, res) => res.set('Cache-Control','no-store').json(await acknowledgeRemoteCommand({
     id: req.valid.params.id, activationId: req.device.activation.id,
-    status: req.valid.body.status, errorCode: req.valid.body.errorCode || req.valid.body.errorcode,
+    status: req.valid.body.status, errorCode: req.valid.body.errorCode || req.valid.body.errorcode, result: req.valid.body.result,
   })));
+router.post('/realtime/failover', heartbeatLimiter, requireTelemetry, async (req,res) =>
+  res.set('Cache-Control','no-store').json(await requestDeviceFailover(req.device.activation.id)));
 router.get('/realtime/ping', heartbeatLimiter, requireTelemetry, (_req,res) =>
   res.set('Cache-Control','no-store').json({ ok: true }));
 router.post('/realtime/latency', heartbeatLimiter, requireTelemetry,

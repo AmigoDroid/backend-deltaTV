@@ -10,6 +10,8 @@ import { startDeviceChangeBus, stopDeviceChangeBus } from "./realtime/change-bus
 import { broadcastDeviceHint } from "./realtime/device-channel.js";
 import dotenv from "dotenv";
 import { pruneRemoteCommands } from './realtime/remote-control.service.js';
+import { cleanupDeviceFailover } from './modules/provider-monitor/device-failover.service.js';
+import { assessCollectiveQuality } from './modules/provider-monitor/quality.service.js';
 import { startAudit, stopAudit } from "./modules/connection-audit/service.js";
 import { startProviderMonitor,stopProviderMonitor } from "./modules/provider-monitor/monitor.service.js";
 dotenv.config();
@@ -48,14 +50,23 @@ async function publishOnlineIfChanged() {
 void publishOnlineIfChanged();
 const devicePresenceTimer = setInterval(() => { void publishOnlineIfChanged(); }, 10000);
 devicePresenceTimer.unref();
-const remotePruneTimer = setInterval(() => { void pruneRemoteCommands().catch(e => console.warn('[remote-command] cleanup',e.message)); }, 24*60*60*1000);
+const remotePruneTimer = setInterval(() => {
+  void pruneRemoteCommands().catch(e => console.warn('[remote-command] cleanup',e.message));
+  void cleanupDeviceFailover().catch(e => console.warn('[failover] cleanup',e.message));
+}, 24*60*60*1000);
 remotePruneTimer.unref();
-if (env.enableScheduler) { startScheduler(); startProviderMonitor(); }
+let qualityTimer = null;
+if (env.enableScheduler) {
+  startScheduler(); startProviderMonitor();
+  qualityTimer=setInterval(() => void assessCollectiveQuality().catch(err=>console.warn('[quality]',err.message)),60_000);
+  qualityTimer.unref?.();
+}
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     clearInterval(devicePresenceTimer);
     clearInterval(remotePruneTimer);
+    if(qualityTimer)clearInterval(qualityTimer);
     stopProviderMonitor();
     stopRealtime();
     server.close(async () => {
