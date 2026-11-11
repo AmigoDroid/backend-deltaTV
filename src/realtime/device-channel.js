@@ -12,6 +12,7 @@ import { observe, ipFamily } from '../modules/connection-audit/service.js';
 import { telemetrySchema } from '../modules/connection-audit/routes.js';
 import { touchDevice } from '../modules/devices/presence.js';
 import { env } from '../config/env.js';
+import { publishDeviceChange } from './change-bus.js';
 
 const MAX_PEERS = Math.min(10000, Math.max(100, Number(process.env.DEVICE_WS_MAX_PEERS) || 5000));
 const RECHECK_MS = 30000;
@@ -63,23 +64,27 @@ function safeSend(ws, payload) {
 function isRelevant(hint, activationId) {
   return !hint.activationId || String(hint.activationId) === String(activationId);
 }
+function hintPacket(hint) {
+  return { type: hint.topic === 'remote-command' ? 'command-ready' : 'check-status',
+    topic: hint.topic, scope: hint.priority === 'targeted' ? 'targeted' : 'global' };
+}
 function readHints(since, aid) {
   const from = Number.isSafeInteger(since) && since >= 0 ? since : 0;
-  // Se um cliente perdeu a janela do histórico (ou o servidor reiniciou),
-  // solicita checagem do estado por HTTPS, em vez de presumir que nada mudou.
-  if (recent.length && from > 0 && from < recent[0].seq - 1) return [{ type: 'check-status' }];
-  if (from > sequence) return [{ type: 'check-status' }];
-  return recent.filter(x => x.seq > from && isRelevant(x, aid)).map(x => ({ type: x.topic === 'remote-command' ? 'command-ready' : 'check-status', topic: x.topic }));
+  if (recent.length && from > 0 && from < recent[0].seq - 1) return [{ type: 'check-status', topic: 'reconnect', scope: 'targeted' }];
+  if (from > sequence) return [{ type: 'check-status', topic: 'reconnect', scope: 'targeted' }];
+  return recent.filter(x => x.seq > from && isRelevant(x, aid)).map(hintPacket);
 }
 
-export function broadcastDeviceHint({ topic = 'devices', activationId = null } = {}) {
-  // Avisos são somente invalidação; sem URL, senha, credencial ou dados pessoais.
+export function broadcastDeviceHint({ topic = 'devices', activationId = null, priority = null } = {}, propagate = true) {
+  // The notification is a hint, never an authorization or a copy of a list.
   sequence++;
-  const hint = { seq: sequence, topic: String(topic).slice(0, 32), activationId };
+  const hint = { seq: sequence, topic: String(topic).slice(0, 32), activationId,
+    priority: priority || (activationId ? 'targeted' : 'global') };
   recent.push(hint);
   if (recent.length > 256) recent.shift();
-  for (const peer of peers) if (isRelevant(hint, peer.activationId)) safeSend(peer.ws, { type: hint.topic === 'remote-command' ? 'command-ready' : 'check-status', topic: hint.topic });
+  for (const peer of peers) if (isRelevant(hint, peer.activationId)) safeSend(peer.ws, hintPacket(hint));
   for (const waiter of [...waiting]) if (isRelevant(hint, waiter.activationId)) waiter.finish();
+  if (propagate) publishDeviceChange(hint);
 }
 
 export function currentSequence() { return sequence; }
@@ -138,6 +143,7 @@ export function createDeviceWebSocketServer() {
           clearTimeout(timeout);
           safeSend(ws, { type: 'ready', transport: 'websocket', heartbeatSeconds: 45, sequence });
           safeSend(ws, { type: 'command-ready' });
+          safeSend(ws, { type: 'check-status', topic: 'reconnect', scope: 'targeted' });
         } catch { ws.close(1008, 'Unauthorized'); }
         return;
       }

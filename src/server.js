@@ -6,6 +6,8 @@ import { createApp } from "./app.js";
 import { startScheduler } from "./jobs/scheduler.js";
 import { startPresence, stopPresence, countOnline } from "./modules/devices/presence.js";
 import { attachRealtime, broadcastDevicePresence } from "./realtime/socket.js";
+import { startDeviceChangeBus, stopDeviceChangeBus } from "./realtime/change-bus.js";
+import { broadcastDeviceHint } from "./realtime/device-channel.js";
 import dotenv from "dotenv";
 import { pruneRemoteCommands } from './realtime/remote-control.service.js';
 import { startAudit, stopAudit } from "./modules/connection-audit/service.js";
@@ -20,6 +22,7 @@ const server = app.listen(env.port, env.bindHost, () => {
   for (const warning of proxyConfigurationWarnings(env)) console.warn(`[proxy] ${warning}`);
 });
 const stopRealtime = attachRealtime(server);
+startDeviceChangeBus(msg => broadcastDeviceHint(msg, false));
 // Envio de APKs grandes (painel admin → Downloads): o padrão do Node (5 min para receber a requisição inteira) corta
 // uploads em conexões lentas. Configurável: DOWNLOAD_UPLOAD_TIMEOUT_MIN (padrão 30).
 server.requestTimeout = (Number.parseInt(process.env.DOWNLOAD_UPLOAD_TIMEOUT_MIN ?? "", 10) || 30) * 60_000;
@@ -56,6 +59,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     stopProviderMonitor();
     stopRealtime();
     server.close(async () => {
+      await stopDeviceChangeBus();
       await stopAudit(); // descarrega a fila de auditoria antes de fechar o PostgreSQL
       await stopPresence(); // grava os últimos sinais antes de fechar o banco
       await sequelize.close();

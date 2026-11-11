@@ -33,6 +33,7 @@ const ctx = vm.createContext({
   DeviceSession: { findByPk: async () => ({ id:'session-1', activationId:'activation-1', expiresAt:new Date(Date.now()+600000), revokedAt:revoked?new Date():null }) },
   Activation: { findByPk: async () => ({ id:'activation-1', deviceId:'device-1' }) },
   touchDevice: id => touches.push(id),
+  publishDeviceChange: (_hint) => {}, // PostgreSQL bus is tested separately; this is the isolated protocol test.
   telemetrySchema: { safeParse: v => ({ success: !!v?.state && !!v.playback_id, data:v }) },
   observe: () => true,
   ipFamily: () => 4,
@@ -106,4 +107,10 @@ test('WSS: autentica o device, aceita telemetria e encerra ao parar', async()=>{
     FakeWSS.prototype.handleUpgrade=original;
     service.stop();
   }
+});
+
+test('aviso direcionado a uma TV conserva escopo sem credenciais', () => {
+  const before=api.currentSequence();
+  api.broadcastDeviceHint({topic:'devices',activationId:'activation-1'});
+  assert.equal(api.currentSequence(),before+1);
 });
