@@ -11,7 +11,8 @@ import { AppError, notFound } from "../../shared/errors.js";
 import { actorOf, audit } from "../../shared/audit.js";
 import { clientWriteLimiter, credentialsViewLimiter, macWriteLimiter } from "../../middleware/security.js";
 import { pageQuery } from "../../shared/pagination.js";
-import { clientBody } from "../clients/client.routes.js";
+import { clientBody, expirySettingsSchema } from "../clients/client.routes.js";
+import { getSettings, setSettings } from "../clients/expiry-notice.service.js";
 import { FILTERS } from "../clients/client.rules.js";
 import * as clients from "../clients/client.service.js";
 import * as devices from "../devices/device.service.js";
@@ -51,6 +52,13 @@ router.get("/clients", validate({ query: z.object({ ...pageQuery, q: z.string().
   res.json(await clients.listClients({ partnerId: req.user.partnerId, ...req.valid.query }));
 });
 router.get("/clients/summary", async (req, res) => res.json(await clients.summary(req.user.partnerId)));
+// Cada parceiro de conteúdo administra exclusivamente a regra dos próprios clientes.
+// A identidade é obtida do JWT, nunca do body ou query. Mesma tabela utilizada pelas revendas.
+router.get('/clients/expiry-notice-settings', async (req, res) =>
+  res.json(await getSettings(req.user.partnerId)));
+router.put('/clients/expiry-notice-settings', clientWriteLimiter,
+  validate({ body: expirySettingsSchema }), async (req, res) =>
+    res.json(await setSettings(req.user.partnerId, req.valid.body, actorOf(req))));
 router.post("/clients", clientWriteLimiter, validate({ body: clientBody }), async (req, res) => res.status(201).json(await clients.createClient({ partnerId: req.user.partnerId, actor: actorOf(req), input: req.valid.body })));
 router.patch("/clients/:id", clientWriteLimiter, validate({ params: id, body: clientBody.partial().refine(b => Object.keys(b).length > 0) }), async (req, res) => res.json(await clients.updateClient({ partnerId: req.user.partnerId, actor: actorOf(req), id: req.valid.params.id, input: req.valid.body })));
 router.delete("/clients/:id", clientWriteLimiter, validate({ params: id }), async (req, res) => { await clients.deleteClient({ partnerId: req.user.partnerId, actor: actorOf(req), id: req.valid.params.id }); res.status(204).end(); });

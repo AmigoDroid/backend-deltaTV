@@ -27,11 +27,11 @@ router.get("/summary", requirePermission("clients:read"), validate({ query: z.ob
   async (req, res) => res.json(await svc.adminSummary(req.valid.query.partnerId)));
 
 // O admin/superadmin pode gerenciar a MESMA regra que a revenda enxerga, sem criar duplicatas.
-// Nunca aceitar um parceiro de conteúdo puro: a regra pertence a uma revenda.
+// Toda parceria com cadastro de clientes possui sua própria regra; conteúdo e revenda são isolados por partner_id.
 async function assertExpiryReseller(id) {
   const partner = await Partner.findByPk(id, { attributes: ['id', 'kind'] });
-  if (!partner || !['reseller', 'both'].includes(partner.kind)) {
-    throw new AppError(422, 'INVALID_RESELLER', 'Selecione uma revenda válida.');
+  if (!partner || !['reseller', 'both', 'content'].includes(partner.kind)) {
+    throw new AppError(422, 'INVALID_PARTNER', 'Selecione uma revenda ou parceiro de conteúdo válido.');
   }
 }
 router.get('/expiry-notice-settings/:partnerId', requirePermission('clients:read'),
