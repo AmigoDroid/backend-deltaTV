@@ -19,29 +19,54 @@ export async function noteProbe(providerId, sample) {
       latency: Math.max(0, Math.min(60000, Math.floor(Number(sample.latencyMs) || 0))) },
   });
 }
-const ranges = { '24h': 86400000, '7d': 7*86400000, '30d': 30*86400000 };
+const ranges = { '24h': 86_400_000, '7d': 7 * 86_400_000, '30d': 30 * 86_400_000 };
+
+/**
+ * Um unico GROUP BY no PostgreSQL em vez de transferir centenas de linhas
+ * horarias por servidor ao Node. A resposta permanece identica ao contrato
+ * anterior: percent, samples e slowSamples para cada janela.
+ *
+ * O indice (provider_id, bucket) ja existe como chave primaria desde a B63;
+ * nao criamos uma copia dele.
+ */
 export async function availabilityForIds(ids) {
-  if (!ids.length) return {};
-  const rows = await query(`SELECT provider_id AS id, bucket, probes, ok_probes AS ok,
-     slow_probes AS slow FROM provider_health_hourly
-     WHERE provider_id IN (:ids) AND bucket >= :oldest`,
-     { ids, oldest: new Date(Date.now() - ranges['30d'] - 3600000).toISOString() });
+  if (!Array.isArray(ids) || ids.length === 0) return {};
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  if (!uniqueIds.length) return {};
+
   const now = Date.now();
-  const grouped = {};
-  for (const id of ids) grouped[id] = { '24h': { all:0, ok:0, slow:0 }, '7d': { all:0, ok:0, slow:0 }, '30d': { all:0, ok:0, slow:0 } };
-  for (const row of rows) {
-    const date = new Date(row.bucket).getTime();
-    if (!grouped[row.id]) continue;
-    for (const [window, ms] of Object.entries(ranges)) if (date >= now - ms) {
-      const target = grouped[row.id][window];
-      target.all += Number(row.probes);
-      target.ok += Number(row.ok);
-      target.slow += Number(row.slow);
-    }
-  }
-  return Object.fromEntries(ids.map(id => [id, Object.fromEntries(Object.entries(grouped[id]).map(([range, x]) =>
-    [range, { percent: percent(x.ok, x.all), samples: x.all, slowSamples: x.slow }]))]));
+  const replacements = {
+    ids: uniqueIds,
+    since24h: new Date(now - ranges['24h']).toISOString(),
+    since7d: new Date(now - ranges['7d']).toISOString(),
+    since30d: new Date(now - ranges['30d']).toISOString(),
+  };
+  const rows = await query(`SELECT provider_id AS id,
+      COALESCE(SUM(probes) FILTER (WHERE bucket >= CAST(:since24h AS timestamptz)),0) AS probes_24h,
+      COALESCE(SUM(ok_probes) FILTER (WHERE bucket >= CAST(:since24h AS timestamptz)),0) AS ok_24h,
+      COALESCE(SUM(slow_probes) FILTER (WHERE bucket >= CAST(:since24h AS timestamptz)),0) AS slow_24h,
+      COALESCE(SUM(probes) FILTER (WHERE bucket >= CAST(:since7d AS timestamptz)),0) AS probes_7d,
+      COALESCE(SUM(ok_probes) FILTER (WHERE bucket >= CAST(:since7d AS timestamptz)),0) AS ok_7d,
+      COALESCE(SUM(slow_probes) FILTER (WHERE bucket >= CAST(:since7d AS timestamptz)),0) AS slow_7d,
+      COALESCE(SUM(probes) FILTER (WHERE bucket >= CAST(:since30d AS timestamptz)),0) AS probes_30d,
+      COALESCE(SUM(ok_probes) FILTER (WHERE bucket >= CAST(:since30d AS timestamptz)),0) AS ok_30d,
+      COALESCE(SUM(slow_probes) FILTER (WHERE bucket >= CAST(:since30d AS timestamptz)),0) AS slow_30d
+    FROM provider_health_hourly
+    WHERE provider_id IN (:ids) AND bucket >= CAST(:since30d AS timestamptz)
+    GROUP BY provider_id`, replacements);
+
+  const byId = new Map(rows.map(r => [String(r.id), r]));
+  const summary = (row, range) => {
+    const samples = Number(row?.[`probes_${range}`] ?? 0);
+    const ok = Number(row?.[`ok_${range}`] ?? 0);
+    return { percent: percent(ok, samples), samples, slowSamples: Number(row?.[`slow_${range}`] ?? 0) };
+  };
+  return Object.fromEntries(ids.map(id => {
+    const row = byId.get(String(id));
+    return [id, { '24h': summary(row,'24h'), '7d': summary(row,'7d'), '30d': summary(row,'30d') }];
+  }));
 }
+
 export async function pruneAvailability() {
   // A única tabela nova armazena até 31 dias de totais horários, sem dados de espectadores.
   await sequelize.query(`DELETE FROM provider_health_hourly WHERE bucket < now() - interval '31 days'`);

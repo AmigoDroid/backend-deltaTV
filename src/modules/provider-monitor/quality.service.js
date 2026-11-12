@@ -14,21 +14,44 @@ const CACHE_MS = 60_000;
 const LIMIT = 120;
 /** Cada amostra usa o servidor selecionado MAIS RECENTEMENTE, não comprova
  * a origem final depois de redirects, portanto exibimos atribuição estimada. */
-const STATS_SQL = `SELECT pp.id AS "providerId", pp.partner_id AS "partnerId",pp.name,
-  h.state AS "healthState",h.latency_ms AS "probeLatencyMs",
-  count(DISTINCT sel.activation_id)::integer AS "sampleDevices",
-  count(DISTINCT CASE WHEN ev.state IN ('buffering','error') THEN ev.activation_id END)::integer AS "affectedDevices",
-  count(ev.id)::integer AS "sampleEvents",
-  count(ev.id) FILTER (WHERE ev.state='error')::integer AS "errorEvents",
-  count(ev.id) FILTER (WHERE ev.state='buffering')::integer AS "bufferEvents"
+// Uma linha por TV no CTE 'selection' (indice unico activation_id,source).
+// Pre-agregamos eventos por ativacao ANTES de juntar aos provedores: evita
+// COUNT(DISTINCT ...) sobre o produto de joins e reduz memoria do PostgreSQL.
+const STATS_SQL = `WITH selection AS (
+  SELECT provider_id, activation_id
+  FROM device_connection_latest
+  WHERE source='selection' AND created_at > now()-interval '20 minutes'
+), tv_events AS (
+  SELECT activation_id,
+    count(*)::integer AS total,
+    count(*) FILTER (WHERE state='error')::integer AS errors,
+    count(*) FILTER (WHERE state='buffering')::integer AS buffers,
+    bool_or(state IN ('error','buffering')) AS affected
+  FROM device_connection_events
+  WHERE source='tv' AND created_at > now()-interval '10 minutes'
+  GROUP BY activation_id
+), provider_totals AS (
+  SELECT selection.provider_id,
+    count(*)::integer AS sample_devices,
+    count(*) FILTER (WHERE coalesce(tv_events.affected,false))::integer AS affected_devices,
+    coalesce(sum(tv_events.total),0)::integer AS sample_events,
+    coalesce(sum(tv_events.errors),0)::integer AS error_events,
+    coalesce(sum(tv_events.buffers),0)::integer AS buffer_events
+  FROM selection
+  LEFT JOIN tv_events ON tv_events.activation_id=selection.activation_id
+  GROUP BY selection.provider_id
+)
+SELECT pp.id AS "providerId", pp.partner_id AS "partnerId", pp.name,
+  h.state AS "healthState", h.latency_ms AS "probeLatencyMs",
+  coalesce(pt.sample_devices,0)::integer AS "sampleDevices",
+  coalesce(pt.affected_devices,0)::integer AS "affectedDevices",
+  coalesce(pt.sample_events,0)::integer AS "sampleEvents",
+  coalesce(pt.error_events,0)::integer AS "errorEvents",
+  coalesce(pt.buffer_events,0)::integer AS "bufferEvents"
 FROM partner_providers pp
 LEFT JOIN provider_health h ON h.provider_id=pp.id
-LEFT JOIN device_connection_latest sel ON sel.provider_id=pp.id AND sel.source='selection'
-  AND sel.created_at>now()-interval '20 minutes'
-LEFT JOIN device_connection_events ev ON ev.activation_id=sel.activation_id AND ev.source='tv'
-  AND ev.created_at>now()-interval '10 minutes'
+LEFT JOIN provider_totals pt ON pt.provider_id=pp.id
 WHERE (:partner IS NULL OR pp.partner_id=:partner)
-GROUP BY pp.id,pp.partner_id,pp.name,h.state,h.latency_ms
 ORDER BY "affectedDevices" DESC, "sampleDevices" DESC
 LIMIT :limit`;
 
