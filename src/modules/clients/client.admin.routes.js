@@ -6,8 +6,11 @@ import { actorOf } from "../../shared/audit.js";
 import { requirePermission } from "../../middleware/authenticate.js";
 import { clientWriteLimiter } from "../../middleware/security.js";
 import { FILTERS } from "./client.rules.js";
-import { clientBody } from "./client.routes.js";
+import { clientBody, expirySettingsSchema } from "./client.routes.js";
 import * as svc from "./client.admin.service.js";
+import { Partner } from '../../db/models/index.js';
+import { AppError } from '../../shared/errors.js';
+import { getSettings, setSettings } from './expiry-notice.service.js';
 
 /**
  * Clientes das revendas no painel admin (/api/v1/admin/clients). Diferente do portal, o partnerId vem do pedido: o admin
@@ -22,6 +25,29 @@ router.get("/", requirePermission("clients:read"),
   async (req, res) => res.json(await svc.adminList(req.valid.query)));
 router.get("/summary", requirePermission("clients:read"), validate({ query: z.object({ partnerId: partnerId.optional() }) }),
   async (req, res) => res.json(await svc.adminSummary(req.valid.query.partnerId)));
+
+// O admin/superadmin pode gerenciar a MESMA regra que a revenda enxerga, sem criar duplicatas.
+// Nunca aceitar um parceiro de conteúdo puro: a regra pertence a uma revenda.
+async function assertExpiryReseller(id) {
+  const partner = await Partner.findByPk(id, { attributes: ['id', 'kind'] });
+  if (!partner || !['reseller', 'both'].includes(partner.kind)) {
+    throw new AppError(422, 'INVALID_RESELLER', 'Selecione uma revenda válida.');
+  }
+}
+router.get('/expiry-notice-settings/:partnerId', requirePermission('clients:read'),
+  validate({ params: z.object({ partnerId }) }),
+  async (req, res) => {
+    const id = req.valid.params.partnerId;
+    await assertExpiryReseller(id);
+    res.set('Cache-Control', 'no-store').json(await getSettings(id));
+  });
+router.put('/expiry-notice-settings/:partnerId', requirePermission('clients:write'), clientWriteLimiter,
+  validate({ params: z.object({ partnerId }), body: expirySettingsSchema }),
+  async (req, res) => {
+    const id = req.valid.params.partnerId;
+    await assertExpiryReseller(id);
+    res.set('Cache-Control', 'no-store').json(await setSettings(id, req.valid.body, actorOf(req)));
+  });
 
 router.post("/", requirePermission("clients:write"), clientWriteLimiter,
   validate({ body: clientBody.extend({ partnerId }) }),

@@ -7,6 +7,8 @@ import { clientWriteLimiter, credentialsViewLimiter } from "../../middleware/sec
 import { loadReseller, assertReseller } from "../devices/reseller-devices.service.js";
 import { FILTERS } from "./client.rules.js";
 import * as svc from "./client.service.js";
+import { DEFAULT_EXPIRY_SETTINGS, validTemplate } from './expiry-notice.rules.js';
+import { getSettings, setSettings } from './expiry-notice.service.js';
 
 /**
  * Clientes do revendedor (/api/v1/partner/clients). Montado depois de authenticate + requirePartnerRole: o partnerId vem
@@ -33,6 +35,18 @@ router.get("/", validate({ query: z.object({ ...pageQuery, q: z.string().max(60)
 router.post("/credentials", credentialsViewLimiter, validate({ body: z.object({ activationId: z.string().uuid() }) }), async (req, res) =>
   res.set("Cache-Control", "no-store").json(await svc.credentialsOf({ partnerId: req.user.partnerId, activationId: req.valid.body.activationId, actor: actorOf(req) })));
 router.get("/summary", async (req, res) => res.json(await svc.summary(req.user.partnerId)));
+// Configuração ÚNICA por revenda, aplicada a todas as fichas do mesmo parceiro.
+export const expirySettingsSchema = z.object({
+  enabled: z.boolean(), daysBefore: z.number().int().min(1).max(30),
+  messageMode: z.enum(['service','channels','custom']),
+  customBefore: z.string().min(1).max(180).refine(validTemplate, 'Use apenas {prazo}, {dias} e {data}.'),
+  customToday: z.string().min(1).max(180).refine(validTemplate, 'Use apenas {prazo}, {dias} e {data}.'),
+}).strict();
+router.get('/expiry-notice-settings', async (req,res) => res.set('Cache-Control','no-store').json(await getSettings(req.user.partnerId)));
+router.put('/expiry-notice-settings', clientWriteLimiter,
+  validate({ body: expirySettingsSchema }), async (req,res) => res.set('Cache-Control','no-store')
+    .json(await setSettings(req.user.partnerId, req.valid.body, actorOf(req))));
+
 
 router.post("/", clientWriteLimiter, validate({ body: clientBody }), async (req, res) =>
   res.status(201).json(await svc.createClient({ partnerId: req.user.partnerId, actor: actorOf(req), input: req.valid.body })));
