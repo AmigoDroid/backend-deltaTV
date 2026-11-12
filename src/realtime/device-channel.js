@@ -61,29 +61,31 @@ function safeSend(ws, payload) {
   ws.send(JSON.stringify(payload));
   return true;
 }
-function isRelevant(hint, activationId) {
-  return !hint.activationId || String(hint.activationId) === String(activationId);
+function isRelevant(hint, activationId, partnerId) {
+  if (hint.activationId && String(hint.activationId) !== String(activationId)) return false;
+  if (hint.partnerId && String(hint.partnerId) !== String(partnerId)) return false;
+  return true;
 }
 function hintPacket(hint) {
   return { type: hint.topic === 'remote-command' ? 'command-ready' : 'check-status',
     topic: hint.topic, scope: hint.priority === 'targeted' ? 'targeted' : 'global' };
 }
-function readHints(since, aid) {
+function readHints(since, aid, partnerId) {
   const from = Number.isSafeInteger(since) && since >= 0 ? since : 0;
   if (recent.length && from > 0 && from < recent[0].seq - 1) return [{ type: 'check-status', topic: 'reconnect', scope: 'targeted' }];
   if (from > sequence) return [{ type: 'check-status', topic: 'reconnect', scope: 'targeted' }];
-  return recent.filter(x => x.seq > from && isRelevant(x, aid)).map(hintPacket);
+  return recent.filter(x => x.seq > from && isRelevant(x, aid, partnerId)).map(hintPacket);
 }
 
-export function broadcastDeviceHint({ topic = 'devices', activationId = null, priority = null } = {}, propagate = true) {
+export function broadcastDeviceHint({ topic = 'devices', activationId = null, partnerId = null, priority = null } = {}, propagate = true) {
   // The notification is a hint, never an authorization or a copy of a list.
   sequence++;
-  const hint = { seq: sequence, topic: String(topic).slice(0, 32), activationId,
+  const hint = { seq: sequence, topic: String(topic).slice(0, 32), activationId, partnerId,
     priority: priority || (activationId ? 'targeted' : 'global') };
   recent.push(hint);
   if (recent.length > 256) recent.shift();
-  for (const peer of peers) if (isRelevant(hint, peer.activationId)) safeSend(peer.ws, hintPacket(hint));
-  for (const waiter of [...waiting]) if (isRelevant(hint, waiter.activationId)) waiter.finish();
+  for (const peer of peers) if (isRelevant(hint, peer.activationId, peer.partnerId)) safeSend(peer.ws, hintPacket(hint));
+  for (const waiter of [...waiting]) if (isRelevant(hint, waiter.activationId, waiter.partnerId)) waiter.finish();
   if (propagate) publishDeviceChange(hint);
 }
 
@@ -98,9 +100,9 @@ export async function authorizeDevice(token) {
     attributes: ['id', 'activationId', 'revokedAt', 'expiresAt'], raw: true,
   });
   if (!session || session.revokedAt || String(session.activationId) !== String(claims.aid) || new Date(session.expiresAt) <= new Date()) throw new Error('Revoked');
-  const activation = await Activation.findByPk(claims.aid, { attributes: ['id', 'deviceId'], raw: true });
+  const activation = await Activation.findByPk(claims.aid, { attributes: ['id', 'deviceId', 'partnerId'], raw: true });
   if (!activation?.deviceId) throw new Error('Invalid activation');
-  return { sessionId: session.id, activationId: activation.id, deviceId: activation.deviceId, tokenExp: claims.exp * 1000 };
+  return { sessionId: session.id, activationId: activation.id, deviceId: activation.deviceId, partnerId: activation.partnerId, tokenExp: claims.exp * 1000 };
 }
 
 export function observeSocketEvent(peer, packet, ip) {
@@ -227,17 +229,17 @@ export async function legacyPoll(req, res) {
   noteDeviceTransport(auth.activationId, 'https-legacy', req.query.build);
   const requested = Number(req.query.since);
   const since = Number.isSafeInteger(requested) && requested >= 0 ? requested : 0;
-  const hints = readHints(since, auth.activationId);
+  const hints = readHints(since, auth.activationId, auth.partnerId);
   res.set('Cache-Control', 'no-store, no-transform').set('X-Accel-Buffering', 'no');
   if (hints.length || waiting.size >= MAX_PENDING_POLLS) { res.json({ ok: true, sequence, hints }); return; }
   let done = false;
-  const waiter = { activationId: auth.activationId, finish: null };
+  const waiter = { activationId: auth.activationId, partnerId: auth.partnerId, finish: null };
   const finish = () => {
     if (done) return;
     done = true;
     clearTimeout(timer);
     waiting.delete(waiter);
-    if (!res.destroyed && !res.writableEnded) res.json({ ok: true, sequence, hints: readHints(since, auth.activationId) });
+    if (!res.destroyed && !res.writableEnded) res.json({ ok: true, sequence, hints: readHints(since, auth.activationId, auth.partnerId) });
   };
   const timer = setTimeout(finish, POLL_MS);
   waiter.finish = finish;

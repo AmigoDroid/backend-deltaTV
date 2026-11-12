@@ -9,6 +9,7 @@ import { Router } from "express";
 import { requireDevice } from "../access/access.middleware.js";
 import { heartbeatLimiter } from "../../middleware/security.js";
 import { env } from "../../config/env.js";
+import { noticeForActivation } from '../clients/expiry-notice.service.js';
 
 /**
  * POST /api/v1/client/heartbeat — "estou vivo".
@@ -39,6 +40,9 @@ router.post('/realtime/commands/:id/ack', heartbeatLimiter, requireTelemetry,
   })));
 router.post('/realtime/failover', heartbeatLimiter, requireTelemetry, async (req,res) =>
   res.set('Cache-Control','no-store').json(await requestDeviceFailover(req.device.activation.id)));
+// Somente a ativação da sessão válida pode obter o aviso; nunca recebe dados de outras TVs.
+router.get('/realtime/expiry-notice', heartbeatLimiter, requireTelemetry, async(req,res) =>
+  res.set('Cache-Control','no-store').json(await noticeForActivation(req.device.activation.id)));
 router.get('/realtime/ping', heartbeatLimiter, requireTelemetry, (_req,res) =>
   res.set('Cache-Control','no-store').json({ ok: true }));
 router.post('/realtime/latency', heartbeatLimiter, requireTelemetry,

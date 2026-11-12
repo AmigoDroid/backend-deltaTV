@@ -6,6 +6,7 @@ import { paged } from "../../shared/pagination.js";
 import { sql } from "../stock/stock-ledger.js";
 import { TODAY } from "./client.sql.js";
 import { DUE_SOON_DAYS, cleanText } from "./client.rules.js";
+import { broadcastExpiryForClient } from './expiry-notice.service.js';
 import { MAX_CLIENTS_PER_PARTNER, createClient, deleteClient, duplicate, fieldsFrom, listClients, rowView, summary } from "./client.service.js";
 
 /**
@@ -95,6 +96,7 @@ export async function adminUpdate({ id, actor, input: { partnerId: toPartnerId, 
   const c = await ResellerClient.findByPk(id);
   if (!c) throw notFound("Cliente");
   const fields = fieldsFrom(input, { create: false });
+  const previousMac = c.mac.trim();
   const moving = toPartnerId && toPartnerId !== c.partnerId;
   if (moving) {
     await assertPartner(toPartnerId);
@@ -114,6 +116,10 @@ export async function adminUpdate({ id, actor, input: { partnerId: toPartnerId, 
     actor, action: "client.update", entityType: "reseller_client", entityId: id,
     metadata: { mac: c.mac.trim(), partnerId: c.partnerId, fields: Object.keys(fields), ...(moving ? { movedFrom: fromPartnerId } : {}) },
   });
+  if (fields.dueDate !== undefined || fields.mac !== undefined || moving) {
+    broadcastExpiryForClient(c.partnerId, c.mac.trim());
+    if (moving || previousMac !== c.mac.trim()) broadcastExpiryForClient(fromPartnerId, previousMac);
+  }
   return { id: c.id };
 }
 

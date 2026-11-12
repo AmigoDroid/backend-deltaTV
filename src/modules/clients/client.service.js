@@ -8,6 +8,7 @@ import { paged } from "../../shared/pagination.js";
 import { sql } from "../stock/stock-ledger.js";
 import { buildListSql, TODAY } from "./client.sql.js";
 import { DUE_SOON_DAYS, cleanText, parseDueDate, parsePhone } from "./client.rules.js";
+import { broadcastExpiryForClient } from './expiry-notice.service.js';
 
 /**
  * Clientes do revendedor, por MAC. ISOLAMENTO: toda consulta e escrita filtra por partnerId vindo do TOKEN; ficha de outro
@@ -98,6 +99,7 @@ export async function createClient({ partnerId, actor, input }) {
     throw e;
   }
   await audit({ actor, action: "client.create", entityType: "reseller_client", entityId: c.id, metadata: { mac: fields.mac, partnerId } });
+  broadcastExpiryForClient(partnerId, c.mac.trim());
   return { id: c.id };
 }
 
@@ -105,6 +107,7 @@ export async function updateClient({ partnerId, id, actor, input }) {
   const fields = fieldsFrom(input, { create: false });
   const c = await ResellerClient.findOne({ where: { id, partnerId } }); // ficha de outro revendedor => 404
   if (!c) throw notFound("Cliente");
+  const oldMac = c.mac.trim();
   try {
     await c.update(fields);
   } catch (e) {
@@ -112,6 +115,10 @@ export async function updateClient({ partnerId, id, actor, input }) {
     throw e;
   }
   await audit({ actor, action: "client.update", entityType: "reseller_client", entityId: id, metadata: { mac: c.mac.trim(), partnerId, fields: Object.keys(fields) } });
+  if (fields.dueDate !== undefined || fields.mac !== undefined) {
+    broadcastExpiryForClient(partnerId, c.mac.trim());
+    if (oldMac !== c.mac.trim()) broadcastExpiryForClient(partnerId, oldMac);
+  }
   return { id: c.id };
 }
 
@@ -120,6 +127,7 @@ export async function deleteClient({ partnerId, id, actor }) {
   const c = await ResellerClient.findOne({ where: { id, partnerId } });
   if (!c) throw notFound("Cliente");
   await c.destroy();
+  broadcastExpiryForClient(partnerId, c.mac.trim());
   await audit({ actor, action: "client.delete", entityType: "reseller_client", entityId: id, metadata: { mac: c.mac.trim(), partnerId } });
 }
 
