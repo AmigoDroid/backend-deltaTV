@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveNotice, DEFAULT_EXPIRY_SETTINGS, validTemplate } from '../../src/modules/clients/expiry-notice.rules.js';
+import { resolveNotice, DEFAULT_EXPIRY_SETTINGS, validTemplate, makeExpiryNoticeKey } from '../../src/modules/clients/expiry-notice.rules.js';
 const NOW = new Date('2026-11-11T13:00:00-03:00');
 const cfg = (overrides = {}) => ({ ...DEFAULT_EXPIRY_SETTINGS, enabled: true, daysBefore: 3, ...overrides });
 test('Desativado, sem data e fora da janela não exibe', () => {
@@ -29,4 +29,25 @@ test('Limites inclusivos e data de calendário de São Paulo', () => {
   assert.equal(resolveNotice(cfg({daysBefore: 1}), '2026-11-12',NOW).daysLeft,1);
   assert.equal(resolveNotice(cfg({daysBefore: 1}), '2026-11-13',NOW),null);
   assert.equal(resolveNotice(cfg(), '2026-11-11',new Date('2026-11-12T01:00:00Z')).daysLeft,0);
+});
+
+const KEY = {activationId:'client-123', dueDate:'2026-11-14', daysLeft:2};
+const ID1 = 'b19cb338-d6af-4db2-9076-c9eb4e593001';
+const ID2 = 'b19cb338-d6af-4db2-9076-c9eb4e593002';
+test('uma vez por dia não repete no mesmo dia nem ao reabrir', () => {
+  const a = makeExpiryNoticeKey({...KEY, deliveryMode:'daily', launchId: ID1});
+  const b = makeExpiryNoticeKey({...KEY, deliveryMode:'daily', launchId: ID2});
+  assert.equal(a,b);
+  assert.notEqual(a,makeExpiryNoticeKey({...KEY, daysLeft:1}));
+});
+test('a cada abertura reexibe na nova execução, não no reconnect', () => {
+  const a = makeExpiryNoticeKey({...KEY, deliveryMode:'every_open', launchId: ID1});
+  const again = makeExpiryNoticeKey({...KEY, deliveryMode:'every_open', launchId: ID1});
+  const reopened = makeExpiryNoticeKey({...KEY, deliveryMode:'every_open', launchId: ID2});
+  assert.equal(a,again);
+  assert.notEqual(a,reopened);
+});
+test('aplicativos antigos sem ID de abertura continuam na regra diária', () => {
+  assert.equal(makeExpiryNoticeKey({...KEY,deliveryMode:'every_open'}), makeExpiryNoticeKey({...KEY,deliveryMode:'daily'}));
+  assert.equal(makeExpiryNoticeKey({...KEY,deliveryMode:'every_open',launchId:'../../invalid'}), makeExpiryNoticeKey({...KEY,deliveryMode:'daily'}));
 });

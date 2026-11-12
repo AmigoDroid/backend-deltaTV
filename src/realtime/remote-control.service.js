@@ -11,6 +11,7 @@ import { audit } from '../shared/audit.js';
 import { checkActivation } from '../modules/access/access.service.js';
 import { ownership, canRead } from '../modules/connection-audit/service.js';
 import { broadcastDeviceHint, transportForActivation } from './device-channel.js';
+import { liveForDevice } from './live-snapshot.js';
 import { qualityForActivation } from '../modules/provider-monitor/quality.service.js';
 import { commandPayload } from './remote-payload.js';
 import { getSettings } from '../modules/clients/expiry-notice.service.js';
@@ -154,7 +155,7 @@ export async function remoteControlOverview(activationId, partnerId = null) {
      executed_at AS "executedAt", expires_at AS "expiresAt"
      FROM device_remote_commands WHERE activation_id=:activationId
      ORDER BY created_at DESC LIMIT 15`, { activationId });
-  return { deviceId: source.device_id, activationId, activationStatus: source.status, connection: transportForActivation(activationId),
+  return { deviceId: source.device_id, activationId, activationStatus: source.status, connection: transportForActivation(activationId), live: liveForDevice(activationId),
     lists: await accessibleLists(source, partnerId), quality:await qualityForActivation(activationId,partnerId), history };
 }
 

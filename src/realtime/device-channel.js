@@ -13,7 +13,18 @@ import { telemetrySchema } from '../modules/connection-audit/routes.js';
 import { touchDevice } from '../modules/devices/presence.js';
 import { env } from '../config/env.js';
 import { publishDeviceChange } from './change-bus.js';
+import { deviceOnline, livePlayback } from './live-snapshot.js';
+import { isIP as checkIp } from 'node:net';
 
+// Cabeçalho de IP somente é confiável quando a conexão vem do Nginx local.
+function clientIp(req) {
+  const remote = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+  if (remote === '127.0.0.1' || remote === '::1') {
+    const ip = String(req.headers['x-real-ip'] || '').trim();
+    if (checkIp(ip)) return ip;
+  }
+  return checkIp(remote) ? remote : null;
+}
 const MAX_PEERS = Math.min(10000, Math.max(100, Number(process.env.DEVICE_WS_MAX_PEERS) || 5000));
 const RECHECK_MS = 30000;
 const MAX_PENDING_POLLS = Math.min(8000, Math.max(100, Number(process.env.DEVICE_POLL_MAX_WAITERS) || 4500));
@@ -109,6 +120,7 @@ export function observeSocketEvent(peer, packet, ip) {
   const validated = telemetrySchema.safeParse(packet?.payload);
   if (!validated.success) return false;
   const b = validated.data;
+  livePlayback(peer.activationId, b, ip);
   return observe({
     activationId: peer.activationId, sessionId: peer.sessionId,
     source: 'tv', state: b.state, clientFamily: ipFamily(ip),
@@ -138,6 +150,7 @@ export function createDeviceWebSocketServer() {
           const auth = await authorizeDevice(msg.token);
           if (ws.readyState !== WebSocket.OPEN) return;
           peer = { ...auth, ws, alive: true, lastSeen: Date.now(), build: String(msg.build || '').slice(0,16), lastProbe: 0, pendingProbe: null };
+          deviceOnline(peer.activationId, { ip: clientIp(req), launchId: msg.launchId, model: msg.model, osMajor: msg.osMajor });
           noteDeviceTransport(peer.activationId, 'wss', peer.build);
           peers.add(peer);
           if (pending) { pendingAuth--; pending = false; }
@@ -151,10 +164,12 @@ export function createDeviceWebSocketServer() {
       }
       if (Date.now() >= peer.tokenExp) { ws.close(1008, 'Token expired'); return; }
       if (msg?.type === 'heartbeat') {
+        // A sessão permanece online mesmo na Home, sem qualquer vídeo tocando.
+        deviceOnline(peer.activationId, { ip: clientIp(req) });
         if (Date.now() - peer.lastSeen > 15000) { peer.lastSeen = Date.now(); touchDevice(peer.deviceId); noteDeviceTransport(peer.activationId, 'wss', peer.build); }
         safeSend(ws, { type: 'heartbeat-ack' });
       } else if (msg?.type === 'telemetry') {
-        if (!observeSocketEvent(peer, msg, req.socket.remoteAddress)) safeSend(ws, { type: 'telemetry-rejected' });
+        if (!observeSocketEvent(peer, msg, clientIp(req))) safeSend(ws, { type: 'telemetry-rejected' });
       } else if (msg?.type === 'latency-reply') {
         if (peer.pendingProbe && msg.nonce === peer.pendingProbe.nonce && Date.now() - peer.pendingProbe.sentAt < 30000) {
           noteDeviceLatency(peer.activationId, Date.now() - peer.pendingProbe.sentAt);
@@ -164,7 +179,9 @@ export function createDeviceWebSocketServer() {
         ws.close(1008, 'Unsupported action');
       } else safeSend(ws, { type: 'pong' });
     });
-    ws.on('pong', () => { if (peer) peer.alive = true; });
+    ws.on('pong', () => {
+      if (peer) { peer.alive = true; deviceOnline(peer.activationId, { ip: clientIp(req) }); }
+    });
     ws.on('close', cleanup);
     ws.on('error', cleanup);
   });
@@ -227,6 +244,7 @@ export async function legacyPoll(req, res) {
   } catch { res.status(401).set('Cache-Control', 'no-store').json({ ok: false, code: 'SESSION_REVOKED' }); return; }
   touchDevice(auth.deviceId);
   noteDeviceTransport(auth.activationId, 'https-legacy', req.query.build);
+  deviceOnline(auth.activationId, { ip: req.ip, launchId: req.query.launchId, model: req.query.model, osMajor: Number(req.query.osMajor) });
   const requested = Number(req.query.since);
   const since = Number.isSafeInteger(requested) && requested >= 0 ? requested : 0;
   const hints = readHints(since, auth.activationId, auth.partnerId);

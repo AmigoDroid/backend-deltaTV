@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { tmdbProxy } from "./tmdb-proxy.routes.js";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
 import { AppError } from "../../shared/errors.js";
@@ -115,6 +116,7 @@ const activationResponse = (r) => ({
 
 // Player Web: login pelo código AB123456 gerado pelo revendedor (POST /api/v1/client/web/login).
 router.use("/web", webClientRoutes);
+router.use("/tmdb", tmdbProxy);
 
 router.post(
   "/activate/license",

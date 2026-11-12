@@ -1,3 +1,4 @@
+import { liveForDevice } from "../../realtime/live-snapshot.js";
 import { markPartnerConfigured } from "../partners/partner-onboarding.service.js";
 import { Op, QueryTypes } from "sequelize";
 import { sequelize, Partner, PartnerCode, Activation, ContentPartnerTerms, ContentCodeBalance, ContentActivationCharge } from "../../db/models/index.js";
@@ -127,7 +128,7 @@ export async function listDevices(partnerId,{codeId,q,page,pageSize}) {
     ...(q?{mac:{[Op.iLike]:`%${q.replace(/[\\%_]/g,"\\$&")}%`}}:{})};
   const {rows,count}=await Activation.findAndCountAll({where,attributes:["id","mac","status","activatedAt","revokedAt","partnerCodeId","providerId","grantedLicenseId"],
     include:[{model:PartnerCode,attributes:["code","label"]}],order:[["activatedAt","DESC"],["id","DESC"]],...pageOf({page,pageSize})});
-  return paged(rows.map(a=>({id:a.id,mac:a.mac,status:a.status,activatedAt:a.activatedAt,revokedAt:a.revokedAt,
+  return paged(rows.map(a=>({id:a.id,live:liveForDevice(a.id),mac:a.mac,status:a.status,activatedAt:a.activatedAt,revokedAt:a.revokedAt,
     code:a.PartnerCode?.code||null,label:a.PartnerCode?.label||null,providerId:a.providerId,
     licenseSource:a.grantedLicenseId?"reseller_stock":"partner"})),count,{page,pageSize});
 }

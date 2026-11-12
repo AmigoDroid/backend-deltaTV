@@ -15,6 +15,7 @@ import { parseListUrl, canonicalListUrl } from "./playlist-by-url.service.js";
 import { selectLiveActivation, removeList } from "./reseller-devices.service.js";
 import { presenceOf, flushPresence } from "./presence.js";
 import { env } from "../../config/env.js";
+import { liveForDevice } from "../../realtime/live-snapshot.js";
 
 const include = [
   { model: License, attributes: ["id", "status", "statusReason", "startsAt", "expiresAt", "codeLast4", "isTrial"], include: [{ model: Customer, attributes: ["name", "email"] }] },
@@ -85,6 +86,7 @@ export async function listDevices({ q, status, online, page, pageSize }) {
     return { id: d.id, deviceId: d.id, mac: d.mac, platform: d.platform, ...presenceOf(d.id, d.lastSeenAt),
       createdAt: d.createdAt, updatedAt: d.updatedAt, activeCount, blockedCount, removedCount, currentCount: activeCount + blockedCount,
       status: activeCount ? "active" : blockedCount ? "blocked" : removedCount ? "revoked" : "unlinked",
+      live: current.map(a => liveForDevice(a.id)).find(x => x.playback) || current.map(a => liveForDevice(a.id)).find(x => x.online) || null,
       partners: [...new Set(current.map(a => a.Partner?.name).filter(Boolean))],
     };
   }), count, { page, pageSize });
@@ -98,7 +100,7 @@ const accessOf = (a) => {
 
 const serialize = (a, { delivery = false } = {}) => ({
   access: accessOf(a),
-  id: a.id, deviceId: a.deviceId, mac: a.mac, platform: a.Device?.platform ?? null, ...presenceOf(a.deviceId, a.Device?.lastSeenAt), status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
+  id: a.id, deviceId: a.deviceId, live: liveForDevice(a.id), mac: a.mac, platform: a.Device?.platform ?? null, ...presenceOf(a.deviceId, a.Device?.lastSeenAt), status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
   activatedAt: a.activatedAt, revokedAt: a.revokedAt, claimPending: a.claimPending,
   licenseId: a.licenseId, partnerId: a.partnerId,
   license: a.License ? { id: a.License.id, status: a.License.status, expiresAt: a.License.expiresAt, codeLast4: a.License.codeLast4, isTrial: a.License.isTrial, customer: a.License.Customer ? { name: a.License.Customer.name, email: a.License.Customer.email } : null } : null,

@@ -1,6 +1,7 @@
 import { QueryTypes } from "sequelize";
 import { sequelize } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
+import { availabilityForIds } from "./availability.service.js";
 
 // Consulta somente metadados de saúde já produzidos pelo monitor de fundo.
 // Nenhuma sondagem de rede acontece ao carregar a página.
@@ -85,6 +86,8 @@ export async function listServerHealth({ partnerId = null, q = "", status = "", 
     if (Object.hasOwn(summary, r.health_status)) summary[r.health_status] = Number(r.total);
     summary.total += Number(r.total);
   }
+  const availability = await availabilityForIds(rows.map(r => r.id));
+  for (const row of rows) row.availability = availability[row.id] || null;
   const count = status ? (summary[status] || 0) : summary.total;
   return {
     monitorEnabled, intervalSeconds: INTERVAL, freshnessSeconds,

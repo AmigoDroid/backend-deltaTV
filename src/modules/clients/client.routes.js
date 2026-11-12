@@ -39,6 +39,7 @@ router.get("/summary", async (req, res) => res.json(await svc.summary(req.user.p
 export const expirySettingsSchema = z.object({
   enabled: z.boolean(), daysBefore: z.number().int().min(1).max(30),
   messageMode: z.enum(['service','channels','custom']),
+  deliveryMode: z.enum(['daily', 'every_open']).optional(),
   customBefore: z.string().min(1).max(180).refine(validTemplate, 'Use apenas {prazo}, {dias} e {data}.'),
   customToday: z.string().min(1).max(180).refine(validTemplate, 'Use apenas {prazo}, {dias} e {data}.'),
 }).strict();

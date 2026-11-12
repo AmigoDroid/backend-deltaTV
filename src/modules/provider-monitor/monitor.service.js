@@ -14,6 +14,7 @@ import { invalidatePartnerServerAlerts } from "./visibility.service.js";
 import { createSharedProbe, isNewProbeSample, probeTargetKey } from "./probe-dedup.js";
 import { xtreamApiUrl } from "./url-utils.js";
 import { healthTransition } from "./health-policy.js";
+import { noteProbe, pruneAvailability, availabilityForIds } from "./availability.service.js";
 
 const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
 const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",60,30,3600);
@@ -66,6 +67,9 @@ async function updateOne(provider) {
     const latencyChanged = r.good && oldLatency != null &&
       Math.abs(r.latencyMs - oldLatency) >= Math.max(250, oldLatency * 0.4);
     await h.update({state,latencyMs:r.latencyMs,lastCheckedAt:r.sampledAt,lastGoodAt:r.good?r.sampledAt:h.lastGoodAt,failures,successes,lastError:r.error});
+    // Totalização horária, sem guardar cada resposta; falha de métrica não desliga failover.
+    try { await noteProbe(provider.id,r); }
+    catch (metricError) { console.warn('[provider-monitor] agregado de disponibilidade:', metricError.message); }
     if(stateChanged){
       // Registro de incidente desacoplado: falha de telemetria não derruba o monitor.
       try{await ProviderHealthEvent.create({providerId:provider.id,state,latencyMs:r.latencyMs,note:r.error,occurredAt:r.sampledAt});}
@@ -119,6 +123,7 @@ export async function monitorOnce() {
     // Retenção em 30 dias. Uma exclusão por dia em índice, nunca por sondagem.
     if(Date.now()-lastCleanup>86_400_000){
       lastCleanup=Date.now();
+      void pruneAvailability().catch(e=>console.warn('[provider-monitor] retenção de disponibilidade',e.message));
       void ProviderHealthEvent.destroy({where:{occurredAt:{[Op.lt]:new Date(Date.now()-30*86_400_000)}}})
         .catch(e=>console.warn("[provider-monitor] limpeza histórico",e.message));
     }
@@ -192,6 +197,7 @@ export async function overview(partnerId) {
   const providers=await PartnerProvider.findAll({where:{partnerId},order:[["priority","ASC"]],raw:true});
   const states=providers.length?await ProviderHealth.findAll({where:{providerId:{[Op.in]:providers.map(p=>p.id)}},raw:true}):[];
   const byId=new Map(states.map(s=>[s.providerId,s]));
+  const availability=await availabilityForIds(providers.map(p=>p.id));
   const totalCodes=await PartnerCode.count({where:{partnerId}});
   const servicePlan=await getServicePlan(partnerId);
   const automated=servicePlan.features.autoPriority;
@@ -203,7 +209,7 @@ export async function overview(partnerId) {
   const ranks=new Map(effectiveOrder.map((p,i)=>[p.id,i+1]));
   return {autoPriority:automated,servicePlan:{tier:servicePlan.tier,features:servicePlan.features},providers:providers.map(p=>({id:p.id,name:p.name,baseUrl:p.baseUrl,priority:p.priority,effectivePriority:ranks.get(p.id),status:p.status,
     health:byId.get(p.id)?{state:byId.get(p.id).state,latencyMs:byId.get(p.id).latencyMs,lastCheckedAt:byId.get(p.id).lastCheckedAt,
-      lastGoodAt:byId.get(p.id).lastGoodAt,lastError:byId.get(p.id).lastError}:null})),
+      lastGoodAt:byId.get(p.id).lastGoodAt,lastError:byId.get(p.id).lastError}:null, availability:availability[p.id] || null})),
     totalCodes, codes:[],
     monitorEnabled:process.env.PROVIDER_MONITOR_ENABLED==="true"};
 }
