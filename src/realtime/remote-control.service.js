@@ -13,10 +13,13 @@ import { ownership, canRead } from '../modules/connection-audit/service.js';
 import { broadcastDeviceHint, transportForActivation } from './device-channel.js';
 import { qualityForActivation } from '../modules/provider-monitor/quality.service.js';
 import { commandPayload } from './remote-payload.js';
+import { getSettings } from '../modules/clients/expiry-notice.service.js';
+import { previewExpiryNotice } from '../modules/clients/expiry-notice.rules.js';
 
 const read = (sql, replacements) => sequelize.query(sql, { replacements, type: QueryTypes.SELECT });
-const commands = new Set(['refresh-catalog', 'switch-list', 'disconnect', 'sync-access', 'ping', 'diagnose', 'show-message', 'set-telemetry', 'failover']);
+const commands = new Set(['refresh-catalog', 'switch-list', 'disconnect', 'sync-access', 'ping', 'diagnose', 'show-message', 'set-telemetry', 'failover', 'test-expiry-notice']);
 const v51Commands = new Set(['diagnose','show-message','set-telemetry','failover']);
+const v55Commands = new Set(['test-expiry-notice']);
 const resultStatuses = new Set(['executed', 'failed', 'refused']);
 const maxMinutes = 3;
 
@@ -39,10 +42,22 @@ export async function accessibleLists(source, partnerId = null) {
 }
 
 
-export async function queueRemoteCommand({ activationId, type, targetActivationId, note, telemetryIntervalSeconds, actor, partnerId = null }) {
+export async function queueRemoteCommand({ activationId, type, targetActivationId, note, telemetryIntervalSeconds, testDaysLeft, actor, partnerId = null }) {
   if (!commands.has(type)) throw new AppError(422, 'INVALID_COMMAND', 'Comando não reconhecido.');
   const source = await assertControlScope(activationId, partnerId);
-  const payload = commandPayload(type,{note,telemetryIntervalSeconds});
+  let payload = commandPayload(type,{note,telemetryIntervalSeconds});
+  if (type === 'test-expiry-notice') {
+    const days = testDaysLeft ?? 3;
+    if (!Number.isInteger(days) || days < 0 || days > 30) throw new AppError(422, 'TEST_DAYS_INVALID', 'Escolha de 0 a 30 dias.');
+    // A regra vem sempre da empresa que possui a ativação, nunca do navegador.
+    payload = previewExpiryNotice(await getSettings(source.partner_id), days);
+    if (!payload) throw new AppError(422, 'TEST_PREVIEW_INVALID', 'Configuração de mensagem inválida nesta empresa.');
+  }
+  if (v55Commands.has(type)) {
+    const device = transportForActivation(activationId);
+    if (device.connected && Number(device.build || 0) < 55)
+      throw new AppError(409,'REQUIRES_BUILD_55','Atualize esta TV para a build 55 antes de testar o aviso.');
+  }
   if (v51Commands.has(type)) {
     const device = transportForActivation(activationId);
     if (device.connected && Number(device.build || 0) < 51)
@@ -68,10 +83,10 @@ export async function queueRemoteCommand({ activationId, type, targetActivationI
       :note,CAST(:payload AS jsonb),now()+interval '3 minutes',now(),now())`, { replacements: {
     id, activationId, deviceId: source.device_id, type, target: type === 'switch-list' ? targetActivationId : null,
     actorType: String(actor?.type || 'admin'), actorId: String(actor?.id || 'unknown'),
-    note: type === 'show-message' ? null : (note || null), payload: payload ? JSON.stringify(payload) : null,
+    note: type === 'show-message' ? null : (type === 'test-expiry-notice' ? `Simulação de ${payload.daysLeft} dia(s)` : (note || null)), payload: payload ? JSON.stringify(payload) : null,
   } });
   await audit({ actor, action: 'device.remote.command', entityType: 'activation', entityId: activationId,
-    metadata: { commandId: id, type, targetActivationId: type === 'switch-list' ? targetActivationId : null } });
+    metadata: { commandId: id, type, targetActivationId: type === 'switch-list' ? targetActivationId : null, ...(type === 'test-expiry-notice' ? { testDaysLeft: payload.daysLeft } : {}) } });
   broadcastDeviceHint({ topic: 'remote-command', activationId });
   // Reentrega o AVISO, não o comando: o ACK continua idempotente no banco.
   // Ajuda quando uma notificação WSS ou long-poll se perde durante reconexão.
@@ -135,7 +150,7 @@ export async function remoteControlOverview(activationId, partnerId = null) {
   await sequelize.query(`UPDATE device_remote_commands SET status='expired',updated_at=now()
     WHERE activation_id=:activationId AND status IN ('pending','delivered') AND expires_at<=now()`, { replacements: { activationId } });
   const history = await read(`SELECT id,type,target_activation_id AS "targetActivationId",status,transport,
-     error_code AS "errorCode",result,created_at AS "createdAt",delivered_at AS "deliveredAt",
+     error_code AS "errorCode",result,note,created_at AS "createdAt",delivered_at AS "deliveredAt",
      executed_at AS "executedAt", expires_at AS "expiresAt"
      FROM device_remote_commands WHERE activation_id=:activationId
      ORDER BY created_at DESC LIMIT 15`, { activationId });

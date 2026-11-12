@@ -1,4 +1,4 @@
-import { daysUntil } from './client.rules.js';
+import { daysUntil, todaySP } from './client.rules.js';
 
 export const DEFAULT_EXPIRY_SETTINGS = Object.freeze({
   enabled: false, daysBefore: 3, messageMode: 'service',
@@ -31,4 +31,17 @@ export function resolveNotice(settings, dueDate, now = new Date()) {
         : `Seu serviço vence em ${days} ${days === 1 ? 'dia' : 'dias'}.`);
   }
   return { title: 'Aviso de vencimento', message, daysLeft: days, dueDate };
+}
+
+/** Prévia de uso exclusivo do comando de teste. Não altera o vencimento real,
+ * nem habilita notificações para clientes da revenda. Usa o template atual.
+ */
+export function previewExpiryNotice(settings, daysLeft, now = new Date()) {
+  if (!Number.isInteger(daysLeft) || daysLeft < 0 || daysLeft > 30) return null;
+  const today = todaySP(now);
+  const due = new Date(`${today}T00:00:00Z`);
+  due.setUTCDate(due.getUTCDate() + daysLeft);
+  const dueDate = due.toISOString().slice(0, 10);
+  const notice = resolveNotice({ ...settings, enabled: true, daysBefore: 30 }, dueDate, now);
+  return notice && notice.message.length <= 180 ? { title: 'TESTE - Aviso de vencimento', text: notice.message, simulated: true, daysLeft } : null;
 }

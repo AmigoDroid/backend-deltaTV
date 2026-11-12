@@ -54,8 +54,8 @@ router.get("/devices/:id/connection-audit", auditParams, auditRead(true));
 router.get('/devices/:id/remote', validate({ params: id }), async(req,res)=>
   res.set('Cache-Control','no-store').json(await remoteControlOverview(req.valid.params.id,req.user.partnerId)));
 router.post('/devices/:id/remote', macWriteLimiter,
-  validate({ params: id, body: z.object({ type:z.enum(['refresh-catalog','switch-list','sync-access','ping','diagnose','show-message','set-telemetry','failover']),
-    targetActivationId:z.string().uuid().optional(),telemetryIntervalSeconds:z.number().int().min(45).max(180).optional(),note:z.string().trim().max(300).optional() }).strict() }),
+  validate({ params: id, body: z.object({ type:z.enum(['refresh-catalog','switch-list','sync-access','ping','diagnose','show-message','set-telemetry','failover','test-expiry-notice']),
+    targetActivationId:z.string().uuid().optional(),telemetryIntervalSeconds:z.number().int().min(45).max(180).optional(),note:z.string().trim().max(300).optional(),testDaysLeft:z.number().int().min(0).max(30).optional() }).strict() }),
   async(req,res)=>res.status(202).json(await queueRemoteCommand({activationId:req.valid.params.id,
     ...req.valid.body, actor:actorOf(req), partnerId:req.user.partnerId})));
 
