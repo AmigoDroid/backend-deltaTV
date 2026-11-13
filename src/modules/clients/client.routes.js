@@ -35,6 +35,11 @@ router.get("/", validate({ query: z.object({ ...pageQuery, q: z.string().max(60)
 router.post("/credentials", credentialsViewLimiter, validate({ body: z.object({ activationId: z.string().uuid() }) }), async (req, res) =>
   res.set("Cache-Control", "no-store").json(await svc.credentialsOf({ partnerId: req.user.partnerId, activationId: req.valid.body.activationId, actor: actorOf(req) })));
 router.get("/summary", async (req, res) => res.json(await svc.summary(req.user.partnerId)));
+// Mesmo diagnóstico do superadmin, mas escopo SEMPRE do JWT do parceiro.
+router.get('/:id/support', validate({ params: id }), async (req,res) => {
+  const { supportForClient } = await import('../support/support.service.js');
+  res.set('Cache-Control','no-store').json(await supportForClient(req.valid.params.id,req.user.partnerId));
+});
 // Configuração ÚNICA por revenda, aplicada a todas as fichas do mesmo parceiro.
 export const expirySettingsSchema = z.object({
   enabled: z.boolean(), daysBefore: z.number().int().min(1).max(30),

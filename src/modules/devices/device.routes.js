@@ -22,6 +22,10 @@ import { notFound } from "../../shared/errors.js";
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
 router.get("/activations/:id/connection-audit", requirePermission("devices:read"), auditParams, auditRead(false));
+router.get('/activations/:id/support', requirePermission('devices:read'), validate({ params: id }), async (req,res) => {
+  const { supportForActivation } = await import('../support/support.service.js');
+  res.set('Cache-Control','no-store').json(await supportForActivation(req.valid.params.id));
+});
 router.get('/activations/:id/remote', requirePermission('devices:read'), validate({ params: id }), async(req,res)=>
   res.set('Cache-Control','no-store').json(await remoteControlOverview(req.valid.params.id)));
 router.post('/activations/:id/remote', requirePermission('devices:write'), macWriteLimiter,

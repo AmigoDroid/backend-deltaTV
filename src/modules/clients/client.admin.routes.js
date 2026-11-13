@@ -25,6 +25,12 @@ router.get("/", requirePermission("clients:read"),
   async (req, res) => res.json(await svc.adminList(req.valid.query)));
 router.get("/summary", requirePermission("clients:read"), validate({ query: z.object({ partnerId: partnerId.optional() }) }),
   async (req, res) => res.json(await svc.adminSummary(req.valid.query.partnerId)));
+// Ficha única, sem novos registros no banco. Operador só lê dados permitidos.
+router.get('/:id/support', requirePermission('clients:read'), validate({ params: id }),
+  async (req,res) => {
+    const { supportForClient } = await import('../support/support.service.js');
+    res.set('Cache-Control','no-store').json(await supportForClient(req.valid.params.id));
+  });
 
 // O admin/superadmin pode gerenciar a MESMA regra que a revenda enxerga, sem criar duplicatas.
 // Toda parceria com cadastro de clientes possui sua própria regra; conteúdo e revenda são isolados por partner_id.

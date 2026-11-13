@@ -51,6 +51,10 @@ router.use("/white-label", whiteLabelApps);
 const scope = (req) => ({ partnerId: req.user.partnerId });
 const id = z.object({ id: z.string().uuid() });
 router.get("/devices/:id/connection-audit", auditParams, auditRead(true));
+router.get('/devices/:id/support', validate({ params: id }), async (req,res) => {
+  const { supportForActivation } = await import('../support/support.service.js');
+  res.set('Cache-Control','no-store').json(await supportForActivation(req.valid.params.id,req.user.partnerId));
+});
 router.get('/devices/:id/remote', validate({ params: id }), async(req,res)=>
   res.set('Cache-Control','no-store').json(await remoteControlOverview(req.valid.params.id,req.user.partnerId)));
 router.post('/devices/:id/remote', macWriteLimiter,
