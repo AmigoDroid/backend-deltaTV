@@ -10,12 +10,28 @@ function remember(partnerId, result){cache.delete(partnerId);cache.set(partnerId
 export async function getServicePlan(partnerId,{fresh=false}={}){
   const hit=cache.get(partnerId);
   if(!fresh && hit && Date.now()-hit.at<CACHE_MS)return hit.result;
-  const [partner,record,contract]=await Promise.all([
-    Partner.findByPk(partnerId,{attributes:["id","kind"],raw:true}),
-    PartnerServicePlan.findByPk(partnerId,{raw:true}),
-    ContentPartnerTerms.findByPk(partnerId,{attributes:["autoPriority"],raw:true}),
-  ]);
-  if(!partner)throw notFound("Parceiro");
+  // Uma consulta indexada por chave primária; não são necessários 3 SELECTs.
+  // A política final continua sendo decidida exclusivamente por featuresFor().
+  const [row] = await sequelize.query(`SELECT p.id, p.kind,
+      ps.tier, ps.max_servers_override AS "maxServersOverride",
+      ps.auto_failover_override AS "autoFailoverOverride",
+      ps.auto_priority_override AS "autoPriorityOverride",
+      ps.email_alerts_override AS "emailAlertsOverride",
+      ps.detailed_history_override AS "detailedHistoryOverride",
+      ct.auto_priority AS "contractAutoPriority"
+    FROM partners p LEFT JOIN partner_service_plans ps ON ps.partner_id=p.id
+    LEFT JOIN content_partner_terms ct ON ct.partner_id=p.id
+    WHERE p.id=:partnerId LIMIT 1`, {
+      replacements:{partnerId},type:QueryTypes.SELECT,
+    });
+  if(!row)throw notFound("Parceiro");
+  const partner={id:row.id,kind:row.kind};
+  const record=row.tier ? {
+    tier:row.tier,maxServersOverride:row.maxServersOverride,
+    autoFailoverOverride:row.autoFailoverOverride,autoPriorityOverride:row.autoPriorityOverride,
+    emailAlertsOverride:row.emailAlertsOverride,detailedHistoryOverride:row.detailedHistoryOverride,
+  } : null;
+  const contract={autoPriority:row.contractAutoPriority};
   const tier=record?.tier||defaultTier(partner.kind);
   const catalog = await ServicePlanCatalog.findByPk(tier,{raw:true});
   if(!catalog)throw new AppError(409,"PLAN_MISSING","Plano técnico não encontrado no catálogo.");

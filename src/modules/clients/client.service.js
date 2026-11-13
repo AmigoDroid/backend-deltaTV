@@ -9,6 +9,7 @@ import { sql } from "../stock/stock-ledger.js";
 import { buildListSql, TODAY } from "./client.sql.js";
 import { DUE_SOON_DAYS, cleanText, parseDueDate, parsePhone } from "./client.rules.js";
 import { broadcastExpiryForClient } from './expiry-notice.service.js';
+import { resolveCommercialDeviceId } from "./device-link.service.js";
 
 /**
  * Clientes do revendedor, por MAC. ISOLAMENTO: toda consulta e escrita filtra por partnerId vindo do TOKEN; ficha de outro
@@ -22,7 +23,7 @@ const invalid = (message) => new AppError(422, "VALIDATION_ERROR", message);
 export function rowView(r) {
   const expires = r.license_expires_at ? new Date(r.license_expires_at) : null;
   return {
-    mac: String(r.mac).trim(), clientId: r.client_id ?? null,
+    mac: String(r.mac).trim(), clientId: r.client_id ?? null, deviceId: r.linked_device_id ?? r.activation_device_id ?? null,
     name: r.name ?? null, phone: r.phone ?? null, address: r.address ?? null, notes: r.notes ?? null,
     priceCents: r.price_cents ?? null, dueDate: r.due_date ?? null, daysLeft: r.days_left == null ? null : Number(r.days_left),
     device: r.activation_status ? {
@@ -91,9 +92,10 @@ export async function createClient({ partnerId, actor, input }) {
   if (actor?.role !== "superadmin" && (await ResellerClient.count({ where: { partnerId } })) >= MAX_CLIENTS_PER_PARTNER) {
     throw new AppError(422, "CLIENT_LIMIT", `Limite de ${MAX_CLIENTS_PER_PARTNER} clientes cadastrados atingido.`);
   }
+  const deviceId = await resolveCommercialDeviceId(partnerId, fields.mac);
   let c;
   try {
-    c = await ResellerClient.create({ partnerId, ...fields });
+    c = await ResellerClient.create({ partnerId, deviceId, ...fields });
   } catch (e) {
     if (e instanceof UniqueConstraintError) throw duplicate();
     throw e;
@@ -108,6 +110,10 @@ export async function updateClient({ partnerId, id, actor, input }) {
   const c = await ResellerClient.findOne({ where: { id, partnerId } }); // ficha de outro revendedor => 404
   if (!c) throw notFound("Cliente");
   const oldMac = c.mac.trim();
+  // Mudanças de MAC ou fichas ainda não vinculadas exigem nova validação, sem assumir identidade.
+  if (fields.mac !== undefined || !c.deviceId) {
+    fields.deviceId = await resolveCommercialDeviceId(partnerId, fields.mac ?? oldMac);
+  }
   try {
     await c.update(fields);
   } catch (e) {

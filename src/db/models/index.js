@@ -396,6 +396,7 @@ export const PixRefundCase = def("PixRefundCase", "pix_refund_cases", {
 
 // Clientes do revendedor (migration 20261029000001): agenda privada por MAC (nome, contato, valor, vencimento).
 export const ResellerClient = def("ResellerClient", "reseller_clients", {
+  deviceId: { type: T.UUID }, // referência canônica opcional, nunca substitui MAC de apps antigos
   partnerId: { type: T.UUID, allowNull: false }, mac: { type: T.CHAR(17), allowNull: false },
   name: str(160, { allowNull: false }), phone: str(30), address: str(300),
   priceCents: { type: T.INTEGER }, dueDate: { type: T.DATEONLY }, notes: str(500),

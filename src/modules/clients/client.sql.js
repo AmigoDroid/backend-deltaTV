@@ -46,14 +46,14 @@ export function buildListSql({ partnerId, q, filter = "all", limit, offset }) {
       UNION
       SELECT mac FROM activations WHERE partner_id = :p AND status <> 'revoked' AND mac IS NOT NULL
     ), act AS (
-      SELECT DISTINCT ON (mac) id, mac, status, activated_at, granted_license_id
+      SELECT DISTINCT ON (mac) id, mac, device_id, status, activated_at, granted_license_id
         FROM activations WHERE partner_id = :p AND status <> 'revoked' AND mac IS NOT NULL
        ORDER BY mac, activated_at DESC
     )`;
   return {
     countSql: `${cte} SELECT count(*)::int AS total ${from}`,
     rowsSql: `${cte}
-      SELECT k.mac, c.id AS client_id, c.name, c.phone, c.address, c.price_cents, c.notes,
+      SELECT k.mac, c.id AS client_id, c.device_id AS linked_device_id, act.device_id AS activation_device_id, c.name, c.phone, c.address, c.price_cents, c.notes,
              to_char(c.due_date, 'YYYY-MM-DD') AS due_date, (c.due_date - ${TODAY}) AS days_left,
              act.id AS activation_id, act.status AS activation_status, act.activated_at,
              l.status AS license_status, l.expires_at AS license_expires_at
