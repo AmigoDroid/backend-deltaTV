@@ -29,7 +29,7 @@ export async function lineageOf(id, transaction) {
      UNION ALL
      SELECT p.id,p.parent_partner_id,p.distribution_role,p.kind,p.status,p.ends_at,a.hops+1,a.visited||p.id
        FROM partners p JOIN ancestry a ON a.parent_partner_id=p.id
-       WHERE a.hops<:limit AND NOT(p.id=ANY(a.visited))
+       WHERE a.hops < :limit AND NOT(p.id=ANY(a.visited))
    ) SELECT a.id,a.parent_partner_id,a.distribution_role,a.kind,a.status,a.ends_at,a.hops,
        n.can_invite,n.can_sell,n.can_promote,n.max_children,n.max_depth
        FROM ancestry a LEFT JOIN reseller_network_policies n ON n.partner_id=a.id
@@ -193,7 +193,7 @@ export async function setMaster(partnerId, { master, policy, adminOverride = fal
         SELECT id,parent_partner_id,0 AS depth,ARRAY[id] AS visited FROM partners WHERE id=:id
         UNION ALL SELECT p.id,p.parent_partner_id,s.depth+1,s.visited||p.id
           FROM partners p JOIN subtree s ON p.parent_partner_id=s.id
-          WHERE s.depth<:maxdepth AND NOT (p.id=ANY(s.visited))
+          WHERE s.depth < :maxdepth AND NOT (p.id=ANY(s.visited))
       ) SELECT coalesce(max(depth),0)::int AS deepest FROM subtree`,{id:partnerId,maxdepth:NETWORK_MAX_DEPTH},transaction))[0];
       const absoluteDepth=(await lineageOf(partnerId,transaction)).length + Number(descendants?.deepest||0);
       if (absoluteDepth > policy.maxDepth) throw new AppError(409,"NETWORK_DEPTH_CONFLICT","A nova profundidade é menor que a subárvore existente.");
@@ -355,7 +355,7 @@ export async function networkTree(adminId=null,{page=1,pageSize=100,q=""}={}) {
     UNION ALL
     SELECT p.id,p.name,p.parent_partner_id,p.distribution_role,p.kind,p.status,t.depth+1,t.visited||p.id,t.sort_path||(p.name||p.id::text)
       FROM partners p JOIN tree t ON p.parent_partner_id=t.id
-      WHERE t.depth<:limit AND NOT(p.id=ANY(t.visited))
+      WHERE t.depth < :limit AND NOT(p.id=ANY(t.visited))
   ) SELECT id,name,parent_partner_id AS "parentPartnerId",distribution_role AS "distributionRole",status,depth,
       (SELECT count(*)::int FROM tree t2 WHERE (:search = '' OR t2.name ILIKE :pattern OR t2.id::text ILIKE :pattern)) AS "totalCount"
     FROM tree WHERE (:search = '' OR name ILIKE :pattern OR id::text ILIKE :pattern)
@@ -377,7 +377,7 @@ export async function networkSummary(partnerId) {
     SELECT id,0 AS depth,ARRAY[id] AS path FROM partners WHERE id=:id
     UNION ALL
     SELECT p.id,m.depth+1,m.path||p.id FROM partners p JOIN members m ON p.parent_partner_id=m.id
-     WHERE m.depth<:maxdepth AND NOT(p.id=ANY(m.path))
+     WHERE m.depth < :maxdepth AND NOT(p.id=ANY(m.path))
   ) SELECT
     (SELECT count(*)::int FROM members WHERE depth>0) AS resellers,
     (SELECT count(*)::int FROM partners p JOIN members m ON m.id=p.id WHERE m.depth>0 AND p.distribution_role='master') AS submasters,

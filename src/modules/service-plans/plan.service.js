@@ -59,7 +59,7 @@ export async function updateServicePlan(partnerId,body,actor){
       const over=await sequelize.query(`SELECT c.id,c.code,count(pool.id)::integer AS count
         FROM partner_codes c JOIN code_server_pools pool ON pool.code_id=c.id
         WHERE c.partner_id=:partnerId AND c.status='active'
-        GROUP BY c.id,c.code HAVING count(pool.id)>:maxServers LIMIT 1`,{
+        GROUP BY c.id,c.code HAVING count(pool.id) > :maxServers LIMIT 1`,{
         replacements:{partnerId,maxServers:features.maxServers},type:QueryTypes.SELECT,transaction:t});
       if(over.length)throw new AppError(409,"SERVER_POOL_EXCEEDS_PLAN",`O código ${over[0].code} tem ${over[0].count} URLs. Reduza para ${features.maxServers} antes de alterar o plano.`);
     }
