@@ -6,7 +6,10 @@ import { readNetworkMetrics } from "./network.js";
 import { relayStats } from "../../shared/relay.js";
 import { env } from "../../config/env.js";
 
-const MIN_SAMPLE_MS = 1000;
+// CPU, RAM e tráfego: até 2 amostras por segundo; disco: uma leitura a cada 1 s.
+const MIN_SAMPLE_MS = 350;
+const STORAGE_SAMPLE_MS = 1000;
+let lastStorage = null;
 let lastSample = null;
 let previousCpu = null;
 
@@ -52,15 +55,19 @@ function linuxMemory() {
 }
 
 function rootStorage() {
+  const now = Date.now();
+  if (lastStorage && now - lastStorage.at < STORAGE_SAMPLE_MS) return lastStorage.value;
   try {
     const stat = fs.statfsSync("/", { bigint: true });
     const total = Number(stat.blocks * stat.bsize);
     const available = Number(stat.bavail * stat.bsize);
     const free = Number(stat.bfree * stat.bsize);
     // Inclui espaço reservado pelo filesystem no total ocupado.
-    return { total, used: Math.max(0, total - free), available };
+    const value = { total, used: Math.max(0, total - free), available };
+    lastStorage = { at: now, value };
+    return value;
   } catch {
-    return null;
+    return lastStorage?.value ?? null;
   }
 }
 
@@ -68,14 +75,15 @@ export function readHostMetrics() {
   const now = Date.now();
   if (lastSample && now - lastSample.at < MIN_SAMPLE_MS) return lastSample.value;
 
-  const cpu = cpuCounters(os.cpus());
+  const coreTimes = os.cpus();
+  const cpu = cpuCounters(coreTimes);
   const usedPercent = cpuPercent(previousCpu, cpu);
   previousCpu = cpu;
   const memory = linuxMemory();
   const runtime = process.memoryUsage();
   const value = {
     sampledAt: new Date(now).toISOString(),
-    cpu: { percent: usedPercent, cores: os.cpus().length, load1: Math.round(os.loadavg()[0] * 100) / 100 },
+    cpu: { percent: usedPercent, cores: coreTimes.length, load1: Math.round(os.loadavg()[0] * 100) / 100 },
     ...memory,
     storage: rootStorage(),
     network: readNetworkMetrics(),

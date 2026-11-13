@@ -1,6 +1,7 @@
 import { createDeviceWebSocketServer, currentDeviceChannelStats } from "./device-channel.js";
 import { WebSocketServer, WebSocket } from "ws";
 import { readHostMetrics } from "../modules/system/metrics.js";
+import { metricsStreamInterval } from "../modules/system/metrics-stream-policy.js";
 import { AdminUser, AuthSession } from "../db/models/index.js";
 import { Op } from "sequelize";
 import { verifyJwt } from "../shared/crypto.js";
@@ -105,6 +106,35 @@ async function touch(user) {
 export function attachRealtime(server) {
   wss = new WebSocketServer({ noServer: true, maxPayload: 4096, perMessageDeflate: false });
   const deviceSocketServer = createDeviceWebSocketServer();
+  const streamIntervalMs = metricsStreamInterval(process.env.VPS_METRICS_STREAM_MS);
+  let metricsTimer = null;
+  const metricsSubscribers = () => [...peers].filter((p) =>
+    p.systemMetricsSubscribed && p.user.role === "superadmin" && p.socket.readyState === WebSocket.OPEN
+  );
+  // Uma única leitura por amostra, distribuída a todos os assinantes. Sem PostgreSQL.
+  function publishSystemMetrics(subscribers = metricsSubscribers()) {
+    if (!subscribers.length) return;
+    try {
+      const packet = JSON.stringify({ type: "system-metrics", metrics: { ...readHostMetrics(), streamIntervalMs, deviceRealtime: currentDeviceChannelStats() } });
+      for (const peer of subscribers) {
+        // Se um painel estiver lento, descartar a amostra em vez de formar fila.
+        // Uma falha em uma aba não pode impedir a entrega às demais.
+        if (peer.socket.readyState !== WebSocket.OPEN || peer.socket.bufferedAmount >= 32 * 1024) continue;
+        try { peer.socket.send(packet); } catch { /* a desconexão será tratada no evento close */ }
+      }
+    } catch (err) { console.warn("[ws-metrics] Falha ao coletar telemetria:", err.message); }
+  }
+  function syncMetricsTimer() {
+    if (!metricsSubscribers().length) {
+      if (metricsTimer) clearInterval(metricsTimer);
+      metricsTimer = null;
+      return;
+    }
+    if (!metricsTimer) {
+      metricsTimer = setInterval(() => publishSystemMetrics(), streamIntervalMs);
+      metricsTimer.unref?.();
+    }
+  }
   server.on("upgrade", (req, socket, head) => {
     const origin = req.headers.origin;
     let pathname;
@@ -124,6 +154,7 @@ export function attachRealtime(server) {
       if (peer) {
         const user = peer.user;
         peers.delete(peer);
+        syncMetricsTimer();
         if (user.role === "partner" && !presence(user.partnerId)) {
           // Uma escrita por desconexão final: permite estimar o tempo offline após recarregar a página.
           void touch(user);
@@ -160,7 +191,8 @@ export function attachRealtime(server) {
         // Nunca expor o uso do host a administradores comuns ou revendas.
         if (peer.user.role !== "superadmin") { socket.close(1008, "Forbidden"); return; }
         peer.systemMetricsSubscribed = packet.enabled === true;
-        if (peer.systemMetricsSubscribed) emit(socket, { type: "system-metrics", metrics: { ...readHostMetrics(), deviceRealtime: currentDeviceChannelStats() } });
+        if (peer.systemMetricsSubscribed) publishSystemMetrics([peer]);
+        syncMetricsTimer();
         return;
       }
       if (packet?.type === "heartbeat" && peer.user.role === "partner" && now() - lastTouch >= 60000) {
@@ -171,16 +203,6 @@ export function attachRealtime(server) {
     socket.on("close", close);
     socket.on("error", close);
   });
-  // Uma única amostra para todos os superadmins inscritos, somente enquanto alguém observa a tela.
-  const metricsTimer = setInterval(() => {
-    const subscribers = [...peers].filter((p) => p.systemMetricsSubscribed && p.user.role === "superadmin" && p.socket.readyState === WebSocket.OPEN);
-    if (!subscribers.length) return;
-    const packet = { type: "system-metrics", metrics: { ...readHostMetrics(), deviceRealtime: currentDeviceChannelStats() } };
-    for (const peer of subscribers) {
-      if (peer.socket.bufferedAmount < 16 * 1024) emit(peer.socket, packet);
-    }
-  }, 5000);
-  metricsTimer.unref();
   const timer = setInterval(() => {
     for (const peer of [...peers]) {
       if (peer.exp * 1000 <= now() || !peer.alive) { peer.socket.terminate(); continue; }
@@ -192,5 +214,5 @@ export function attachRealtime(server) {
     void verifyActivePeers().catch(err => console.warn("[ws-auth] Falha de revalidação:", err.message));
   }, 60000);
   revocationTimer.unref();
-  return () => { clearInterval(revocationTimer); clearInterval(timer); clearInterval(metricsTimer); deviceSocketServer.stop(); for (const peer of [...peers]) peer.socket.close(1001); wss.close(); };
+  return () => { clearInterval(revocationTimer); clearInterval(timer); if (metricsTimer) clearInterval(metricsTimer); deviceSocketServer.stop(); for (const peer of [...peers]) peer.socket.close(1001); wss.close(); };
 }
