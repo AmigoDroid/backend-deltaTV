@@ -37,7 +37,7 @@ const loadPartner = async (req, _res, next) => {
 // Quais durações o parceiro pode comprar e a seu preço (para a tela montar o formulário). Pix desligado => enabled=false.
 partnerRouter.get("/config", loadPartner, async (req, res) => {
   const enabled = svc.pixEnabled();
-  const canBuyStock = STOCK_KINDS.includes(req.pixPartner.kind);
+  const canBuyStock = STOCK_KINDS.includes(req.pixPartner.kind) && !req.pixPartner.parentPartnerId;
   res.json({
     enabled, canBuyStock, maxQuantity: svc.MAX_STOCK_QUANTITY,
     prices: enabled && canBuyStock ? await prices.pricesFor(req.pixPartner.id) : [],
@@ -53,6 +53,7 @@ partnerRouter.post(
   "/stock", pixCreateLimiter, requireReseller,
   validate({ body: z.object({ months: z.number().int().min(1).max(120), quantity: z.number().int().min(1).max(svc.MAX_STOCK_QUANTITY) }) }),
   async (req, res) => {
+    if (req.reseller.partner.parentPartnerId) throw new AppError(403,"NETWORK_PURCHASE_REQUIRED","Compre as licenças pelo seu Master no menu Minha rede de revendas.");
     const charge = await svc.createStockCharge({ partner: req.reseller.partner, user: req.user, actor: actorOf(req), ...req.valid.body });
     res.status(201).json(svc.chargeView(charge));
   },

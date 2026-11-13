@@ -1,3 +1,4 @@
+import { consumeInvite } from "../distribution/network.service.js";
 import crypto from "node:crypto";
 import { UniqueConstraintError } from "sequelize";
 import { sequelize, Partner, AdminUser } from "../../db/models/index.js";
@@ -28,7 +29,7 @@ const slugify = (name) => {
  * Cria o revendedor (pendente) + o usuário do portal. A resposta é SEMPRE a mesma, exista ou não o e-mail:
  * não revela quais e-mails já têm conta (e-mail repetido não cria nada).
  */
-export async function registerReseller({ name: companyName, contactName, email, phone, password }, meta) {
+export async function registerReseller({ name: companyName, contactName, email, phone, password, inviteToken }, meta) {
   // O cadastro público pede só o nome da pessoa. O nome do parceiro (e o identificador interno/slug, que nunca é
   // digitado) nascem dele; o admin pode ajustar depois. `name` continua aceito por compatibilidade com clientes antigos.
   const name = companyName?.trim() || contactName;
@@ -45,14 +46,15 @@ export async function registerReseller({ name: companyName, contactName, email, 
   const now = new Date();
   try {
     await sequelize.transaction(async (t) => {
+      const parentPartnerId = inviteToken ? await consumeInvite(inviteToken, t) : null;
       const partner = await Partner.create({
-        name, slug: slugify(name), kind: "reseller", status: "suspended", statusReason: SIGNUP_PENDING_REASON,
+        name, slug: slugify(name), kind: "reseller", parentPartnerId, distributionRole: "reseller", status: "suspended", statusReason: SIGNUP_PENDING_REASON,
         startsAt: now, endsAt: new Date(Date.UTC(now.getUTCFullYear() + 10, now.getUTCMonth(), now.getUTCDate())),
         billingModel: "none", monthlyFeeCents: 0, suspendPolicy: "manual", // revendedor compra licenças: sem mensalidade
         contactName, contactEmail: mail, contactPhone: phone,
       }, { transaction: t });
       await AdminUser.create({ name: contactName, email: mail, passwordHash, role: "partner", partnerId: partner.id }, { transaction: t });
-      await audit({ actor, action: "reseller.signup", entityType: "partner", entityId: partner.id, metadata: { name, email: mail }, transaction: t });
+      await audit({ actor, action: "reseller.signup", entityType: "partner", entityId: partner.id, metadata: { name, email: mail, parentPartnerId }, transaction: t });
     });
   } catch (e) {
     if (!(e instanceof UniqueConstraintError)) throw e; // corrida: o mesmo e-mail chegou duas vezes ao mesmo tempo

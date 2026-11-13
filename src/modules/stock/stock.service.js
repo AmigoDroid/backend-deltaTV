@@ -97,6 +97,9 @@ export async function resolveRecipient(email, from) {
     throw new AppError(404, "RECIPIENT_NOT_FOUND", "Nenhum revendedor ativo encontrado com este e-mail.");
   }
   if (partner.id === from.id) throw new AppError(422, "SELF_TRANSFER", "Você não pode transferir para si mesmo.");
+  if (from.parentPartnerId || partner.parentPartnerId || from.distributionRole === "master" || partner.distributionRole === "master") {
+    throw new AppError(403, "NETWORK_TRANSFER_REQUIRED", "Na rede de Masters, distribua licenças pela venda auditada ou solicite um ajuste ao Superadmin.");
+  }
   return partner;
 }
 
@@ -114,6 +117,11 @@ export async function transferStock({ partner, actor, email, months, quantity, n
     { partnerId: to.id, delta: quantity, kind: "transfer_in", counterpartyPartnerId: partner.id },
   ].sort((a, b) => (a.partnerId < b.partnerId ? -1 : 1));
   const balances = await sequelize.transaction(async (t) => {
+    // Require both accounts to still be independent inside the transfer transaction.
+    const ids=[partner.id,to.id].sort();
+    const locked=await Partner.findAll({where:{id:ids},transaction:t,lock:t.LOCK.UPDATE});
+    if(locked.length!==2 || locked.some(p=>p.parentPartnerId || p.distributionRole==="master"))
+      throw new AppError(403,"NETWORK_TRANSFER_REQUIRED","Esta transferência precisa passar pela venda hierárquica.");
     const after = {};
     for (const leg of legs) after[leg.kind] = await move(t, { ...leg, months, actor, transferId, note });
     await audit({

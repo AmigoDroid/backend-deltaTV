@@ -1,3 +1,4 @@
+import { verifyNetworkInvite } from "../distribution/network.routes.js";
 import { Router } from "express";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
@@ -16,6 +17,7 @@ import { registerReseller } from "../partners/reseller-signup.service.js";
 import { verifyPreRegistration, completePreRegistration } from "../partners/partner-invite.service.js";
 
 const router = Router();
+router.use("/network-invite", verifyNetworkInvite);
 router.use("/history", history);
 router.use("/profile", profileRoutes);
 const meta = (req) => ({ ip: req.ip, userAgent: req.get("user-agent") });
@@ -36,6 +38,7 @@ router.post(
     name: z.string().trim().min(2).max(160).optional(), contactName: z.string().trim().min(2).max(160),
     email: z.string().trim().email().max(200), phone: z.string().trim().min(8).max(40),
     password: z.string().min(12).max(128),
+    inviteToken: z.string().min(32).max(120).regex(/^[A-Za-z0-9_-]+$/).optional(),
     website: z.string().max(200).optional(), // isca anti-robô: campo invisível; se vier preenchido, ignora em silêncio
   }) }),
   async (req, res) => {

@@ -1,3 +1,5 @@
+import { networkResourceGuard, effectiveResources } from "../distribution/network.resources.js";
+import { partnerNetwork } from "../distribution/network.routes.js";
 import { queueRemoteCommand, remoteControlOverview } from '../../realtime/remote-control.service.js';
 import { auditParams, auditRead } from '../connection-audit/routes.js';
 import { partnerHelpRoutes } from "../help/help.routes.js";
@@ -38,12 +40,14 @@ import {getServicePlan} from "../service-plans/plan.service.js";
  */
 const router = Router();
 router.use(authenticate, requirePartnerRole);
+router.use(networkResourceGuard);
 router.use("/notifications", partnerNotificationRoutes);
 router.use("/help", partnerHelpRoutes);
 router.use("/server-monitor", resellerServerMonitor);
 router.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
 router.use("/pix", pixRoutes);
 router.use("/credits", creditRoutes);
+router.use("/network", partnerNetwork);
 router.use("/clients", clientsRoutes);
 router.use("/web-access", webAccessRoutes);
 router.use("/app-downloads", appDownloadsRoutes);
@@ -169,7 +173,7 @@ const providerBody = z.object({
 const providerOut = (p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, status: p.status, priority: p.priority, deliveryMode: p.deliveryMode });
 const providerParams = z.object({ providerId: z.string().uuid() });
 router.post("/providers", macWriteLimiter, requireReseller, validate({ body: providerBody }), async (req, res) =>
-  res.status(201).json(providerOut(await createProvider(req.user.partnerId, req.valid.body, actorOf(req), { max: MAX_PROVIDERS_PER_RESELLER }))));
+  res.status(201).json(providerOut(await createProvider(req.user.partnerId, req.valid.body, actorOf(req), { max: Math.min(MAX_PROVIDERS_PER_RESELLER, (await effectiveResources(req.user.partnerId)).servers.limit ?? MAX_PROVIDERS_PER_RESELLER) }))));
 router.patch("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams, body: partialInput(providerBody) }), async (req, res) =>
   res.json(providerOut(await updateProvider(req.user.partnerId, req.valid.params.providerId, req.valid.body, actorOf(req)))));
 router.delete("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams }), async (req, res) => {

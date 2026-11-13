@@ -69,7 +69,7 @@ adminRouter.get("/wallets", requirePermission("billing:read"), validate({ query:
   res.json(await svc.listWallets(req.valid.query)));
 adminRouter.get(
   "/ledger", requirePermission("billing:read"),
-  validate({ query: z.object({ ...pageQuery, partnerId: z.string().uuid().optional(), kind: z.enum(["topup", "purchase", "adjust"]).optional() }) }),
+  validate({ query: z.object({ ...pageQuery, partnerId: z.string().uuid().optional(), kind: z.enum(["topup", "purchase", "adjust", "network_buy", "network_sale"]).optional() }) }),
   async (req, res) => res.json(await svc.listLedger(req.valid.query, { admin: true })),
 );
 adminRouter.post(

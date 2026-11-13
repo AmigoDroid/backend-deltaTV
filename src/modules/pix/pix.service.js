@@ -142,6 +142,7 @@ export async function createStockCharge({ partner, user, actor, months, quantity
   const provider = getProvider();
   assertCanPay(partner);
   if (!STOCK_KINDS.includes(partner.kind)) throw new AppError(422, "NOT_A_RESELLER", "Só revendedores compram licenças para estoque.");
+  if (partner.parentPartnerId) throw new AppError(409, "MASTER_PURCHASE_REQUIRED", "Licenças desta revenda devem ser compradas do Master.");
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_STOCK_QUANTITY) {
     throw new AppError(422, "INVALID_QUANTITY", `Informe de 1 a ${MAX_STOCK_QUANTITY} licenças.`);
   }
@@ -238,7 +239,12 @@ async function fulfil(chargeId, info, actor) {
           metadata: { source: "pix", chargeId: c.id, credits: c.quantity, rateCents: c.unitPriceCents, balance }, transaction: t,
         });
       } else {
-        const partner = await Partner.findByPk(c.partnerId, { transaction: t });
+        const partner = await Partner.findByPk(c.partnerId, { transaction: t, lock: t.LOCK.UPDATE });
+        // A provider may confirm a formerly expired/cancelled Pix after this account joined a Master.
+        // The existing outer catch marks it for reconciliation, WITHOUT granting stock or losing payment.
+        if (c.purpose === "stock" && partner?.parentPartnerId) {
+          throw new AppError(409, "LEGACY_STOCK_PIX_REVIEW", "Pix recebido após vínculo ao Master: concilie ou reembolse; não entregue estoque diretamente.");
+        }
         if (!partner || !STOCK_KINDS.includes(partner.kind) || ["cancelled", "blocked"].includes(partner.status)) {
           throw new AppError(409, "INVALID_STATE", "O cadastro não pode receber licenças no estado atual.");
         }

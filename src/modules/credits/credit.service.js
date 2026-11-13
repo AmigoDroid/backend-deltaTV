@@ -73,10 +73,10 @@ export async function listLedger({ partnerId, kind, page, pageSize }, { admin = 
 
 /** Tela do revendedor: saldo, câmbio efetivo, o que ele pode comprar e por quantos créditos. */
 export async function overviewFor(partner, { pixEnabled }) {
-  const [balance, rateCents, prices] = await Promise.all([creditBalanceOf(partner.id), rateFor(partner.id), pricesFor(partner.id)]);
+  const [balance, rateCents, prices] = await Promise.all([creditBalanceOf(partner.id), rateFor(partner.id), partner.parentPartnerId ? Promise.resolve([]) : pricesFor(partner.id)]);
   return {
     balance, rateCents, canRecharge: !!pixEnabled && !!rateCents, maxRecharge: MAX_CREDIT_RECHARGE,
-    maxBuyQuantity: MAX_BUY_QUANTITY, prices,
+    maxBuyQuantity: MAX_BUY_QUANTITY, prices, purchaseViaMaster: !!partner.parentPartnerId,
   };
 }
 
@@ -88,11 +88,16 @@ export async function overviewFor(partner, { pixEnabled }) {
  */
 export async function buyLicenses({ partner, actor, months, quantity }) {
   if (!STOCK_KINDS.includes(partner.kind)) throw new AppError(422, "NOT_A_RESELLER", "Só revendedores compram licenças para estoque.");
+  if (partner.parentPartnerId) throw new AppError(403, "NETWORK_PURCHASE_REQUIRED", "Esta revenda compra licenças pelo seu Master em Minha rede de revendas.");
   if (["cancelled", "blocked"].includes(partner.status)) throw new AppError(409, "INVALID_STATE", "Este cadastro não pode comprar licenças. Fale com a plataforma.");
   if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_BUY_QUANTITY) {
     throw new AppError(422, "INVALID_QUANTITY", `Informe de 1 a ${MAX_BUY_QUANTITY} licenças.`);
   }
   const out = await sequelize.transaction(async (t) => {
+    // Protect against admin attaching this reseller to a Master while checkout runs.
+    const current=await Partner.findByPk(partner.id,{transaction:t,lock:t.LOCK.UPDATE});
+    if(!current || current.parentPartnerId)
+      throw new AppError(403,"NETWORK_PURCHASE_REQUIRED","A revenda agora pertence a um Master. Compre pela rede.");
     await ensurePlan(months, { transaction: t });
     const unit = await priceOf(partner.id, months, t);
     const total = unit * quantity;

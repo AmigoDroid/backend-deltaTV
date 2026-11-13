@@ -1,3 +1,4 @@
+import { networkResourceGuard } from "../distribution/network.resources.js";
 import { queueRemoteCommand, remoteControlOverview } from '../../realtime/remote-control.service.js';
 import { providerQuality, recentQualityAlerts } from './quality.service.js';
 import { macWriteLimiter } from "../../middleware/security.js";
@@ -24,6 +25,7 @@ const r=Router();
 r.use(authenticate,requirePartnerRole);
 r.use(async(req,_res,next)=>{const p=await Partner.findByPk(req.user.partnerId);if(!p|| !["content","both"].includes(p.kind)) throw new AppError(403,"FORBIDDEN","Portal exclusivo de parceiros de conteúdo.");next();});
 // Scope realtime invalidations to THIS content partnership; never broadcast to unrelated revendas.
+r.use(networkResourceGuard);
 r.use((req,res,next)=>{
   if (["POST","PUT","PATCH","DELETE"].includes(req.method)) res.on("finish",()=>{
     if (res.statusCode >= 200 && res.statusCode < 300) {

@@ -26,6 +26,8 @@ export const Partner = def("Partner", "partners", {
   suspendPolicy: str(20, { allowNull: false, defaultValue: "auto_after_grace" }), notes: T.TEXT,
   // content = fornece conteúdo; reseller = compra/distribui licenças e edita dispositivos por MAC; both = os dois.
   kind: str(10, { allowNull: false, defaultValue: "content" }),
+  distributionRole: str(12, { allowNull: false, defaultValue: "reseller" }),
+  parentPartnerId: { type: T.UUID },
 });
 
 export const AdminUser = def("AdminUser", "admin_users", {

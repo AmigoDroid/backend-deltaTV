@@ -7,7 +7,7 @@ import { AppError } from "../../shared/errors.js";
  * Crédito é só um saldo pré-pago para comprar licença. Sem transferência entre parceiros, sem saque, sem venda de volta.
  * Fica separado de credit.service.js para o Pix (pix.service.js) creditar sem depender do resto.
  */
-export const CREDIT_KINDS = ["topup", "purchase", "adjust"];
+export const CREDIT_KINDS = ["topup", "purchase", "adjust", "network_buy", "network_sale"];
 
 const sql = (text, replacements, transaction, type = QueryTypes.SELECT) =>
   sequelize.query(text, { replacements, transaction, type });

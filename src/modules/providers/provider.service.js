@@ -9,6 +9,8 @@ import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { invalidateServerPools } from "../provider-monitor/code-pool.service.js";
 import { clearResolutionCache } from "../provider-monitor/resolve.service.js";
 import { ProviderHealth } from "../../db/models/index.js";
+import { effectiveResources } from "../distribution/network.resources.js";
+import { resellerKind, quotaReached } from "../distribution/network.policy.js";
 
 /**
  * Confirma no painel do provedor (API Xtream, player_api.php) que usuário/senha existem e a conta está ativa.
@@ -47,12 +49,22 @@ async function prepare(input, current) {
 
 /** `max`: teto de servidores da parceria (usado no portal do revendedor, que cadastra os próprios). Admin não passa. */
 export async function createProvider(partnerId, input, actor, { max } = {}) {
-  if (!(await Partner.findByPk(partnerId))) throw notFound("Parceiro");
-  if (max && (await PartnerProvider.count({ where: { partnerId } })) >= max) {
-    throw new AppError(409, "PROVIDER_LIMIT", `Limite de ${max} servidores atingido. Exclua ou reaproveite um servidor existente.`);
-  }
+  // Prepare URL/SSRF before acquiring the lock so network probes do not hold a DB transaction.
   const patch = await prepare({ playlistTemplate: DEFAULT_TEMPLATE, ...input });
   return sequelize.transaction(async (t) => {
+    // A partner row serializes concurrent INSERTs across both reseller and content portals.
+    // A zero limit MUST mean zero; never use a truthy check for quotas.
+    const owner = await Partner.findByPk(partnerId, { transaction: t, lock: t.LOCK.UPDATE });
+    if (!owner) throw notFound("Parceiro");
+    let effectiveMax = max ?? null;
+    if (resellerKind(owner.kind)) {
+      const resources = await effectiveResources(partnerId, t);
+      if (!resources.servers.enabled) throw new AppError(403, "NETWORK_RESOURCE_DISABLED", "Seu Master desativou o cadastro de servidores.");
+      if (resources.servers.limit !== null) effectiveMax = Math.min(effectiveMax ?? Infinity, resources.servers.limit);
+    }
+    if (quotaReached(effectiveMax, await PartnerProvider.count({ where: { partnerId }, transaction: t }))) {
+      throw new AppError(409, "PROVIDER_LIMIT", `Limite de ${effectiveMax} servidores atingido.`);
+    }
     const p = await PartnerProvider.create({ partnerId, ...patch }, { transaction: t });
     await audit({ actor, action: "provider.create", entityType: "partner", entityId: partnerId, metadata: { providerId: p.id, baseUrl: p.baseUrl }, transaction: t });
     return p;
