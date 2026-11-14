@@ -1,4 +1,5 @@
 import { consumeInvite } from "../distribution/network.service.js";
+import { INVITED_RESELLER_RESTRICTED_RESOURCES, invitedSignupState } from "../distribution/invite-onboarding.policy.js";
 import crypto from "node:crypto";
 import { UniqueConstraintError } from "sequelize";
 import { sequelize, Partner, AdminUser } from "../../db/models/index.js";
@@ -9,9 +10,10 @@ import { AppError } from "../../shared/errors.js";
 /**
  * Autocadastro de revendedor (tela pública do portal do revendedor).
  *
- * O cadastro nasce SUSPENSO com este motivo ("aguardando aprovação"): a pessoa já consegue entrar no portal, mas nada
- * funciona até o admin aprovar (botão "Reativar" na parceria). Recusar = "Bloquear" com o motivo.
- * Sem migration: usa os campos existentes (status + statusReason).
+ * Cadastro normal (sem convite) permanece aguardando aprovação do administrador.
+ * Com convite validado e consumido em transação, a conta entra ATIVA na rede do Master.
+ * Recursos de maior privilégio permanecem desativados por padrão até concessão do Master.
+ * Não adiciona colunas ou tabelas: usa a estrutura da Rede de Masters já migrada.
  */
 export const SIGNUP_PENDING_REASON = "Aguardando aprovação do cadastro";
 export const isPendingSignup = (p) => p?.status === "suspended" && p?.statusReason === SIGNUP_PENDING_REASON;
@@ -47,14 +49,26 @@ export async function registerReseller({ name: companyName, contactName, email, 
   try {
     await sequelize.transaction(async (t) => {
       const parentPartnerId = inviteToken ? await consumeInvite(inviteToken, t) : null;
+      const signupState = invitedSignupState(Boolean(parentPartnerId));
       const partner = await Partner.create({
-        name, slug: slugify(name), kind: "reseller", parentPartnerId, distributionRole: "reseller", status: "suspended", statusReason: SIGNUP_PENDING_REASON,
+        name, slug: slugify(name), kind: "reseller", parentPartnerId, distributionRole: "reseller", ...signupState,
         startsAt: now, endsAt: new Date(Date.UTC(now.getUTCFullYear() + 10, now.getUTCMonth(), now.getUTCDate())),
         billingModel: "none", monthlyFeeCents: 0, suspendPolicy: "manual", // revendedor compra licenças: sem mensalidade
         contactName, contactEmail: mail, contactPhone: phone,
       }, { transaction: t });
+      // Uma URL de convite é uma credencial de ingresso, não uma autorização irrestrita.
+      // O Master pode conceder esses recursos depois, obedecendo suas próprias permissões.
+      if (parentPartnerId) {
+        for (const resource of INVITED_RESELLER_RESTRICTED_RESOURCES) {
+          await sequelize.query(`INSERT INTO reseller_network_resources(partner_id,resource,enabled,limit_value)
+            VALUES(:partnerId,:resource,false,NULL)`,{
+            replacements:{partnerId:partner.id,resource},transaction:t,
+          });
+        }
+      }
       await AdminUser.create({ name: contactName, email: mail, passwordHash, role: "partner", partnerId: partner.id }, { transaction: t });
-      await audit({ actor, action: "reseller.signup", entityType: "partner", entityId: partner.id, metadata: { name, email: mail, parentPartnerId }, transaction: t });
+      await audit({ actor, action: "reseller.signup", entityType: "partner", entityId: partner.id,
+        metadata: { name, email: mail, parentPartnerId, autoActivatedByInvite:Boolean(parentPartnerId) }, transaction: t });
     });
   } catch (e) {
     if (!(e instanceof UniqueConstraintError)) throw e; // corrida: o mesmo e-mail chegou duas vezes ao mesmo tempo

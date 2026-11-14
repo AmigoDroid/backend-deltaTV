@@ -1,3 +1,4 @@
+import { buildResellerInviteUrl } from "./invite-onboarding.policy.js";
 import crypto from "node:crypto";
 import { QueryTypes } from "sequelize";
 import { sequelize, Partner, AdminUser } from "../../db/models/index.js";
@@ -7,7 +8,7 @@ import { move as stockMove, balancesOf } from "../stock/stock-ledger.js";
 import { creditMove, creditBalanceOf } from "../credits/credit-ledger.js";
 import { ensurePlan } from "../licenses/plan.service.js";
 import { effectivePartnerStatus } from "../access/access.policy.js";
-import { NETWORK_MAX_DEPTH, MAX_NETWORK_QUANTITY, resellerKind, isNetworkMaster, networkPrice, purchaseLegs, canUseInvite, deriveNetworkLabel, expectedPriceMatches } from "./network.policy.js";
+import { MAX_NETWORK_QUANTITY, resellerKind, isNetworkMaster, networkPrice, purchaseLegs, canUseInvite, deriveNetworkLabel, expectedPriceMatches } from "./network.policy.js";
 
 const select = (sql, replacements = {}, transaction) => sequelize.query(sql, { replacements, transaction, type: QueryTypes.SELECT });
 const execute = (sql, replacements = {}, transaction) => sequelize.query(sql, { replacements, transaction, type: QueryTypes.RAW });
@@ -18,7 +19,7 @@ const policyRows = async (id, transaction) => select(`SELECT partner_id, can_inv
   FROM reseller_network_policies WHERE partner_id=:id`, { id }, transaction);
 export async function policyOf(id, transaction) {
   const p = (await policyRows(id, transaction))[0];
-  return p ? { canInvite: p.can_invite, canSell: p.can_sell, canPromote: p.can_promote, maxChildren: p.max_children, maxDepth: p.max_depth } : { canInvite: false, canSell: false, canPromote: false, maxChildren: 0, maxDepth: 1 };
+  return p ? { canInvite: p.can_invite, canSell: p.can_sell, canPromote: p.can_promote, maxChildren: p.max_children, maxDepth: p.max_depth } : { canInvite: false, canSell: false, canPromote: false, maxChildren: null, maxDepth: null };
 }
 
 /** O caminho é percorrido SEM confiar em IDs enviados pelo navegador. Inclui o próprio parceiro. */
@@ -29,11 +30,11 @@ export async function lineageOf(id, transaction) {
      UNION ALL
      SELECT p.id,p.parent_partner_id,p.distribution_role,p.kind,p.status,p.ends_at,a.hops+1,a.visited||p.id
        FROM partners p JOIN ancestry a ON a.parent_partner_id=p.id
-       WHERE a.hops < :limit AND NOT(p.id=ANY(a.visited))
+       WHERE NOT(p.id=ANY(a.visited))
    ) SELECT a.id,a.parent_partner_id,a.distribution_role,a.kind,a.status,a.ends_at,a.hops,
        n.can_invite,n.can_sell,n.can_promote,n.max_children,n.max_depth
        FROM ancestry a LEFT JOIN reseller_network_policies n ON n.partner_id=a.id
-       ORDER BY a.hops ASC`, { id, limit: NETWORK_MAX_DEPTH }, transaction);
+       ORDER BY a.hops ASC`, { id }, transaction);
   if (!rows.length) throw notFound("Revenda");
   if (rows[rows.length - 1].parent_partner_id) throw invalid("Hierarquia inválida, circular ou maior que o limite.", "INVALID_HIERARCHY");
   return rows;
@@ -41,8 +42,8 @@ export async function lineageOf(id, transaction) {
 
 const policyFromNode = (p) => ({
   canInvite: p.can_invite === true, canSell: p.can_sell === true,
-  canPromote: p.can_promote === true, maxChildren: Number(p.max_children ?? 0),
-  maxDepth: Number(p.max_depth ?? 1),
+  canPromote: p.can_promote === true, maxChildren: p.max_children == null ? null : Number(p.max_children),
+  maxDepth: p.max_depth == null ? null : Number(p.max_depth),
 });
 export async function requireMaster(partnerId, permission, transaction) {
   const chain = await lineageOf(partnerId, transaction);
@@ -63,11 +64,12 @@ export async function requireMaster(partnerId, permission, transaction) {
 const childCount = async (id, transaction) => Number((await select(`SELECT count(*)::int AS count FROM partners WHERE parent_partner_id=:id`, { id }, transaction))[0]?.count ?? 0);
 async function assertCanAddChild(id, transaction) {
   const { chain, policy } = await requireMaster(id, "canInvite", transaction);
-  if (chain.length >= NETWORK_MAX_DEPTH) throw invalid("A hierarquia chegou ao limite de profundidade.");
-  if (chain.length >= policy.maxDepth) throw invalid("Este Master atingiu a profundidade máxima autorizada.");
-  if (await childCount(id, transaction) >= policy.maxChildren) throw new AppError(409, "NETWORK_CHILD_LIMIT", "Limite de revendas vinculadas atingido.");
+  if (policy.maxDepth != null && chain.length >= policy.maxDepth) throw invalid("Este Master atingiu a profundidade máxima autorizada.");
+  if (policy.maxChildren != null && await childCount(id, transaction) >= policy.maxChildren)
+    throw new AppError(409, "NETWORK_CHILD_LIMIT", "Limite de revendas vinculadas atingido.");
   for (let i = 1; i < chain.length; i++) {
-    if (chain.length >= policyFromNode(chain[i]).maxDepth) throw invalid("O limite de níveis da rede foi atingido.");
+    const ancestorDepth = policyFromNode(chain[i]).maxDepth;
+    if (ancestorDepth != null && chain.length >= ancestorDepth) throw invalid("O limite de níveis da rede foi atingido.");
   }
 }
 
@@ -117,21 +119,22 @@ export async function listOwnPrices(partnerId, {adminOverride=false}={}) {
   return select(`SELECT months,price_credits AS "priceCredits",active FROM reseller_network_prices WHERE partner_id=:id ORDER BY months`, { id:partnerId });
 }
 
-export async function createInvite(partnerId, { maxUses = 50, daysValid = 30 }, actor, portalUrl) {
+export async function createInvite(partnerId, { maxUses = null, daysValid = null }, actor, portalUrl) {
   const token = crypto.randomBytes(32).toString("base64url");
   const invite = await sequelize.transaction(async transaction => {
     // Serializa convites/cadastro pelo mesmo Master para respeitar limites.
     await Partner.findByPk(partnerId, { transaction, lock: transaction.LOCK.UPDATE });
     await assertCanAddChild(partnerId, transaction);
-    const expiresAt = new Date(Date.now() + daysValid*86400000);
+    const expiresAt = daysValid == null ? null : new Date(Date.now() + daysValid*86400000);
+    if (expiresAt && !Number.isFinite(expiresAt.getTime()))
+      throw new AppError(422, "INVALID_INVITE_EXPIRY", "A validade informada não é uma data válida.");
     const rows = await select(`INSERT INTO reseller_network_invites(issuer_partner_id,token_hash,expires_at,max_uses,created_by)
       VALUES(:id,:hash,:expires,:uses,:actorId) RETURNING id,expires_at,max_uses,uses`,
       {id:partnerId,hash:hash(token),expires:expiresAt,uses:maxUses,actorId:actor?.id ?? null},transaction);
     await audit({ actor, action: "distribution.invite.created", entityType: "partner", entityId: partnerId, metadata: { inviteId: rows[0].id, maxUses, daysValid }, transaction });
     return rows[0];
   });
-  const origin = String(portalUrl || "https://revenda.deltatv.com.br").replace(/\/+$/, "");
-  return { id: invite.id, url: `${origin}/#cadastro?convite=${encodeURIComponent(token)}`, expiresAt: invite.expires_at, maxUses: invite.max_uses };
+  return { id: invite.id, url: buildResellerInviteUrl(portalUrl, token), expiresAt: invite.expires_at, maxUses: invite.max_uses };
 }
 export async function listInvites(partnerId) {
   await requireMaster(partnerId, "canInvite");
@@ -165,7 +168,7 @@ export async function consumeInvite(token, transaction) {
   if (!canUseInvite(invite)) throw new AppError(410, "INVITE_INVALID", "Convite inválido ou esgotado.");
   await Partner.findByPk(invite.issuer_partner_id, {transaction,lock:transaction.LOCK.UPDATE});
   await assertCanAddChild(invite.issuer_partner_id, transaction);
-  const increment = await select(`UPDATE reseller_network_invites SET uses=uses+1 WHERE id=:id AND uses<max_uses AND revoked_at IS NULL
+  const increment = await select(`UPDATE reseller_network_invites SET uses=uses+1 WHERE id=:id AND (max_uses IS NULL OR uses<max_uses) AND (expires_at IS NULL OR expires_at>now()) AND revoked_at IS NULL
      RETURNING id`, {id:invite.id}, transaction);
   if (!increment.length) throw new AppError(409, "INVITE_EXHAUSTED", "Convite sem vagas disponíveis.");
   return invite.issuer_partner_id;
@@ -179,8 +182,9 @@ export async function setMaster(partnerId, { master, policy, adminOverride = fal
       const {policy: parentPolicy}=await requireMaster(actorParentId,"canPromote",transaction);
       const requested=policy;
       if ((requested.canInvite&&!parentPolicy.canInvite)||(requested.canSell&&!parentPolicy.canSell)||
-          (requested.canPromote&&!parentPolicy.canPromote)||requested.maxDepth>parentPolicy.maxDepth||
-          requested.maxChildren>parentPolicy.maxChildren)
+          (requested.canPromote&&!parentPolicy.canPromote)||
+          (parentPolicy.maxDepth != null && (requested.maxDepth == null || requested.maxDepth > parentPolicy.maxDepth))||
+          (parentPolicy.maxChildren != null && (requested.maxChildren == null || requested.maxChildren > parentPolicy.maxChildren)))
         throw new AppError(403,"CAPABILITY_ESCALATION","O Submaster não pode receber mais recursos do que o Master.");
     }
     const target = await Partner.findByPk(partnerId, {transaction,lock:transaction.LOCK.UPDATE});
@@ -193,11 +197,11 @@ export async function setMaster(partnerId, { master, policy, adminOverride = fal
         SELECT id,parent_partner_id,0 AS depth,ARRAY[id] AS visited FROM partners WHERE id=:id
         UNION ALL SELECT p.id,p.parent_partner_id,s.depth+1,s.visited||p.id
           FROM partners p JOIN subtree s ON p.parent_partner_id=s.id
-          WHERE s.depth < :maxdepth AND NOT (p.id=ANY(s.visited))
-      ) SELECT coalesce(max(depth),0)::int AS deepest FROM subtree`,{id:partnerId,maxdepth:NETWORK_MAX_DEPTH},transaction))[0];
+          WHERE NOT (p.id=ANY(s.visited))
+      ) SELECT coalesce(max(depth),0)::int AS deepest FROM subtree`,{id:partnerId},transaction))[0];
       const absoluteDepth=(await lineageOf(partnerId,transaction)).length + Number(descendants?.deepest||0);
-      if (absoluteDepth > policy.maxDepth) throw new AppError(409,"NETWORK_DEPTH_CONFLICT","A nova profundidade é menor que a subárvore existente.");
-      if ((await childCount(partnerId,transaction)) > policy.maxChildren)
+      if (policy.maxDepth != null && absoluteDepth > policy.maxDepth) throw new AppError(409,"NETWORK_DEPTH_CONFLICT","A nova profundidade é menor que a subárvore existente.");
+      if (policy.maxChildren != null && (await childCount(partnerId,transaction)) > policy.maxChildren)
         throw new AppError(409,"NETWORK_CHILD_LIMIT","A nova quota é menor que a quantidade de revendas existentes.");
       if (!policy.canInvite && (await childCount(partnerId,transaction)) > 0)
         throw new AppError(409,"NETWORK_CHILDREN_EXIST","Não é possível desativar convites mantendo subordinados nesta conta.");
@@ -208,7 +212,7 @@ export async function setMaster(partnerId, { master, policy, adminOverride = fal
       if (!parentPolicy.canPromote) throw invalid("O nível superior não autoriza Submasters.");
     }
     await target.update({ distributionRole: master ? "master" : "reseller" }, {transaction});
-    const flags = master ? policy : {canInvite:false,canSell:false,canPromote:false,maxChildren:0,maxDepth:1};
+    const flags = master ? policy : {canInvite:false,canSell:false,canPromote:false,maxChildren:null,maxDepth:null};
     await execute(`INSERT INTO reseller_network_policies(partner_id,can_invite,can_sell,can_promote,max_children,max_depth)
       VALUES(:id,:invite,:sell,:promote,:children,:depth) ON CONFLICT(partner_id)
       DO UPDATE SET can_invite=EXCLUDED.can_invite,can_sell=EXCLUDED.can_sell,can_promote=EXCLUDED.can_promote,
@@ -355,12 +359,12 @@ export async function networkTree(adminId=null,{page=1,pageSize=100,q=""}={}) {
     UNION ALL
     SELECT p.id,p.name,p.parent_partner_id,p.distribution_role,p.kind,p.status,t.depth+1,t.visited||p.id,t.sort_path||(p.name||p.id::text)
       FROM partners p JOIN tree t ON p.parent_partner_id=t.id
-      WHERE t.depth < :limit AND NOT(p.id=ANY(t.visited))
+      WHERE NOT(p.id=ANY(t.visited))
   ) SELECT id,name,parent_partner_id AS "parentPartnerId",distribution_role AS "distributionRole",status,depth,
       (SELECT count(*)::int FROM tree t2 WHERE (:search = '' OR t2.name ILIKE :pattern OR t2.id::text ILIKE :pattern)) AS "totalCount"
     FROM tree WHERE (:search = '' OR name ILIKE :pattern OR id::text ILIKE :pattern)
     ORDER BY sort_path LIMIT :size OFFSET :offset`,
-    {id,limit:NETWORK_MAX_DEPTH,size:safeSize,offset:(safePage-1)*safeSize,search,pattern:`%${search}%`});
+    {id,size:safeSize,offset:(safePage-1)*safeSize,search,pattern:`%${search}%`});
   return {data:result.map(({totalCount,...row})=>row),total:result.length?Number(result[0].totalCount):0,page:safePage,pageSize:safeSize};
 }
 
@@ -377,13 +381,13 @@ export async function networkSummary(partnerId) {
     SELECT id,0 AS depth,ARRAY[id] AS path FROM partners WHERE id=:id
     UNION ALL
     SELECT p.id,m.depth+1,m.path||p.id FROM partners p JOIN members m ON p.parent_partner_id=m.id
-     WHERE m.depth < :maxdepth AND NOT(p.id=ANY(m.path))
+     WHERE NOT(p.id=ANY(m.path))
   ) SELECT
     (SELECT count(*)::int FROM members WHERE depth>0) AS resellers,
     (SELECT count(*)::int FROM partners p JOIN members m ON m.id=p.id WHERE m.depth>0 AND p.distribution_role='master') AS submasters,
     (SELECT count(*)::int FROM activations a JOIN members m ON m.id=a.partner_id WHERE a.status='active') AS active_activations,
     (SELECT coalesce(sum(quantity),0)::bigint FROM license_stock s JOIN members m ON m.id=s.partner_id) AS stock_units
-  `,{id:partnerId,maxdepth:NETWORK_MAX_DEPTH});
+  `,{id:partnerId});
   const row=rows[0]||{};
   return {resellers:Number(row.resellers||0),submasters:Number(row.submasters||0),activeActivations:Number(row.active_activations||0),stockUnits:Number(row.stock_units||0)};
 }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { NETWORK_MAX_DEPTH, MAX_NETWORK_QUANTITY, resellerKind, isNetworkMaster, networkPrice, canUseInvite, deriveNetworkLabel, purchaseLegs } from "../../src/modules/distribution/network.policy.js";
+import { MAX_NETWORK_QUANTITY, resellerKind, isNetworkMaster, networkPrice, canUseInvite, deriveNetworkLabel, purchaseLegs } from "../../src/modules/distribution/network.policy.js";
 
 test("conta antiga continua como revenda e não vira master",()=>{
  assert.equal(resellerKind("reseller"),true);
@@ -17,7 +17,8 @@ test("distingue Master, Submaster e Revenda pelo relacionamento",()=>{
 test("preço exato, sem arredondamento de crédito nem quantidade inválida",()=>{
  assert.equal(networkPrice(10,5),50);
  assert.equal(networkPrice(1,MAX_NETWORK_QUANTITY),MAX_NETWORK_QUANTITY);
- for(const [u,q] of [[-1,5],[0,5],[10,0],[10,-1],[2,101],[1.5,2],[1,2.5],[1_000_001,1]])
+ assert.equal(networkPrice(10,1000),10000);
+ for(const [u,q] of [[-1,5],[0,5],[10,0],[10,-1],[2,MAX_NETWORK_QUANTITY+1],[1.5,2],[1,2.5],[2_147_483_648,1]])
   assert.equal(networkPrice(u,q),null);
 });
 test("venda é bilateral e conserva saldo de créditos e estoque",()=>{
@@ -39,7 +40,13 @@ test("convite respeita validade, bloqueio e quantidade",()=>{
  assert.equal(canUseInvite({...base,expires_at:new Date(now)},now),false);
  assert.equal(canUseInvite(null,now),false);
 });
-test("profundidade máxima defensiva",()=>assert.equal(NETWORK_MAX_DEPTH,12));
+test("convites sem quota ou vencimento continuam válidos até revogação",()=>{
+ const base={expires_at:null,max_uses:null,uses:12000,revoked_at:null};
+ assert.equal(canUseInvite(base),true);
+ assert.equal(canUseInvite({...base,revoked_at:new Date()}),false);
+ assert.equal(canUseInvite({...base,max_uses:12000}),false);
+ assert.equal(canUseInvite({...base,expires_at:new Date(0)}),false);
+});
 
 test("zero servidores é limite zero e não ilimitado",async()=>{
  const {quotaReached}=await import("../../src/modules/distribution/network.policy.js");

@@ -1,14 +1,16 @@
 /** Funções puras: protegidas por testes e usadas pelas rotas e pelo serviço. */
-export const NETWORK_MAX_DEPTH = 12;
-export const MAX_NETWORK_QUANTITY = 100;
+// Limite técnico de INTEGER do PostgreSQL; não é uma quota comercial.
+export const MAX_NETWORK_QUANTITY = 2_147_483_647;
 export const resellerKind = (kind) => kind === "reseller" || kind === "both";
 export const isNetworkMaster = (p) => p?.distributionRole === "master" && resellerKind(p?.kind);
 export const networkPrice = (unit, quantity) => {
-  if (!Number.isSafeInteger(unit) || unit < 1 || unit > 1_000_000 || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > MAX_NETWORK_QUANTITY) return null;
+  if (!Number.isSafeInteger(unit) || unit < 1 || unit > 2_147_483_647 || !Number.isSafeInteger(quantity) || quantity < 1 || quantity > MAX_NETWORK_QUANTITY) return null;
   const total = unit * quantity;
   return Number.isSafeInteger(total) ? total : null;
 };
-export const canUseInvite = (invite, now = Date.now()) => !!invite && !invite.revoked_at && new Date(invite.expires_at).getTime() > now && Number(invite.uses) < Number(invite.max_uses);
+export const canUseInvite = (invite, now = Date.now()) => !!invite && !invite.revoked_at
+  && (invite.expires_at == null || new Date(invite.expires_at).getTime() > now)
+  && (invite.max_uses == null || Number(invite.uses) < Number(invite.max_uses));
 export const deriveNetworkLabel = (role, depth) => role !== "master" ? "Revenda" : depth > 0 ? "Submaster" : "Master";
 
 /** Pernas contábeis; ordenadas por conta para reduzir deadlocks. Total sempre zero. */

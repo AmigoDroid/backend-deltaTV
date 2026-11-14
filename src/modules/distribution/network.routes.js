@@ -14,10 +14,10 @@ const uuid = z.string().uuid();
 const paramsId = z.object({ id: uuid });
 const flags = z.object({
   canInvite: z.boolean(), canSell: z.boolean(), canPromote: z.boolean(),
-  maxChildren: z.number().int().min(0).max(5000), maxDepth: z.number().int().min(1).max(12),
+  maxChildren: z.number().int().min(0).nullable().default(null), maxDepth: z.number().int().min(1).nullable().default(null),
 }).strict();
-const offer = z.object({ months:z.number().int().min(1).max(120),priceCredits:z.number().int().min(1).max(1_000_000),active:z.boolean().default(true) }).strict();
-const resourceBody=z.object({resource:z.enum(NETWORK_RESOURCES),enabled:z.boolean(),limit:z.number().int().min(0).max(10000).nullable().default(null)}).strict();
+const offer = z.object({ months:z.number().int().min(1).max(120),priceCredits:z.number().int().min(1).max(2_147_483_647),active:z.boolean().default(true) }).strict();
+const resourceBody=z.object({resource:z.enum(NETWORK_RESOURCES),enabled:z.boolean(),limit:z.number().int().min(0).max(2_147_483_647).nullable().default(null)}).strict();
 
 const inviteToken=z.string().min(32).max(120).regex(/^[A-Za-z0-9_-]+$/);
 export const adminNetwork = Router();
@@ -38,6 +38,23 @@ adminNetwork.post("/accounts/:id/master",requirePermission("partners:write"),val
   if(req.user.role!=="superadmin") throw new AppError(403,"FORBIDDEN","Somente o superadmin altera a hierarquia e os privilégios comerciais.");
   res.json(await net.setMaster(req.valid.params.id,{master:req.valid.body.enabled,policy:req.valid.body.policy,adminOverride:true},actorOf(req)));
 });
+// O superadmin pode emitir convites diretamente, sem precisar entrar na conta do Master.
+const createInviteInput = z.object({maxUses:z.number().int().min(1).nullable().default(null),daysValid:z.number().int().min(1).nullable().default(null)}).strict();
+adminNetwork.get("/accounts/:id/invites",requirePermission("partners:read"),validate({params:paramsId}),async(req,res)=>{
+  if(req.user.role!=="superadmin") throw new AppError(403,"FORBIDDEN","Somente o superadmin consulta os convites de outras contas.");
+  res.set("Cache-Control","no-store").json({data:await net.listInvites(req.valid.params.id)});
+});
+adminNetwork.post("/accounts/:id/invites",requirePermission("partners:write"),stockWriteLimiter,
+  validate({params:paramsId,body:createInviteInput}),async(req,res)=>{
+    if(req.user.role!=="superadmin") throw new AppError(403,"FORBIDDEN","Somente o superadmin cria convites de outras contas.");
+    res.status(201).set("Cache-Control","no-store").json(await net.createInvite(req.valid.params.id,req.valid.body,actorOf(req),env.resellerPortalUrl));
+  });
+adminNetwork.post("/accounts/:id/invites/:inviteId/revoke",requirePermission("partners:write"),stockWriteLimiter,
+  validate({params:z.object({id:uuid,inviteId:uuid})}),async(req,res)=>{
+    if(req.user.role!=="superadmin") throw new AppError(403,"FORBIDDEN","Somente o superadmin revoga convites de outras contas.");
+    await net.revokeInvite(req.valid.params.id,req.valid.params.inviteId,actorOf(req));
+    res.status(204).end();
+  });
 adminNetwork.get("/accounts/:id/resources",requirePermission("partners:read"),validate({params:paramsId}),async(req,res)=>res.json({effective:await effectiveResources(req.valid.params.id),direct:await directResources(req.valid.params.id)}));
 adminNetwork.put("/accounts/:id/resources",requirePermission("partners:write"),validate({params:paramsId,body:resourceBody}),async(req,res)=>{
   if(req.user.role!=="superadmin") throw new AppError(403,"FORBIDDEN","Somente o superadmin altera essas permissões.");
@@ -68,7 +85,7 @@ partnerNetwork.get("/",validate({query:z.object({page:z.coerce.number().int().mi
 partnerNetwork.get("/prices",async(req,res)=>res.set("Cache-Control","no-store").json({data:await net.listOwnPrices(ctx(req))}));
 partnerNetwork.put("/prices",stockWriteLimiter,validate({body:offer}),async(req,res)=>res.json(await net.setPrice(ctx(req),req.valid.body,actorOf(req))));
 partnerNetwork.get("/invites",async(req,res)=>res.set("Cache-Control","no-store").json({data:await net.listInvites(ctx(req))}));
-partnerNetwork.post("/invites",stockWriteLimiter,validate({body:z.object({maxUses:z.number().int().min(1).max(1000).default(50),daysValid:z.number().int().min(1).max(90).default(30)}).strict()}),async(req,res)=>
+partnerNetwork.post("/invites",stockWriteLimiter,validate({body:createInviteInput}),async(req,res)=>
   res.status(201).set("Cache-Control","no-store").json(await net.createInvite(ctx(req),req.valid.body,actorOf(req),env.resellerPortalUrl)));
 partnerNetwork.post("/invites/:id/revoke",stockWriteLimiter,validate({params:paramsId}),async(req,res)=>{
   await net.revokeInvite(ctx(req),req.valid.params.id,actorOf(req));res.status(204).end();
@@ -95,7 +112,7 @@ partnerNetwork.get("/purchases",async(req,res)=>res.set("Cache-Control","no-stor
 // Recover an uncertain checkout after network timeout; scoped to authenticated buyer.
 partnerNetwork.get("/purchases/by-key/:id",validate({params:paramsId}),async(req,res)=>
   res.set("Cache-Control","no-store").json({purchase:await net.purchaseByKey(ctx(req),req.valid.params.id)}));
-partnerNetwork.post("/buy",stockWriteLimiter,validate({body:z.object({months:z.number().int().min(1).max(120),quantity:z.number().int().min(1).max(100),expectedUnitPriceCredits:z.number().int().min(1).max(1000000),idempotencyKey:uuid}).strict()}),async(req,res)=>{
+partnerNetwork.post("/buy",stockWriteLimiter,validate({body:z.object({months:z.number().int().min(1).max(120),quantity:z.number().int().min(1).max(2_147_483_647),expectedUnitPriceCredits:z.number().int().min(1).max(2_147_483_647),idempotencyKey:uuid}).strict()}),async(req,res)=>{
   const allowed=await effectiveResources(ctx(req));
   if(!allowed.stock.enabled||!allowed.credits.enabled) throw new AppError(403,"NETWORK_RESOURCE_DISABLED","Estoque ou créditos indisponíveis para sua revenda.");
   res.status(201).set("Cache-Control","no-store").json(await net.networkBuy(ctx(req),req.valid.body,actorOf(req)));
