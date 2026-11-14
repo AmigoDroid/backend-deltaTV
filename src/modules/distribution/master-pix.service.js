@@ -352,7 +352,7 @@ export async function subtreeReport(masterId,{limit=100}={}) {
 export async function adminOrders({limit=100,status,sellerId=null}={}) {
   const rows=await select(`SELECT o.*,b.name AS buyer_name,s.name AS seller_name FROM reseller_master_pix_orders o
     JOIN partners b ON b.id=o.buyer_partner_id JOIN partners s ON s.id=o.seller_partner_id
-    WHERE (:status='' OR o.status=:status) AND (:sellerId IS NULL OR o.seller_partner_id=:sellerId)
+    WHERE (:status = '' OR o.status=:status) AND (:sellerId IS NULL OR o.seller_partner_id=:sellerId)
     ORDER BY o.created_at DESC LIMIT :limit`,{limit:Math.min(limit,500),status:status||'',sellerId});
   return rows.map(r=>({...publicOrder(r),buyerName:r.buyer_name,sellerName:r.seller_name}));
 }

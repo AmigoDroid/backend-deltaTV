@@ -68,7 +68,7 @@ export async function listPlans({ partnerId = null, kind = 'customer' } = {}) {
     billing_mode AS "billingMode",included_slots AS "includedSlots",allow_extra AS "allowExtra",
     allow_resell AS "allowResell",overage_cents AS "overageCents",grace_days AS "graceDays",active,version,
     owner_partner_id AS "ownerPartnerId"
-    FROM commerce_plans WHERE kind=:kind AND (owner_partner_id=:partnerId OR (owner_partner_id IS NULL AND :kind='master'))
+    FROM commerce_plans WHERE kind=:kind AND (owner_partner_id=:partnerId OR (owner_partner_id IS NULL AND :kind = 'master'))
     ORDER BY created_at DESC`, {partnerId,kind});
 }
 export async function createPlan({partnerId = null, kind, input, actor}) {
@@ -150,7 +150,7 @@ export async function changeSubscriptionState(partnerId,id,state,reason,actor,{a
     const possible={draft:['active','cancelled'],active:['past_due','restricted','cancelled'],past_due:['active','restricted','cancelled'],restricted:['active','suspended','cancelled'],suspended:['active','cancelled'],cancelled:[]};
     if(!possible[s.state]?.includes(state)) throw fail(409,'INVALID_STATE','Transição de assinatura inválida.');
     const changed=(await rows(`UPDATE commerce_subscriptions SET state=:state,
-      starts_at=CASE WHEN :state='active' THEN COALESCE(starts_at,now()) ELSE starts_at END,
+      starts_at=CASE WHEN :state = 'active' THEN COALESCE(starts_at,now()) ELSE starts_at END,
       updated_at=now() WHERE id=:id AND partner_id=:partnerId RETURNING id,state`,{id,partnerId,state},t))[0];
     if(state==='cancelled' && s.kind==='customer'){
       // Libera as vagas comerciais; as licenças físicas continuam com sua validade própria.
