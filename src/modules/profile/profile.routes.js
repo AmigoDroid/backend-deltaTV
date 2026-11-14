@@ -3,7 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { Op, UniqueConstraintError } from "sequelize";
 import { sequelize, AdminUser, AdminUserProfile, Partner, AuthSession, AuditLog, LoginHistory } from "../../db/models/index.js";
-import { authenticate, requirePartnerRole } from "../../middleware/authenticate.js";
+import { authenticate } from "../../middleware/authenticate.js";
 import { validate } from "../../shared/validate.js";
 import { AppError } from "../../shared/errors.js";
 import { actorOf, audit } from "../../shared/audit.js";
@@ -13,7 +13,7 @@ import { revokeAllSessions } from "../auth/auth.service.js";
 import { disconnectAdminUser, disconnectAdminSession } from "../../realtime/socket.js";
 
 const r = Router();
-r.use(authenticate, requirePartnerRole);
+r.use(authenticate); // Operações de perfil sempre usam req.user.id; nunca IDs arbitrários do cliente.
 r.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
 const publicProfile = p => ({ phone: p?.phone || "", avatarData: p?.avatarData || null,
@@ -25,10 +25,12 @@ r.get("/", async (req, res) => {
   const [user, profile, partner] = await Promise.all([
     AdminUser.findByPk(req.user.id, { attributes: ["id", "name", "email", "role", "lastLoginAt"] }),
     getProfile(req.user.id),
-    Partner.findByPk(req.user.partnerId, { attributes: ["id", "name", "kind", "status", "startsAt", "endsAt", "billingModel", "deviceLimit"] }),
+    req.user.partnerId ? Partner.findByPk(req.user.partnerId, { attributes: ["id", "name", "kind", "status", "startsAt", "endsAt", "billingModel", "deviceLimit"] }) : Promise.resolve(null),
   ]);
-  if (!user || !partner) throw new AppError(404, "NOT_FOUND", "Conta não encontrada.");
-  res.json({ user: publicUser(user), profile: publicProfile(profile), partner });
+  if (!user || (req.user.role === "partner" && !partner)) throw new AppError(404, "NOT_FOUND", "Conta não encontrada.");
+  // Perfil administrativo sem parceria; nenhuma conta de outro usuário é consultada.
+  const workspace = partner || { id: null, name: "Administração DeltaTV", kind: "administration", status: "active", billingModel: null, endsAt: null };
+  res.json({ user: publicUser(user), profile: publicProfile(profile), partner: workspace });
 });
 
 // Upsert concorrente sem consultar/destravar registros de outro usuário.
@@ -164,7 +166,7 @@ r.get("/history", validate({ query: PAGE }), async (req, res) => {
 r.get("/activity", validate({ query: PAGE }), async (req, res) => {
   const { page, limit } = req.valid.query;
   const { rows, count } = await AuditLog.findAndCountAll({
-    where: { actorId: String(req.user.id), actorType: "partner" },
+    where: { actorId: String(req.user.id), actorType: req.user.role === "partner" ? "partner" : "admin" },
     attributes: ["id", "action", "entityType", "result", "createdAt"],
     offset: (page - 1) * limit, limit, order: [["createdAt", "DESC"]],
   });
