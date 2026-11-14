@@ -174,6 +174,19 @@ export async function consumeInvite(token, transaction) {
   return invite.issuer_partner_id;
 }
 
+// Cobranças Pix do Master reservam estoque ainda não entregue: impedir troca de superior
+// ou desativação do vendedor enquanto existir dinheiro sob conciliação.
+async function assertNoOpenMasterPix(partnerId, transaction, {asSeller=false,asBuyer=false}={}) {
+  const checks=[];
+  if(asSeller)checks.push('seller_partner_id=:id');
+  if(asBuyer)checks.push('buyer_partner_id=:id');
+  if(!checks.length)return;
+  const n=(await select(`SELECT count(*)::int AS n FROM reseller_master_pix_orders
+    WHERE (${checks.join(' OR ')}) AND status IN ('creating','pending','review')`,{id:partnerId},transaction))[0]?.n;
+  if(Number(n)>0)throw new AppError(409,'MASTER_PIX_OPEN_ORDERS',
+    'Existem compras Pix não concluídas nesta conta. Concilie ou reembolse antes de alterar sua posição na rede.');
+}
+
 export async function setMaster(partnerId, { master, policy, adminOverride = false, actorParentId = null }, actor) {
   return sequelize.transaction(async transaction => {
     await execute(`SELECT pg_advisory_xact_lock(99111701)`, {}, transaction);
@@ -207,6 +220,7 @@ export async function setMaster(partnerId, { master, policy, adminOverride = fal
         throw new AppError(409,"NETWORK_CHILDREN_EXIST","Não é possível desativar convites mantendo subordinados nesta conta.");
     }
     if (!master && (await childCount(partnerId,transaction)) > 0) throw new AppError(409,"HAS_CHILDREN","Transfira as revendas subordinadas antes de desativar o Master.");
+    if (!master || !policy.canSell) await assertNoOpenMasterPix(partnerId,transaction,{asSeller:true});
     if (master && target.parentPartnerId && !adminOverride) {
       const { policy: parentPolicy } = await requireMaster(target.parentPartnerId, "canPromote", transaction);
       if (!parentPolicy.canPromote) throw invalid("O nível superior não autoriza Submasters.");
@@ -235,6 +249,7 @@ export async function attachReseller(childId, parentId, actor) {
     if (!locked.some(p=>p.id===parentId)) throw notFound("Master");
     if (child.parentPartnerId && child.parentPartnerId !== parentId) throw new AppError(409,"ALREADY_LINKED","A conta já pertence a outra rede. Transfira por procedimento auditado.");
     if (child.parentPartnerId === parentId) return {id:childId,parentPartnerId:parentId};
+    await assertNoOpenMasterPix(childId,transaction,{asBuyer:true,asSeller:true});
     const lineage = await lineageOf(parentId, transaction);
     if (lineage.some(p=>p.id===childId)) throw new AppError(422,"CYCLE","Essa ligação formaria um ciclo na hierarquia.");
     await assertCanAddChild(parentId,transaction);
@@ -256,6 +271,7 @@ export async function detachReseller(childId, actor) {
     const child=await Partner.findByPk(childId,{transaction,lock:transaction.LOCK.UPDATE});
     if(!child) throw notFound("Revenda");
     if(!child.parentPartnerId) return {id:childId,parentPartnerId:null};
+    await assertNoOpenMasterPix(childId,transaction,{asBuyer:true,asSeller:true});
     if(await childCount(childId,transaction)) throw new AppError(409,"HAS_CHILDREN","Não é possível desvincular uma conta que possui revendas subordinadas.");
     const previous=child.parentPartnerId;
     await child.update({parentPartnerId:null},{transaction});

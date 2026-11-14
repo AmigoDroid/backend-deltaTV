@@ -16,6 +16,7 @@ import clientRoutes from "./modules/activations/client.routes.js";
 import portalRoutes from "./modules/portal/portal.routes.js";
 import webhookRoutes from "./modules/billing/webhook.routes.js";
 import { webhookRouter as pixWebhookRoutes } from "./modules/pix/pix.routes.js";
+import { webhookMasterPixRouter } from "./modules/distribution/master-pix.routes.js";
 import pairingRoutes from "./modules/devices/pairing.routes.js";
 import deviceAccessRoutes from "./modules/devices/device-access.routes.js";
 import playRoutes from "./modules/sources/delivery.routes.js";
@@ -92,6 +93,7 @@ export function createApp() {
   app.use("/api/v1/device-access", deviceAccessRoutes);
   app.use("/api/v1/webhooks/payments", webhookRoutes);
   app.use("/api/v1/webhooks/pix", pixWebhookRoutes);
+  app.use("/api/v1/webhooks/master-pix", webhookMasterPixRouter);
 
   app.use((_req, _res, next) => next(new AppError(404, "NOT_FOUND", "Rota não encontrada.")));
   app.use(errorHandler);

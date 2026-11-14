@@ -1,4 +1,5 @@
 import { reconcile as reconcilePix } from "../modules/pix/pix.service.js";
+import { reconcilePending as reconcileMasterPix } from "../modules/distribution/master-pix.service.js";
 import { generateForAll, sweepDelinquency, lastClosedCompetence, recoverMissedInvoices } from "../modules/billing/billing.service.js";
 import { startMailWorker } from "../modules/mail/mail.worker.js";
 
@@ -19,6 +20,8 @@ export async function runBillingJobs({ recovery = false } = {}) {
 // Conciliação do Pix a cada 2 min: confirma pagamentos cujo webhook se perdeu e expira QR Codes vencidos.
 export async function runPixJobs() {
   const r = await reconcilePix();
+  const m = await reconcileMasterPix();
+  if (m.checked || m.errors) console.log(`[jobs] pix master: ${m.checked} conferidos, ${m.paid} pagos, ${m.errors} erros`);
   if (r.checked || r.paid || r.expired) console.log(`[jobs] pix conferidos: ${r.checked}; pagos: ${r.paid}; expirados: ${r.expired}`);
 }
 

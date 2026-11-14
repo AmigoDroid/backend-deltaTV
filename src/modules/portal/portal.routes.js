@@ -1,5 +1,6 @@
 import { networkResourceGuard, effectiveResources } from "../distribution/network.resources.js";
 import { partnerNetwork } from "../distribution/network.routes.js";
+import { partnerMasterPixRouter } from "../distribution/master-pix.routes.js";
 import { queueRemoteCommand, remoteControlOverview } from '../../realtime/remote-control.service.js';
 import { auditParams, auditRead } from '../connection-audit/routes.js';
 import { partnerHelpRoutes } from "../help/help.routes.js";
@@ -47,6 +48,7 @@ router.use("/server-monitor", resellerServerMonitor);
 router.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
 router.use("/pix", pixRoutes);
 router.use("/credits", creditRoutes);
+router.use("/network/master-pix", partnerMasterPixRouter);
 router.use("/network", partnerNetwork);
 router.use("/clients", clientsRoutes);
 router.use("/web-access", webAccessRoutes);

@@ -93,7 +93,7 @@ export function createMercadoPago({ accessToken, webhookSecret = "", fetchImpl =
         payment_method_id: "pix",
         date_of_expiration: toMpDate(expiresAt),
         external_reference: id,
-        payer: { email: payer.email, ...(payer.name ? { first_name: String(payer.name).slice(0, 60) } : {}) },
+        payer: { email: payer.email, ...(payer.name ? { first_name: String(payer.name).slice(0, 60) } : {}), ...(payer.document ? { identification: { type: payer.document.length === 11 ? "CPF" : "CNPJ", number: payer.document } } : {}) },
         ...(notificationUrl ? { notification_url: notificationUrl } : {}),
       };
       const p = await call("/v1/payments", { method: "POST", body, idempotencyKey: id });
@@ -117,6 +117,9 @@ export function createMercadoPago({ accessToken, webhookSecret = "", fetchImpl =
       return {
         providerRef: String(p.id), status: mapStatus(p.status), rawStatus: p.status,
         amountCents: amountToCents(p.transaction_amount), externalReference: p.external_reference ?? null,
+        collectorId: p.collector_id != null ? String(p.collector_id) : null,
+        paymentMethod: p.payment_method_id ?? null, currency: p.currency_id ?? null,
+        refundedAmountCents: amountToCents(p.transaction_amount_refunded || 0),
         paidAt: p.date_approved ? new Date(p.date_approved) : null,
       };
     },

@@ -1,4 +1,5 @@
 import { adminNetwork } from "./distribution/network.routes.js";
+import { adminMasterPixRouter } from "./distribution/master-pix.routes.js";
 import { adminHelpRoutes } from "./help/help.routes.js";
 import { adminRouter as whiteLabelApps } from "./white-label/white-label.routes.js";
 import platformSettings from "./settings/platform-settings.routes.js";
@@ -31,6 +32,7 @@ router.use("/notifications", adminNotificationRoutes);
 router.use("/system", systemRoutes);
 router.use("/licenses", licenses);
 router.use("/partners", partners);
+router.use("/network/master-pix", adminMasterPixRouter);
 router.use("/network", adminNetwork);
 router.use("/service-plans", servicePlansCatalog);
 router.use("/server-monitor", adminServerMonitor);
