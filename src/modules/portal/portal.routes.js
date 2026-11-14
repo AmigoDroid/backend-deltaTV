@@ -26,6 +26,7 @@ import * as reseller from "../devices/reseller-devices.service.js";
 import * as resellerLicenses from "../licenses/reseller-licenses.service.js";
 import { isPendingSignup } from "../partners/reseller-signup.service.js";
 import clientsRoutes from "../clients/client.routes.js";
+import { partnerCommerce } from "../commerce/commerce.routes.js";
 import { partnerRouter as pixRoutes } from "../pix/pix.routes.js";
 import { partnerRouter as creditRoutes } from "../credits/credit.routes.js";
 import { configurationSchema } from "../devices/device-config.schema.js";
@@ -51,6 +52,7 @@ router.use("/credits", creditRoutes);
 router.use("/network/master-pix", partnerMasterPixRouter);
 router.use("/network", partnerNetwork);
 router.use("/clients", clientsRoutes);
+router.use("/commerce", partnerCommerce);
 router.use("/web-access", webAccessRoutes);
 router.use("/app-downloads", appDownloadsRoutes);
 router.use("/white-label", whiteLabelApps);
@@ -164,7 +166,7 @@ router.get("/codes", async (req, res) => res.json({ data: await partners.listCod
  * Regras que o revendedor NÃO controla: o modo de entrega fica em "redirect" (o modo proxy gasta a banda da plataforma e
  * continua sendo decisão do admin) e a URL passa pela mesma proteção SSRF do painel admin. Teto de servidores por conta.
  */
-const MAX_PROVIDERS_PER_RESELLER = 20;
+// Sem quota fixa: o limite comercial é exclusivamente o recurso configurado pelo Superadmin.
 router.get("/providers", async (req, res) => res.json({ data: (await listProviders(req.user.partnerId)).map((p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, status: p.status, priority: p.priority, deliveryMode: p.deliveryMode })) }));
 const providerBody = z.object({
   name: z.string().trim().min(2).max(120),
@@ -175,7 +177,7 @@ const providerBody = z.object({
 const providerOut = (p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, status: p.status, priority: p.priority, deliveryMode: p.deliveryMode });
 const providerParams = z.object({ providerId: z.string().uuid() });
 router.post("/providers", macWriteLimiter, requireReseller, validate({ body: providerBody }), async (req, res) =>
-  res.status(201).json(providerOut(await createProvider(req.user.partnerId, req.valid.body, actorOf(req), { max: Math.min(MAX_PROVIDERS_PER_RESELLER, (await effectiveResources(req.user.partnerId)).servers.limit ?? MAX_PROVIDERS_PER_RESELLER) }))));
+  res.status(201).json(providerOut(await createProvider(req.user.partnerId, req.valid.body, actorOf(req), { max: (await effectiveResources(req.user.partnerId)).servers.limit }))));
 router.patch("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams, body: partialInput(providerBody) }), async (req, res) =>
   res.json(providerOut(await updateProvider(req.user.partnerId, req.valid.params.providerId, req.valid.body, actorOf(req)))));
 router.delete("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams }), async (req, res) => {

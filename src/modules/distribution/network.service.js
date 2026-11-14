@@ -1,4 +1,5 @@
 import { buildResellerInviteUrl } from "./invite-onboarding.policy.js";
+import { settleNetworkCommissions } from "../commerce/commission.service.js";
 import crypto from "node:crypto";
 import { QueryTypes } from "sequelize";
 import { sequelize, Partner, AdminUser } from "../../db/models/index.js";
@@ -343,9 +344,10 @@ export async function networkBuy(buyerId, {months,quantity,idempotencyKey,expect
     const sale=(await select(`INSERT INTO reseller_network_sales(seller_partner_id,buyer_partner_id,months,quantity,unit_price_credits,total_credits,transfer_id,idempotency_key,actor_user_id)
       VALUES(:seller,:buyer,:months,:quantity,:unit,:total,:transfer,:key,:actor) RETURNING id`,
       {seller:sellerId,buyer:buyerId,months,quantity,unit:Number(price.price_credits),total,transfer:transferId,key:idempotencyKey,actor:actor?.id??null},transaction))[0];
+    const commissions = await settleNetworkCommissions({saleId:sale.id,sellerId,totalCredits:total,transaction,actor});
     await audit({actor,action:"distribution.sale",entityType:"partner",entityId:sellerId,
       metadata:{saleId:sale.id,buyerPartnerId:buyerId,months,quantity,unitPriceCredits:Number(price.price_credits),totalCredits:total,transferId},transaction});
-    return {id:sale.id,totalCredits:total,months,quantity,replayed:false};
+    return {id:sale.id,totalCredits:total,months,quantity,commissions,replayed:false};
   });
   return { ...result,stock:await balancesOf(buyerId),creditBalance:await creditBalanceOf(buyerId) };
 }

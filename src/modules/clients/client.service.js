@@ -16,7 +16,7 @@ import { resolveCommercialDeviceId } from "./device-link.service.js";
  * revendedor => 404. A ficha é só cadastro do revendedor: não altera dispositivo, ativação nem licença.
  * A auditoria registra QUEM mexeu e QUAIS campos, mas não grava telefone/endereço (dado pessoal do cliente final).
  */
-export const MAX_CLIENTS_PER_PARTNER = 10_000;
+// Cadastros legados por MAC sem teto comercial fixo; limites futuros devem vir da política administrativa.
 const invalid = (message) => new AppError(422, "VALIDATION_ERROR", message);
 
 /** Linha do SQL da lista -> JSON da API. `device` = TV ativada por este revendedor (null = só cadastrada à mão). */
@@ -89,9 +89,6 @@ export const duplicate = () => new AppError(409, "CLIENT_EXISTS", "Já existe um
 
 export async function createClient({ partnerId, actor, input }) {
   const fields = fieldsFrom(input, { create: true });
-  if (actor?.role !== "superadmin" && (await ResellerClient.count({ where: { partnerId } })) >= MAX_CLIENTS_PER_PARTNER) {
-    throw new AppError(422, "CLIENT_LIMIT", `Limite de ${MAX_CLIENTS_PER_PARTNER} clientes cadastrados atingido.`);
-  }
   const deviceId = await resolveCommercialDeviceId(partnerId, fields.mac);
   let c;
   try {
