@@ -7,7 +7,7 @@ import { sql } from "../stock/stock-ledger.js";
 import { TODAY } from "./client.sql.js";
 import { DUE_SOON_DAYS, cleanText } from "./client.rules.js";
 import { broadcastExpiryForClient } from './expiry-notice.service.js';
-import { MAX_CLIENTS_PER_PARTNER, createClient, deleteClient, duplicate, fieldsFrom, listClients, rowView, summary } from "./client.service.js";
+import { createClient, deleteClient, duplicate, fieldsFrom, listClients, rowView, summary } from "./client.service.js";
 
 /**
  * Clientes das revendas visto pelo ADMIN: sem o isolamento por revendedor do portal. O admin enxerga as fichas de todas as
@@ -100,9 +100,8 @@ export async function adminUpdate({ id, actor, input: { partnerId: toPartnerId, 
   const moving = toPartnerId && toPartnerId !== c.partnerId;
   if (moving) {
     await assertPartner(toPartnerId);
-    if (actor?.role !== "superadmin" && (await ResellerClient.count({ where: { partnerId: toPartnerId } })) >= MAX_CLIENTS_PER_PARTNER) {
-      throw new AppError(422, "CLIENT_LIMIT", `Limite de ${MAX_CLIENTS_PER_PARTNER} clientes cadastrados na revenda de destino atingido.`);
-    }
+    // Não há quota comercial fixa de clientes. Limites de plano só devem
+    // ser aplicados por uma política de entitlements configurada no backend.
     fields.partnerId = toPartnerId;
   }
   const fromPartnerId = c.partnerId;

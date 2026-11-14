@@ -64,9 +64,16 @@ export function errorHandler(err, req, res, _next) {
     const pgCode = typeof pg?.code === "string" ? pg.code : null;
     const pgTable = typeof pg?.table === "string" ? pg.table : null;
     const pgColumn = typeof pg?.column === "string" ? pg.column : null;
-    const pgInfo = [pgCode && `pgCode=${pgCode}`, pgTable && `table=${pgTable}`, pgColumn && `column=${pgColumn}`]
+    // Metadados não sensíveis para encontrar SQL inválido (42601) sem registrar
+    // a instrução completa, parâmetros, tokens, credenciais ou URLs de origem.
+    const pgPosition = typeof pg?.position === "string" && /^\d{1,8}$/.test(pg.position) ? pg.position : null;
+    const route = typeof req.route?.path === "string" ? req.route.path : "(rota não identificada)";
+    const statement = typeof err?.sql === "string" ? err.sql : "";
+    const sqlKind = /^(SELECT|INSERT|UPDATE|DELETE|WITH|ALTER|CREATE|DROP)\b/i.exec(statement.trim())?.[1]?.toUpperCase() ?? null;
+    const pgInfo = [pgCode && `pgCode=${pgCode}`, pgTable && `table=${pgTable}`, pgColumn && `column=${pgColumn}`,
+      pgPosition && `position=${pgPosition}`, sqlKind && `sqlType=${sqlKind}`]
       .filter(Boolean).join(" ");
-    console.error(`[${req.id}] ${err?.name ?? "Error"} (${err?.code ?? "no-code"})${pgInfo ? ` ${pgInfo}` : ""}`);
+    console.error(`[${req.id}] ${req.method} ${route} ${err?.name ?? "Error"} (${err?.code ?? "no-code"})${pgInfo ? ` ${pgInfo}` : ""}`);
   }
   if (res.headersSent) return res.destroy();
   return res.status(status).json({
