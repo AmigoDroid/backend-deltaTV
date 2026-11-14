@@ -307,7 +307,7 @@ router.get("/xtream", requireDevice(), async (req, res) => {
 // Chave de 6 dígitos para o acesso por MAC + chave (/api/v1/device-access). Exige sessão válida da TV: só quem já tem acesso gera a chave.
 router.post(
   "/device-key",
-  requireDevice(),
+  requireDevice("device", { enforce: false }),
   deviceKeyIssueLimiter,
   async (req, res) => {
     res.set("Cache-Control", "no-store").json(
@@ -350,6 +350,7 @@ router.post(
 // extrai servidor/usuário/senha do link e NÃO baixa a lista. Sem licença o cadastro é aceito, mas só passa a valer quando houver uma.
 router.post(
   "/playlist/by-url",
+  deviceAccess.requireDeviceScope,
   listUrlIpLimiter,
   listUrlMacLimiter,
   validate({
@@ -360,7 +361,7 @@ router.post(
     }),
   }),
   async (req, res) => {
-    res.set("Cache-Control", "no-store").json(await addListByUrl({ ...req.valid.body, ip: req.ip }));
+    res.set("Cache-Control", "no-store").json(await addListByUrl({ ...req.valid.body, authorizedDeviceId: req.deviceScope.device.id, ip: req.ip }));
   },
 );
 

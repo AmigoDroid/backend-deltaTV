@@ -22,4 +22,5 @@
         <Poster id="mask" uri="pkg:/images/mask.9.png" />
         <Poster id="ring" uri="pkg:/images/ring.9.png" blendColor="0x6B47E6FF" visible="false" />
     </children>
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
 </component>

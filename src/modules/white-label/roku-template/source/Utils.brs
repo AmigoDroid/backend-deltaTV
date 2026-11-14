@@ -22,10 +22,10 @@ end function
 
 ' Per-screen labels, compatible with themes saved before screen customization existed.
 function WLScreen(screen as String) as Dynamic
-    theme = WLAppearance()
-    if theme = invalid then return invalid
-    if type(theme.screens) <> "roAssociativeArray" then return invalid
-    item = theme.screens[screen]
+    appearanceConfig = WLAppearance()
+    if appearanceConfig = invalid then return invalid
+    if type(appearanceConfig.screens) <> "roAssociativeArray" then return invalid
+    item = appearanceConfig.screens[screen]
     if type(item) <> "roAssociativeArray" then return invalid
     return item
 end function

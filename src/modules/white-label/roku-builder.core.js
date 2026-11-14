@@ -88,7 +88,7 @@ export function individualize(files, { appKey, appName, appearance, edition, ori
     `function DeltaWhiteLabelAppKey() as String\n    return ${brs(appKey)}`,'Config.brs');
   src=replaceOnly(src,'function DeltaWhiteLabelApiOrigin() as String\n    return "https://api.deltatv.com.br"',
     `function DeltaWhiteLabelApiOrigin() as String\n    return ${brs(origin)}`,'Config.brs');
-  src=replaceOnly(src,'function DeltaServerOrigin() as String\n    \' Use um host acessível pelo Roku; localhost aponta para o proprio aparelho.\n    return "https://delta-tv.duckdns.org"',
+  src=replaceOnly(src,'function DeltaServerOrigin() as String\n    \' Use um host acessível pelo Roku; localhost aponta para o proprio aparelho.\n    return "https://api.deltatv.com.br"',
     `function DeltaServerOrigin() as String\n    return ${brs(origin)}`,'Config.brs');
   src=replaceOnly(src, "return invalid ' Replaced at packaging with a published snapshot.", `return ${brsLiteral(config)}`, 'Config.brs');
   configFile.data=Buffer.from(src);

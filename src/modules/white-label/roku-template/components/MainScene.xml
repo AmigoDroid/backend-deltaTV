@@ -44,6 +44,7 @@
         <PlayerScreen id="player" visible="false" />
 
         <Timer id="clockTimer" repeat="true" duration="20" />
+        <Timer id="messageTimer" repeat="true" duration="60" />
         <Timer id="licenseTimer" repeat="true" duration="60" />
         <Timer id="appearanceTimer" repeat="true" duration="300" />
     </children>

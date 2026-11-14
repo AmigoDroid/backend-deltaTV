@@ -19,4 +19,5 @@
         <Label id="desc" />
         <Label id="dur" horizAlign="right" vertAlign="center" />
     </children>
+    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
 </component>

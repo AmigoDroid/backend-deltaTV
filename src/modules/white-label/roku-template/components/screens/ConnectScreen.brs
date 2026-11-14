@@ -229,7 +229,7 @@ sub draw()
     else if pendingPlaylist then
         m.modeLabel.text = "‹ LICENÇA: CONFIGURAR PLAYLIST ›"
     else
-        m.modeLabel.text = "‹ LICENÇA + PLAYLIST ›"
+        m.modeLabel.text = "‹ ATIVAR COM LICENÇA ›"
     end if
     m.modeBorder.blendColor = "0x4A4D66FF"
     if m.focus = 0 then m.modeBorder.blendColor = t.accentLight
@@ -270,7 +270,7 @@ function FieldLabels() as Object
     if RegRead("license_pending_configuration") = "true" then
         return ["", "Nome da lista", "URL HTTP(S) completa da playlist"]
     end if
-    return ["Código da licença Delta", "Nome da lista", "URL HTTP(S) completa da playlist"]
+    return ["Código da licença Delta", "Nome da lista (opcional)", "URL da playlist (opcional)"]
 end function
 
 sub openKeyboard(index as Integer)
@@ -651,11 +651,12 @@ sub submit()
             setStatus("Informe o código da licença Delta.", "0xFF8A8AFF")
             return
         end if
-        if m.values[1] = "" or Len(m.values[1]) > 80 then
+        configureNow = pendingPlaylist or m.values[1] <> "" or m.values[2] <> ""
+        if configureNow and (m.values[1] = "" or Len(m.values[1]) > 80) then
             setStatus("Informe o nome da lista (até 80 caracteres).", "0xFF8A8AFF")
             return
         end if
-        if not IsHttpUrl(m.values[2]) or Len(m.values[2]) > 2048 then
+        if configureNow and (not IsHttpUrl(m.values[2]) or Len(m.values[2]) > 2048) then
             setStatus("Informe uma URL HTTP ou HTTPS válida.", "0xFF8A8AFF")
             return
         end if
@@ -722,6 +723,14 @@ sub onConnectResult(event as Object)
     end if
 
     saveReturnedSession(result)
+    if result.ok = true and result.configurationStatus = "awaiting_configuration" and m.mode = "license" then
+        RegWrite("license_pending_configuration", "true")
+        RegWrite("activation_kind", "license")
+        m.values[0] = ""
+        setStatus("Licença ativada. Adicione a lista agora ou depois pelo painel.", "0x7CE3A1FF")
+        draw()
+        return
+    end if
     if result.sessionOk = true and result.ok <> true and m.mode = "license" then
         if result.clearAuth = true then
             RegDelete("license_pending_configuration")
