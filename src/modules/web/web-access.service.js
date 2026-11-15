@@ -204,6 +204,8 @@ async function grantCourtesyLicense({ partner, actor, device, months }) {
       licenseId: license.id, partnerId: partner?.id ?? null, event: "activated", toDeviceId: device.id,
       actorType: actor.type ?? "admin", actorId: actor.id ?? null, metadata: { months, courtesy: true, activationId: r.activation.id },
     }, { transaction: t });
+    await audit({actor,action:"web_access.courtesy_license",entityType:"license",entityId:license.id,
+      metadata:{months,deviceId:device.id,financialProvenance:"superadmin_exception",paymentVerified:false},transaction:t});
     return r;
   });
 }
@@ -218,6 +220,9 @@ async function grantCourtesyLicense({ partner, actor, device, months }) {
 export async function createWebAccess({ partner = null, actor, label, config, months, useStock = true, modes }) {
   if (!config) throw new AppError(422, "CONFIG_REQUIRED", "Informe a lista (servidor ou link) deste acesso.");
   if (config.mode === "playlist") {
+    // Playlist própria sem estoque é cortesia e não pode ser oferecida por outra função administrativa.
+    if (!useStock && actor?.role !== "superadmin")
+      throw new AppError(403,"SUPERADMIN_ONLY","Somente o Superadmin concede PlayerWeb sem consumir estoque.");
     if (!months) throw new AppError(422, "MONTHS_REQUIRED", "Informe a duração da licença.");
     await assertPublicUrl(config.url); // valida ANTES de gastar licença
   }
@@ -511,6 +516,8 @@ export async function restoreRevokedWebAccess(id, { config, reason }, actor) {
 
 /** Renovação: 1 licença do estoque do dono (ou cortesia do admin) soma `months` ao prazo. */
 export async function renew(id, { months, actor, scope = {}, useStock = true }) {
+  if (!useStock && actor?.role !== "superadmin")
+    throw new AppError(403,"SUPERADMIN_ONLY","Somente o Superadmin pode renovar PlayerWeb sem consumir estoque.");
   const wa = await loadOwned(id, scope);
   if (wa.status === "revoked") throw new AppError(409, "INVALID_STATE", "Este acesso foi removido.");
   const activation = await liveActivationOf(wa.deviceId);
@@ -534,7 +541,7 @@ export async function renew(id, { months, actor, scope = {}, useStock = true }) 
       const previous = lic.expiresAt;
       await lic.update({ planId: plan.id, expiresAt, startsAt: lic.startsAt ?? now, status: lic.status === "pending" ? "active" : lic.status }, { transaction: t });
       await Renewal.create({ licenseId: lic.id, planId: plan.id, previousExpiresAt: previous, newExpiresAt: expiresAt, createdBy: actor.id ?? null }, { transaction: t });
-      await audit({ actor, action: "web_access.renew", entityType: "web_access", entityId: wa.id, metadata: { months, courtesy: true, expiresAt }, transaction: t });
+      await audit({ actor, action: "web_access.renew", entityType: "web_access", entityId: wa.id, metadata: { months, courtesy: true, expiresAt, financialProvenance:"superadmin_exception",paymentVerified:false }, transaction: t });
     });
     clearMirrorAuth();
   }

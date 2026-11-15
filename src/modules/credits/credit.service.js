@@ -124,12 +124,14 @@ export async function buyLicenses({ partner, actor, months, quantity }) {
 
 /** Ajuste manual do admin: crédito de cortesia/correção (+) ou estorno (−). O saldo nunca fica negativo. */
 export async function adjustCredit(partnerId, { delta, note }, actor) {
+  if (delta > 0 && actor?.role !== "superadmin")
+    throw new AppError(403,"SUPERADMIN_ONLY","Apenas o Superadmin pode adicionar créditos manualmente.");
   const partner = await Partner.findByPk(partnerId);
   if (!partner) throw notFound("Parceiro");
   if (!STOCK_KINDS.includes(partner.kind)) throw new AppError(422, "NOT_A_RESELLER", "Só revendedores têm carteira de créditos.");
   const balance = await sequelize.transaction(async (t) => {
     const b = await creditMove(t, { partnerId, delta, kind: "adjust", note, actor });
-    await audit({ actor, action: "credit.adjust", entityType: "partner", entityId: partnerId, metadata: { delta, note, balance: b }, transaction: t });
+    await audit({ actor, action: "credit.adjust", entityType: "partner", entityId: partnerId, metadata: { delta, note, balance: b, ...(delta > 0 ? {financialProvenance:"superadmin_exception",paymentVerified:false} : {}) }, transaction: t });
     return b;
   });
   return { balance };
@@ -162,6 +164,7 @@ export async function listRates() {
 }
 
 export async function setRate({ partnerId = null, rateCents }, actor) {
+  if (actor?.role !== "superadmin") throw new AppError(403,"SUPERADMIN_ONLY","Somente o Superadmin define o câmbio de créditos.");
   if (partnerId && !(await Partner.findByPk(partnerId))) throw notFound("Parceiro");
   const row = await sequelize.transaction(async (t) => {
     let r = await CreditRate.findOne({ where: { partnerId }, transaction: t, lock: t.LOCK.UPDATE });
@@ -175,6 +178,7 @@ export async function setRate({ partnerId = null, rateCents }, actor) {
 }
 
 export async function deleteRate(id, actor) {
+  if (actor?.role !== "superadmin") throw new AppError(403,"SUPERADMIN_ONLY","Somente o Superadmin pode remover preços ou câmbio.");
   const r = await CreditRate.findByPk(id);
   if (!r) throw notFound("Câmbio");
   await r.destroy();
@@ -189,6 +193,7 @@ export async function listPrices({ partnerId } = {}) {
 }
 
 export async function setPrice({ partnerId = null, months, priceCredits, active = true }, actor) {
+  if (actor?.role !== "superadmin") throw new AppError(403,"SUPERADMIN_ONLY","Somente o Superadmin define o preço-base das licenças.");
   if (partnerId && !(await Partner.findByPk(partnerId))) throw notFound("Parceiro");
   const row = await sequelize.transaction(async (t) => {
     let r = await CreditPrice.findOne({ where: { partnerId, months }, transaction: t, lock: t.LOCK.UPDATE });
@@ -201,6 +206,7 @@ export async function setPrice({ partnerId = null, months, priceCredits, active 
 }
 
 export async function deletePrice(id, actor) {
+  if (actor?.role !== "superadmin") throw new AppError(403,"SUPERADMIN_ONLY","Somente o Superadmin pode remover preços ou câmbio.");
   const r = await CreditPrice.findByPk(id);
   if (!r) throw notFound("Preço");
   await r.destroy();

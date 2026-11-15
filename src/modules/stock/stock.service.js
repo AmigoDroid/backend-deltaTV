@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { Op, UniqueConstraintError } from "sequelize";
 import {
-  sequelize, Partner, AdminUser, License, Activation, Renewal, LicenseStockLedger,
+  sequelize, Partner, AdminUser, License, Activation, Renewal, LicenseStockLedger, Device,
 } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { STOCK_KINDS, balancesOf, move } from "./stock-ledger.js";
@@ -56,13 +56,18 @@ async function loadHolder(partnerId, actor) {
 }
 
 export async function grantStock(partnerId, { months, quantity, unitPriceCents, note }, actor) {
+  // Lançamentos manuais NÃO são prova de compra: somente o Superadmin pode
+  // autorizar exceções, com motivo rastreável e sem misturar com receita Pix.
+  if (actor?.role !== "superadmin") throw new AppError(403,"SUPERADMIN_ONLY","Somente o Superadmin pode conceder licenças manualmente.");
+  if (!String(note ?? "").trim() || String(note).trim().length < 10)
+    throw new AppError(422,"EXCEPTION_REASON_REQUIRED","Informe o motivo da concessão excepcional (mínimo 10 caracteres).");
   await loadHolder(partnerId, actor);
   await ensurePlan(months); // garante que a duração existe como plano (1–120 meses)
   await sequelize.transaction(async (t) => {
-    const balance = await move(t, { partnerId, months, delta: quantity, kind: "grant", actor, unitPriceCents: unitPriceCents ?? null, note });
+    const balance = await move(t, { partnerId, months, delta: quantity, kind: "grant", actor, unitPriceCents: unitPriceCents ?? null, note: `Exceção Superadmin — ${note}` });
     await audit({
       actor, action: "stock.grant", entityType: "partner", entityId: partnerId,
-      metadata: { months, quantity, unitPriceCents: unitPriceCents ?? null, balance, note }, transaction: t,
+      metadata: { months, quantity, unitPriceCents: unitPriceCents ?? null, balance, note, financialProvenance: "superadmin_exception", paymentVerified: false }, transaction: t,
     });
   });
   return { balances: await balancesOf(partnerId) };
@@ -70,11 +75,13 @@ export async function grantStock(partnerId, { months, quantity, unitPriceCents, 
 
 /** Correção manual (entrada ou saída). O saldo nunca fica negativo. */
 export async function adjustStock(partnerId, { months, delta, note }, actor) {
+  if (delta > 0 && actor?.role !== "superadmin")
+    throw new AppError(403,"SUPERADMIN_ONLY","Apenas o Superadmin pode aumentar estoque por ajuste manual.");
   const partner = await Partner.findByPk(partnerId);
   if (!partner) throw notFound("Parceiro");
   await sequelize.transaction(async (t) => {
     const balance = await move(t, { partnerId, months, delta, kind: "adjust", actor, note });
-    await audit({ actor, action: "stock.adjust", entityType: "partner", entityId: partnerId, metadata: { months, delta, balance, note }, transaction: t });
+    await audit({ actor, action: "stock.adjust", entityType: "partner", entityId: partnerId, metadata: { months, delta, balance, note, ...(delta>0 ? {financialProvenance:"superadmin_exception",paymentVerified:false} : {}) }, transaction: t });
   });
   return { balances: await balancesOf(partnerId) };
 }

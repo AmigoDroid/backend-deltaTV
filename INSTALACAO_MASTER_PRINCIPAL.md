@@ -1,7 +1,10 @@
-# DeltaTV — emissão própria EXCLUSIVA do Master principal
+# DeltaTV — instruções históricas da emissão do Master principal
+
+> **ATENÇÃO — documento histórico:** este procedimento descreve a versão anterior à ETAPA 1 de proteção financeira. A partir da ETAPA 1, **nenhuma emissão por Master é gratuita**: cada emissão exige saldo e débito atômico de créditos, com exceções concedidas apenas pelo Superadmin. Use as instruções atuais em `../ETAPA_1_PROTECAO_FINANCEIRA.md` (a partir da raiz `painel/`). Os nomes dos antigos arquivos ZIP citados abaixo são referências históricas, não os novos arquivos de instalação.
+
 
 ## O que foi implementado
-- Somente Superadmin pode habilitar/desabilitar **Permitir que este Master emita licenças sem comprar** em Admin → Rede de distribuição → selecionar Master principal.
+- Somente Superadmin pode habilitar/desabilitar **Autorizar emissão mediante débito de créditos pré-pagos** em Admin → Rede de distribuição → selecionar Master principal.
 - Master principal = conta com `distribution_role = master`, `parent_partner_id IS NULL`, tipo reseller/both.
 - Submaster = conta com `distribution_role = master` mas vinculada a superior. NÃO tem opção nem autorização de emissão.
 - Revendas comuns também não têm emissão própria.

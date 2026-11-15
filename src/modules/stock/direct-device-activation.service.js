@@ -6,6 +6,7 @@ import { audit } from "../../shared/audit.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { applyOnce } from "./stock.service.js";
 import { isPrimaryMaster, maySelfIssue } from "../distribution/master-issuance.policy.js";
+import { debitPrepaidIssuance } from "../distribution/prepaid-issuance.service.js";
 
 /**
  * Emissão e aplicação direta SEM criar unidades intermediárias no estoque.
@@ -52,15 +53,23 @@ export async function activateDirect({ issuerType, issuerId, partnerId = null, a
 
     const device = await Device.findOne({ where: { mac }, transaction, lock: transaction.LOCK.UPDATE });
     if (!device) throw new AppError(404, "DEVICE_NOT_FOUND", "TV não encontrada. Abra o DeltaTV na TV para registrar o MAC primeiro.");
+    // A aplicação direta de Master também precisa ser paga. A cobrança só
+    // ocorre após checar uma requisição já concluída e é revertida se a ativação falhar.
+    const charged = issuerType === "master"
+      ? await debitPrepaidIssuance(transaction, { partnerId, months, quantity:1,
+          idempotencyKey, actor, channel:"direct-device" })
+      : null;
     const applied = await applyOnce({ partner, actor, device, months, consumeStock: false,
       adminOverride: issuerType === "admin", transaction });
-    const response = { ...applied, mac, issuance: "direct", alreadyProcessed: false };
+    const response = { ...applied, mac, issuance: "direct", alreadyProcessed: false,
+      ...(charged ? charged : {adminException:true}) };
     await sequelize.query(`UPDATE license_direct_device_requests SET result = CAST(:result AS jsonb)
       WHERE issuer_type = :issuerType AND issuer_id = :issuer AND idempotency_key = :key`, {
       replacements: { result: JSON.stringify(response), issuerType, issuer, key: idempotencyKey }, transaction, type: QueryTypes.RAW,
     });
     await audit({ actor, action: `license.direct_issued_by_${issuerType}`, entityType: "device", entityId: device.id,
-      metadata: { mac, months, licenseId: applied.licenseId, activationId: applied.activationId, idempotencyKey }, transaction });
+      metadata: { mac, months, licenseId: applied.licenseId, activationId: applied.activationId,
+        idempotencyKey, ...(charged || {exception:"superadmin_direct_issuance",financialReceiptVerified:false}) }, transaction });
     return response;
   });
   clearMirrorAuth();

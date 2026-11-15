@@ -75,6 +75,10 @@ export async function getLicense(id) {
 }
 
 export async function createLicense(input, actor) {
+  // O "payment" de entrada é um lançamento manual, NÃO um Pix confirmado.
+  // Na etapa 1 toda emissão manual é exceção exclusiva do Superadmin.
+  if (actor?.role !== "superadmin")
+    throw new AppError(403, "SUPERADMIN_ONLY", "Apenas o Superadmin pode emitir licenças manuais.");
   return sequelize.transaction(async (t) => {
     const plan = await Plan.findByPk(input.planId, { transaction: t });
     if (!plan || !plan.active) throw new AppError(422, "INVALID_PLAN", "Plano inválido ou inativo.");
@@ -99,7 +103,7 @@ export async function createLicense(input, actor) {
         { transaction: t },
       );
     }
-    await audit({ actor, action: "license.create", entityType: "license", entityId: license.id, metadata: { planId: plan.id, pending }, transaction: t });
+    await audit({ actor, action: "license.create", entityType: "license", entityId: license.id, metadata: { planId: plan.id, pending, financialProvenance:"superadmin_exception", paymentVerified:false }, transaction: t });
     // O código em texto puro é devolvido UMA vez; o banco guarda apenas o hash.
     return { license: out(license), code };
   });
@@ -159,6 +163,8 @@ export async function changeLicenseStatus(id, action, { reason, force = false },
 }
 
 export async function renewLicense(id, input, actor) {
+  if (actor?.role !== "superadmin")
+    throw new AppError(403, "SUPERADMIN_ONLY", "Apenas o Superadmin pode renovar licenças manuais sem confirmação do provedor de pagamento.");
   const renewed = await sequelize.transaction(async (t) => {
     const l = await License.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!l) throw notFound("Licença");
@@ -188,7 +194,7 @@ export async function renewLicense(id, input, actor) {
         )
       : null;
     await Renewal.create({ licenseId: l.id, planId: plan.id, previousExpiresAt: previous, newExpiresAt: next, paymentId: payment?.id ?? null, createdBy: actor.id }, { transaction: t });
-    await audit({ actor, action: "license.renew", entityType: "license", entityId: id, metadata: { planId: plan.id, from: previous, to: next }, transaction: t });
+    await audit({ actor, action: "license.renew", entityType: "license", entityId: id, metadata: { planId: plan.id, from: previous, to: next, financialProvenance:"superadmin_exception", paymentVerified:false }, transaction: t });
     return l;
   });
   clearMirrorAuth();
