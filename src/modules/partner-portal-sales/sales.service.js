@@ -86,6 +86,28 @@ export async function adminOverview() {
   ]);
   return {plans,sellers,orders,contracts,forecast,invitationSummary,finance:{...finance,estimatedCashAfterForecastCostsCents:Number(finance?.received_this_month_cents||0)-forecast.monthlyFixedCents-forecast.forecastProxyCents},caveat:'Receitas de revenda e mensalidades adicionais são declaradas, não cobradas automaticamente. Pedidos de estoque usam verificação via gateway quando configurada ou conferência manual do Superadmin.'};
 }
+/** Estado simples para a navegação do Painel do Parceiro.
+ * Não retorna IDs de outros distribuidores ou informações financeiras.
+ * A falta de autorização é um estado esperado, não um erro que esconda o menu.
+ */
+export async function sellerEligibility(partnerId) {
+  const seller=await sellerRow(partnerId,null,{required:false});
+  if(!seller || !isContentPartner(seller.kind)) return {
+    registered:false,enabled:false,role:null,
+    reason:'Sua conta ainda não está habilitada como Master ou Submaster. Solicite a ativação ao Superadmin.'
+  };
+  try {
+    await activeSeller(partnerId);
+    return {registered:true,enabled:true,role:seller.role,reason:null};
+  } catch(e) {
+    if(['SELLER_INACTIVE','ANCESTOR_BLOCKED'].includes(e.code)) return {
+      registered:true,enabled:false,role:seller.role,
+      reason:'A distribuição comercial está suspensa para esta conta ou para um Master ancestral. Consulte o Superadmin.'
+    };
+    throw e;
+  }
+}
+
 export async function sellerOverview(id) {
   await reclaimCommercialSellerInvites(id);
   const seller=await sellerRow(id);

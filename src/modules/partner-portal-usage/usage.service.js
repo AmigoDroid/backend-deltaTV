@@ -5,12 +5,40 @@ import {activeViewers,usageMeterStatus} from './meter.js';
 import {AppError} from '../../shared/errors.js';
 import {audit} from '../../shared/audit.js';
 import {buildUsageAnalysis} from './usage-analysis.js';
+import {USAGE_REQUIRED_COLUMNS,USAGE_MIGRATIONS,summarizeUsageSchema} from './usage-schema.js';
 
 const GB=1e9;
 const read=(sql,replacements={})=>sequelize.query(sql,{type:QueryTypes.SELECT,replacements});
 const one=async(sql,replacements={})=>(await read(sql,replacements))[0]||null;
 const COST_SETTINGS=`SELECT vps_monthly_cents,domain_annual_cents,other_monthly_cents,proxy_cost_per_gb_cents FROM partner_portal_cost_settings WHERE singleton_id=1`;
 const ALERT_SETTINGS=`SELECT * FROM partner_portal_usage_alert_settings WHERE singleton_id=1`;
+
+/** Diagnose somente leitura: identifica migrations faltantes sem exigir que a consulta
+ * de consumo funcione. Restrito à rota autenticada do Superadmin (ou ao CLI local).
+ */
+export async function diagnosePortalUsage() {
+  const tables=Object.keys(USAGE_REQUIRED_COLUMNS);
+  const columns=await read(`SELECT table_name,column_name FROM information_schema.columns
+    WHERE table_schema=ANY(current_schemas(false)) AND table_name IN (:tables)`,{tables});
+  let migrationsKnown=true,applied=[];
+  try {
+    applied=(await read('SELECT name FROM "SequelizeMeta" WHERE name IN (:names)',{names:USAGE_MIGRATIONS})).map(x=>x.name);
+  } catch(error) {
+    if (error?.parent?.code==='42P01' || error?.original?.code==='42P01') migrationsKnown=false;
+    else throw error;
+  }
+  const preliminary=summarizeUsageSchema(columns,applied,{migrationsKnown});
+  const settingsRows={};
+  for (const table of ['partner_portal_cost_settings','partner_portal_usage_alert_settings']) {
+    if (!preliminary.missingTables.includes(table) &&
+        !preliminary.missingColumns.some(column=>column.startsWith(`${table}.`))) {
+      const setting=await one(`SELECT singleton_id FROM ${table} WHERE singleton_id=1`);
+      settingsRows[table]=Boolean(setting);
+    }
+  }
+  return summarizeUsageSchema(columns,applied,{migrationsKnown,settingsRows});
+}
+
 export function monthWindow(month) {
   const value=month||new Date().toISOString().slice(0,7);
   if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(value))throw new AppError(422,'INVALID_MONTH','Mês deve ser AAAA-MM.');
@@ -64,9 +92,13 @@ export async function usageReport({month,sellerPartnerId=null}={}){
       GROUP BY partner_id,media_kind,transport`,{...window,ownerIds}),
     one(COST_SETTINGS),one(ALERT_SETTINGS),
   ]);
+  if(!costs||!settings)throw new AppError(503,'PORTAL_USAGE_CONFIGURATION_MISSING',
+    'Falta a configuração inicial da telemetria no banco. Confira a migração 20261223000001 e seu registro de configuração.');
   const viewerCounts=activeViewers(sellerPartnerId?[...permitted]:null);
-  const host=sellerPartnerId?null:readHostMetrics();
+  let host=null,hostUnavailable=false;
+  if(!sellerPartnerId){try{host=readHostMetrics();}catch{hostUnavailable=true;}}
   const analysis=buildUsageAnalysis({records,owners,month:window.month,costs,alertSettings:settings,host,localViewers:viewerCounts});
+  if(hostUnavailable)analysis.alerts.push({code:'HOST_METRICS_UNAVAILABLE',severity:'info',message:'As métricas do host não estão disponíveis nesta instância.'});
   if(sellerPartnerId){analysis.totals.unattributedNodeGb=0;analysis.totals.unattributedRequests=0;delete analysis.finance;analysis.host=null;
     analysis.byMaster=analysis.byMaster.map(({measuredNodeCostCents,allocatedFixedCostCents,partialEstimatedTotalCents,...publicRow})=>publicRow);}
   return {...analysis,settings:sellerPartnerId?undefined:settings,meter:sellerPartnerId?undefined:usageMeterStatus()};

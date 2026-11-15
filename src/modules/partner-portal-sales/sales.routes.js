@@ -52,6 +52,7 @@ adminPortalSales.post('/contracts',validate({body:assignment}),async(req,res)=>r
 export const partnerPortalSales=Router();
 partnerPortalSales.use(noStore);
 partnerPortalSales.use('/usage',partnerPortalUsage);
+partnerPortalSales.get('/eligibility',async(req,res)=>res.json(await svc.sellerEligibility(req.user.partnerId)));
 partnerPortalSales.get('/',async(req,res)=>res.json(await svc.sellerOverview(req.user.partnerId)));
 partnerPortalSales.get('/orders/:id',validate({params:actionId}),async(req,res)=>
  res.json(await checkout.orderFor(req.valid.params.id,{sellerId:req.user.partnerId})));
