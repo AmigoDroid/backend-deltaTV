@@ -227,6 +227,11 @@ export async function setMaster(partnerId, { master, policy, adminOverride = fal
       if (!parentPolicy.canPromote) throw invalid("O nível superior não autoriza Submasters.");
     }
     await target.update({ distributionRole: master ? "master" : "reseller" }, {transaction});
+    // A autorização de emissão NÃO pertence à política delegável e é revogada na despromoção
+    // ou quando a conta fica subordinada a outro Master.
+    if (!master || target.parentPartnerId) await execute(`UPDATE reseller_master_issuance_permissions
+      SET enabled=false,updated_at=now() WHERE partner_id=:id`,{id:partnerId},transaction);
+
     const flags = master ? policy : {canInvite:false,canSell:false,canPromote:false,maxChildren:null,maxDepth:null};
     await execute(`INSERT INTO reseller_network_policies(partner_id,can_invite,can_sell,can_promote,max_children,max_depth)
       VALUES(:id,:invite,:sell,:promote,:children,:depth) ON CONFLICT(partner_id)
@@ -261,6 +266,10 @@ export async function attachReseller(childId, parentId, actor) {
         AND provider_ref IS NOT NULL AND status NOT IN ('paid','refunded')`,{id:childId},transaction))[0]?.count;
     if(Number(unsettled)>0) throw new AppError(409,"PENDING_STOCK_PIX","Existem cobranças Pix antigas de estoque ainda sujeitas à conciliação. Resolva-as antes de vincular ao Master.");
     await child.update({parentPartnerId:parentId},{transaction});
+    // Mesmo se o Master virar Submaster, nunca carrega o privilégio de cunhar estoque.
+    await execute(`UPDATE reseller_master_issuance_permissions SET enabled=false,updated_at=now()
+      WHERE partner_id=:id`,{id:childId},transaction);
+
     await audit({actor,action:"distribution.linked",entityType:"partner",entityId:childId,metadata:{parentPartnerId:parentId},transaction});
     return {id:childId,parentPartnerId:parentId};
   });

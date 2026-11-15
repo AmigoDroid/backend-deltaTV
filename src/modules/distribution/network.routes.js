@@ -9,6 +9,7 @@ import { AppError, notFound } from "../../shared/errors.js";
 import { Partner } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
 import * as net from "./network.service.js";
+import * as issuance from "./master-issuance.service.js";
 
 const uuid = z.string().uuid();
 const paramsId = z.object({ id: uuid });
@@ -37,6 +38,16 @@ adminNetwork.put("/accounts/:id/prices",requirePermission("partners:write"),
 adminNetwork.post("/accounts/:id/master",requirePermission("partners:write"),validate({params:paramsId,body:z.object({enabled:z.boolean(),policy:flags}).strict()}),async(req,res)=>{
   if(req.user.role!=="superadmin") throw new AppError(403,"FORBIDDEN","Somente o superadmin altera a hierarquia e os privilégios comerciais.");
   res.json(await net.setMaster(req.valid.params.id,{master:req.valid.body.enabled,policy:req.valid.body.policy,adminOverride:true},actorOf(req)));
+});
+// Autorização exclusiva do Superadmin; a rota não existe para subordinados.
+adminNetwork.get("/accounts/:id/self-issuance",requirePermission("partners:read"),validate({params:paramsId}),async(req,res)=>{
+  if(req.user.role!=="superadmin")throw new AppError(403,"FORBIDDEN","Apenas o Superadmin consulta essa configuração.");
+  res.set("Cache-Control","no-store").json(await issuance.status(req.valid.params.id));
+});
+adminNetwork.put("/accounts/:id/self-issuance",requirePermission("partners:write"),stockWriteLimiter,
+  validate({params:paramsId,body:z.object({enabled:z.boolean()}).strict()}),async(req,res)=>{
+  if(req.user.role!=="superadmin")throw new AppError(403,"FORBIDDEN","Apenas o Superadmin pode autorizar a emissão própria.");
+  res.set("Cache-Control","no-store").json(await issuance.configure(req.valid.params.id,req.valid.body.enabled,actorOf(req)));
 });
 // O superadmin pode emitir convites diretamente, sem precisar entrar na conta do Master.
 const createInviteInput = z.object({maxUses:z.number().int().min(1).nullable().default(null),daysValid:z.number().int().min(1).nullable().default(null)}).strict();
@@ -71,6 +82,14 @@ adminNetwork.post("/accounts/:id/link",requirePermission("partners:write"),valid
 
 export const partnerNetwork = Router();
 const ctx = (req) => req.user.partnerId;
+// Submasters não recebem nem herdam esta capacidade, inclusive após promoção.
+partnerNetwork.get("/self-issuance",async(req,res)=>
+  res.set("Cache-Control","no-store").json(await issuance.status(ctx(req))));
+partnerNetwork.get("/self-issuance/requests/:id",validate({params:paramsId}),async(req,res)=>
+  res.set("Cache-Control","no-store").json(await issuance.requestByKey(ctx(req),req.valid.params.id)));
+partnerNetwork.post("/self-issuance",stockWriteLimiter,
+  validate({body:z.object({months:z.number().int().min(1).max(120),quantity:z.number().int().min(1).max(10000),idempotencyKey:uuid}).strict()}),
+  async(req,res)=>res.status(201).set("Cache-Control","no-store").json(await issuance.issue(ctx(req),req.valid.body,actorOf(req))));
 partnerNetwork.get("/resources",async(req,res)=>res.json({effective:await effectiveResources(ctx(req)),direct:await directResources(ctx(req))}));
 partnerNetwork.get("/children/:id/resources",validate({params:paramsId}),async(req,res)=>{
   const p=await Partner.findByPk(req.valid.params.id);
