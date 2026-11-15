@@ -54,7 +54,7 @@ sub activateDevice()
             m.top.result = res
             return
         end if
-        if mode = "license" and (listName <> "" or playlistUrl <> "") then
+        if mode = "license" then
             if listName = "" or Len(listName) > 80 then
                 res.message = "Informe o nome da lista (até 80 caracteres)."
                 m.top.result = res
@@ -146,14 +146,6 @@ sub activateDevice()
         return
     end if
     res.sessionOk = true
-
-    if mode = "license" and listName = "" and playlistUrl = "" then
-        res.ok = true
-        res.configurationStatus = "awaiting_configuration"
-        res.message = "Aplicativo ativado. Você pode adicionar sua lista depois."
-        m.top.result = res
-        return
-    end if
 
     submittedPlaylistUrl = playlistUrl
     if mode = "license" then

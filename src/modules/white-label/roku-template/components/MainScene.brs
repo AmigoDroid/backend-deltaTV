@@ -2,11 +2,6 @@
 ' Delta TV - cena principal: menu lateral + telas + overlays
 ' ============================================================
 sub init()
-    m.messageTimer = m.top.findNode("messageTimer")
-    m.messageTimer.observeField("fire", "pollTvMessages")
-    m.messageTimer.control = "start"
-    m.messageTask = invalid
-    m.messageDialog = invalid
     m.top.backgroundColor = "0x090B14FF"
     m.top.backgroundURI = ""
 
@@ -982,56 +977,4 @@ sub onMemoryEvent(event as Object)
         end if
     end if
     dropStore()
-end sub
-
-' Mensagens do modo Delta: sessões white-label usam contrato próprio e não são intercambiáveis.
-sub pollTvMessages()
-    if DeltaWhiteLabelMode() then return
-    if RegRead("auth_token") = "" then return
-    if m.messageTask <> invalid or m.messageDialog <> invalid then return
-    if m.top.dialog <> invalid then return
-    if m.player.visible or m.connect.visible then return
-    m.messageTask = CreateObject("roSGNode", "TvMessageTask")
-    m.messageTask.params = { accessToken: RegRead("auth_token"), action: "list" }
-    m.messageTask.observeField("result", "onTvMessages")
-    m.messageTask.control = "RUN"
-end sub
-
-sub onTvMessages(event as Object)
-    result = event.getData()
-    m.messageTask = invalid
-    if result = invalid then return
-    if result.status <> 200 then return
-    if result.data = invalid then return
-    if result.data.data = invalid then return
-    if result.data.data.Count() = 0 then return
-    if m.player.visible or m.connect.visible or m.top.dialog <> invalid then return
-    msg = result.data.data[0]
-    m.messageId = msg.id
-    m.messageDialog = CreateObject("roSGNode", "Dialog")
-    m.messageDialog.title = msg.title
-    m.messageDialog.message = msg.message
-    m.messageDialog.buttons = ["Entendi", "Ler depois"]
-    m.messageDialog.observeField("buttonSelected", "onTvMessageButton")
-    m.messageDialog.observeField("wasClosed", "onTvMessageClosed")
-    m.top.dialog = m.messageDialog
-end sub
-
-sub onTvMessageButton(event as Object)
-    if event.getData() = 0 then
-        m.messageTask = CreateObject("roSGNode", "TvMessageTask")
-        m.messageTask.params = { accessToken: RegRead("auth_token"), action: "read", id: m.messageId }
-        m.messageTask.observeField("result", "onTvMessageRead")
-        m.messageTask.control = "RUN"
-    end if
-    if m.messageDialog <> invalid then m.messageDialog.close = true
-end sub
-
-sub onTvMessageClosed()
-    m.messageDialog = invalid
-end sub
-
-sub onTvMessageRead()
-    ' Falha não marca leitura local: a API voltará a oferecer a mensagem no próximo ciclo.
-    m.messageTask = invalid
 end sub

@@ -22,5 +22,4 @@
         <Label id="macValue" translation="[24,658]" width="220" height="18" text="" />
         <Label id="foot" translation="[24,682]" width="220" height="30" text="Delta TV  •  Não vendemos conteúdo" wrap="true" />
     </children>
-    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
 </component>

@@ -1,9 +1,9 @@
 ' Downloads a small published appearance document off the UI thread.
 ' No credentials are needed and a network failure keeps the last cached theme.
 sub init()
-    m.top.functionName = "runAppearance"
+    m.top.functionName = "run"
 end sub
-sub runAppearance()
+sub run()
     key = m.top.appKey
     if key = "" then
         m.top.result = { ok: false }

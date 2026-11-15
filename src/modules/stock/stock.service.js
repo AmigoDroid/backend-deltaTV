@@ -153,19 +153,29 @@ export async function adminTransferStock({ fromPartnerId, toPartnerId, months, q
 
 /* ---------- Aplicar ao MAC do cliente ---------- */
 
-async function applyOnce({ partner, actor, device, months }) {
-  return sequelize.transaction(async (t) => {
+export async function applyOnce({ partner, actor, device, months, consumeStock = true, transaction = null, adminOverride = false }) {
+  const run = async (t) => {
+    // Serializar alterações sobre o mesmo aparelho, evitando duas licenças num mesmo MAC.
+    await Device.findByPk(device.id, { transaction: t, lock: t.LOCK.UPDATE });
     const lock = { transaction: t, lock: t.LOCK.UPDATE };
     const plan = await ensurePlan(months, { transaction: t });
     const now = new Date();
     // Licença viva deste MAC: primeiro a que ESTE revendedor concedeu pelo código dele (ativação de parceria com
     // granted_license_id); senão a licença individual (as ativações por parceria de conteúdo não contam).
-    const granted = await Activation.findOne({
+    const granted = partner ? await Activation.findOne({
       where: { deviceId: device.id, partnerId: partner.id, status: live, grantedLicenseId: { [Op.ne]: null } }, ...lock,
-    });
+    }) : null;
     const existing = granted ?? await Activation.findOne({
       where: { deviceId: device.id, partnerId: null, status: live, licenseId: { [Op.ne]: null } }, ...lock,
     });
+
+    if (!consumeStock && partner && !adminOverride) {
+      const otherOwner = await Activation.findOne({
+        where: { deviceId: device.id, status: live, grantedLicenseId: { [Op.ne]: null }, partnerId: { [Op.ne]: partner.id } },
+        transaction: t,
+      });
+      if (otherOwner) throw new AppError(403,"DEVICE_OWNED_BY_ANOTHER_RESELLER","TV com licença concedida por outra revenda. Solicite transferência.");
+    }
 
     let action;
     let license;
@@ -177,16 +187,19 @@ async function applyOnce({ partner, actor, device, months }) {
       if (!license || ["cancelled", "blocked"].includes(license.status)) {
         throw new AppError(409, "NOT_RENEWABLE", "A licença deste dispositivo está cancelada ou bloqueada. Fale com a plataforma.");
       }
+      if (!consumeStock && !adminOverride && license.ownerPartnerId !== partner?.id && !(license.isTrial && license.ownerPartnerId == null)) {
+        throw new AppError(403, "LICENSE_OWNERSHIP", "Essa licença pertence a outra revenda; solicite uma transferência autorizada.");
+      }
       const previous = license.expiresAt;
       const base = license.expiresAt && license.expiresAt > now ? license.expiresAt : now;
       expiresAt = addLicenseMonthsUTC(base, months);
       await license.update({
         planId: plan.id, expiresAt, startsAt: license.startsAt ?? now, isTrial: false,
         status: license.status === "pending" ? "active" : license.status,
-        ...(license.ownerPartnerId ? {} : { ownerPartnerId: partner.id, assignedAt: now }),
+        ...(partner && !license.ownerPartnerId && (consumeStock || license.isTrial) ? { ownerPartnerId: partner.id, assignedAt: now } : {}),
       }, { transaction: t });
       await Renewal.create({ licenseId: license.id, planId: plan.id, previousExpiresAt: previous, newExpiresAt: expiresAt, createdBy: actor.id }, { transaction: t });
-      await move(t, { partnerId: partner.id, months, delta: -1, kind: "consume", actor, deviceId: device.id, licenseId: license.id, note: "Renovação" });
+      if (consumeStock) await move(t, { partnerId: partner.id, months, delta: -1, kind: "consume", actor, deviceId: device.id, licenseId: license.id, note: "Renovação" });
       activation = existing;
       action = "renew";
     } else {
@@ -194,9 +207,10 @@ async function applyOnce({ partner, actor, device, months }) {
       const code = generateCode("LIC");
       license = await License.create({
         codeHash: hashCode(code), codeLast4: code.slice(-4), planId: plan.id, status: "pending", maxDevices: plan.maxDevices,
-        ownerPartnerId: partner.id, assignedAt: now, createdBy: actor.id, notes: `Estoque do revendedor ${partner.name}`,
+        ownerPartnerId: partner?.id ?? null, assignedAt: now, createdBy: actor.id,
+        notes: consumeStock ? `Estoque do revendedor ${partner.name}` : "Emissão e ativação direta autorizada",
       }, { transaction: t });
-      await move(t, { partnerId: partner.id, months, delta: -1, kind: "consume", actor, deviceId: device.id, licenseId: license.id, note: "Ativação" });
+      if (consumeStock) await move(t, { partnerId: partner.id, months, delta: -1, kind: "consume", actor, deviceId: device.id, licenseId: license.id, note: "Ativação" });
       const r = await activateLicenseById({
         licenseId: license.id, mac: device.mac, installationId: device.lastInstallationId,
         meta: { ip: actor.ip, userAgent: "reseller-stock-apply" }, transaction: t,
@@ -206,11 +220,12 @@ async function applyOnce({ partner, actor, device, months }) {
       action = "activate";
     }
     await audit({
-      actor, action: "stock.apply", entityType: "device", entityId: device.id,
+      actor, action: consumeStock ? "stock.apply" : "license.direct_apply", entityType: "device", entityId: device.id,
       metadata: { mac: device.mac, months, licenseId: license.id, activationId: activation.id, result: action, expiresAt }, transaction: t,
     });
     return { action, months, expiresAt, activationId: activation.id, licenseId: license.id };
-  });
+  };
+  return transaction ? run(transaction) : sequelize.transaction(run);
 }
 
 /** Gasta 1 licença do estoque e a aplica ao dispositivo: ativa uma licença nova ou renova a que o MAC já tem. */

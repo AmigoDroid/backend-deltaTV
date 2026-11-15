@@ -22,6 +22,10 @@ import { effectivePartnerStatus } from "../access/access.policy.js";
 import { listProviders, createProvider, updateProvider, deleteProvider } from "../providers/provider.service.js";
 import { codeCheckLimiter, macLookupLimiter, macWriteLimiter, stockLookupLimiter, stockWriteLimiter } from "../../middleware/security.js";
 import * as stock from "../stock/stock.service.js";
+import { activateDirect } from "../stock/direct-device-activation.service.js";
+import { activateLicense } from "../activations/activation.service.js";
+import { clearMirrorAuth } from "../mirror/mirror.cache.js";
+import { audit } from "../../shared/audit.js";
 import * as reseller from "../devices/reseller-devices.service.js";
 import * as resellerLicenses from "../licenses/reseller-licenses.service.js";
 import { isPendingSignup } from "../partners/reseller-signup.service.js";
@@ -136,6 +140,32 @@ router.post("/stock/transfer", stockWriteLimiter, requireReseller,
   async (req, res) => res.json(await stock.transferStock({ ...resellerCtx(req), ...req.valid.body })));
 router.post("/stock/apply", stockWriteLimiter, requireReseller, validate({ body: z.object({ mac: macBody.shape.mac, months: monthsField }) }), async (req, res) =>
   res.json(await reseller.applyStockByMac({ ...resellerCtx(req), mac: req.valid.body.mac, months: req.valid.body.months })));
+// Ativação por LICENÇA; plano comercial do cliente não participa desta operação.
+// Somente Master principal explicitamente autorizado pode emitir e ativar sem passar pelo estoque.
+router.post("/license-activation/direct", stockWriteLimiter, requireReseller,
+  validate({ body: z.object({ mac: macBody.shape.mac, months: z.number().int().min(1).max(120), idempotencyKey: z.string().uuid() }).strict() }),
+  async (req, res) => {
+    // Verifica política de posse do dispositivo antes de criar qualquer licença.
+    await reseller.lookupByMac({ ...resellerCtx(req), mac: req.valid.body.mac });
+    res.status(201).set("Cache-Control", "no-store").json(await activateDirect({
+      issuerType: "master", partnerId: req.user.partnerId, actor: actorOf(req), ...req.valid.body,
+    }));
+  });
+// Ativar código de licença previamente emitido, sem debitar estoque nem criar licença adicional.
+router.post("/license-activation/code", stockWriteLimiter, requireReseller,
+  validate({ body: z.object({ mac: macBody.shape.mac, code: z.string().trim().min(8).max(180) }).strict() }),
+  async (req, res) => {
+    const actor = actorOf(req);
+    const registration = await reseller.lookupByMac({ ...resellerCtx(req), mac: req.valid.body.mac });
+    const result = await activateLicense({ code: req.valid.body.code, mac: req.valid.body.mac,
+      installationId: registration.installationId ?? null, meta: { ip: req.ip, userAgent: "reseller-panel-license-code" } });
+    clearMirrorAuth();
+    await audit({ actor, action: "license.apply_code", entityType: "activation", entityId: result.activation.id,
+      metadata: { mac: req.valid.body.mac, licenseId: result.activation.licenseId } });
+    res.set("Cache-Control", "no-store").json({ action: result.reused ? "reuse" : "activate", licenseId: result.activation.licenseId,
+      activationId: result.activation.id, expiresAt: result.expiresAt });
+  });
+
 
 /**
  * Licenças do revendedor: as que ele é DONO (nascidas do estoque dele). Ver, renovar com uma licença do estoque e

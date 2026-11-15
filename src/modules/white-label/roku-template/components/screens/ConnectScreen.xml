@@ -24,7 +24,7 @@
         <Label id="clock" translation="[1202,26]" width="60" height="28" vertAlign="center" text="--:--" />
 
         <Label id="title" translation="[88,128]" width="1080" height="56" text="Conectar dispositivo" />
-        <Label id="sub" translation="[88,190]" width="1080" height="28" text="Selecione Parceria ou Licença com OK no primeiro botão. Depois preencha os campos." />
+        <Label id="sub" translation="[88,190]" width="1080" height="28" text="Escaneie o QR ou configure o acesso diretamente neste Roku." />
 
         <!-- cartao principal -->
         <Poster translation="[77,267]" width="776" height="365" uri="pkg:/images/round.9.png" blendColor="0x44476AFF" />

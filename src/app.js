@@ -1,4 +1,3 @@
-import { panelMessages, clientMessages } from "./modules/tv-messages/routes.js";
 import { broadcastDeviceHint } from "./realtime/device-channel.js";
 import { classifyDeviceChange } from "./realtime/change-routing.js";
 import express from "express";
@@ -86,8 +85,6 @@ export function createApp() {
   app.get("/health", (_req, res) => res.json({ ok: true }));
   app.use("/pair", pairingRoutes);
 
-  app.use("/api/v1/tv-messages", panelMessages);
-  app.use("/api/v1/client/messages", clientMessages);
   app.use("/api/v1/auth", authRoutes);
   app.use("/api/v1/content-partner", contentPartnerRoutes);
   app.use("/api/v1/admin", adminRoutes);

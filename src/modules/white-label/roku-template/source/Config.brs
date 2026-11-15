@@ -5,7 +5,7 @@
 
 function DeltaServerOrigin() as String
     ' Use um host acessível pelo Roku; localhost aponta para o proprio aparelho.
-    return "https://api.deltatv.com.br"
+    return "https://delta-tv.duckdns.org"
 end function
 
 

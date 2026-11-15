@@ -4,7 +4,14 @@ import { validate } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { actorOf } from "../../shared/audit.js";
 import { requirePermission, can } from "../../middleware/authenticate.js";
-import { Plan } from "../../db/models/index.js";
+import { Plan, Device } from "../../db/models/index.js";
+import { normalizeMac } from "../../shared/mac.js";
+import { AppError, notFound } from "../../shared/errors.js";
+import { macLookupLimiter, macWriteLimiter } from "../../middleware/security.js";
+import * as registration from "../devices/registration.service.js";
+import { activateDirect } from "../stock/direct-device-activation.service.js";
+import { activateLicense } from "../activations/activation.service.js";
+import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import * as svc from "./license.service.js";
 import { ensurePlan } from "./plan.service.js";
 
@@ -18,6 +25,38 @@ router.get("/plans", requirePermission("licenses:read"), async (_req, res) => {
   await ensurePlan(1); // o plano de 1 mês (padrão) sempre existe e aparece na lista
   res.json({ data: await Plan.findAll({ order: [["durationMonths", "ASC"]] }) });
 });
+
+// Operação administrativa: emite e ativa DIRETO no dispositivo; não cria unidades no estoque.
+const directMac = z.string().trim().min(11).max(20);
+router.post("/device-lookup", requirePermission("devices:read"), macLookupLimiter,
+  validate({ body: z.object({ mac: directMac }).strict() }), async (req, res) => {
+    if (req.user.role !== "superadmin") throw new AppError(403,"SUPERADMIN_ONLY","Apenas o Superadmin.");
+    const mac = normalizeMac(req.valid.body.mac);
+    if (!mac) throw new AppError(422,"INVALID_MAC","MAC inválido.");
+    const device = await Device.findOne({ where: { mac } });
+    if (!device) throw notFound("Dispositivo");
+    res.set("Cache-Control","no-store").json(await registration.registeredDeviceById(device.id));
+  });
+router.post("/direct-activation", requirePermission("licenses:write"), macWriteLimiter,
+  validate({ body: z.object({ mac: directMac, months: z.number().int().min(1).max(120), idempotencyKey: z.string().uuid() }).strict() }),
+  async (req, res) => {
+    if (req.user.role !== "superadmin") throw new AppError(403,"SUPERADMIN_ONLY","Apenas o Superadmin.");
+    res.status(201).set("Cache-Control","no-store").json(await activateDirect({ issuerType: "admin", actor: actorOf(req), ...req.valid.body }));
+  });
+router.post("/activate-with-code", requirePermission("licenses:write"), macWriteLimiter,
+  validate({ body: z.object({ mac: directMac, code: z.string().trim().min(8).max(180) }).strict() }),
+  async (req, res) => {
+    if (req.user.role !== "superadmin") throw new AppError(403,"SUPERADMIN_ONLY","Apenas o Superadmin.");
+    const mac = normalizeMac(req.valid.body.mac);
+    if (!mac) throw new AppError(422,"INVALID_MAC","MAC inválido.");
+    const device = await Device.findOne({ where: { mac } });
+    if (!device) throw notFound("Dispositivo");
+    const result = await activateLicense({ code: req.valid.body.code, mac,
+      installationId: device.lastInstallationId, meta: { ip: req.ip, userAgent: "admin-panel-license-code" } });
+    clearMirrorAuth();
+    res.set("Cache-Control","no-store").json({ action: result.reused ? "reuse" : "activate", licenseId: result.activation.licenseId,
+      activationId: result.activation.id, expiresAt: result.expiresAt });
+  });
 
 // Cria (ou devolve) o plano individual de N meses, 1 a 120.
 router.post("/plans", requirePermission("licenses:write"), validate({ body: z.object({ months: z.number().int().min(1).max(120).default(1) }) }), async (req, res) =>

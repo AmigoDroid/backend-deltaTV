@@ -63,15 +63,11 @@ export async function applyPendingPlaylist(activation, transaction) {
   return true;
 }
 
-export async function addListByUrl({ mac: macInput, name, url, ip, authorizedDeviceId }) {
+export async function addListByUrl({ mac: macInput, name, url, ip }) {
   const mac = normalizeMac(macInput);
   if (!mac) throw new AppError(400, "INVALID_MAC", "MAC inválido. Use os 12 caracteres que aparecem na tela do DeltaTV.");
   const listName = String(name ?? "").trim();
   if (!listName || listName.length > 160) throw new AppError(400, "INVALID_NAME", "Informe um nome de até 160 caracteres.");
-
-  if (!authorizedDeviceId) throw new AppError(401, "DEVICE_KEY_REQUIRED", "Confirme a chave exibida na TV.");
-  const authorizedDevice = await Device.findOne({where:{id:authorizedDeviceId,mac},attributes:["id"]});
-  if (!authorizedDevice) throw new AppError(403, "DEVICE_SCOPE_MISMATCH", "A chave não pertence a esta TV.");
 
   const cred = parseListUrl(url);
   await assertPublicUrl(cred.baseUrl); // anti-SSRF: só servidores públicos
@@ -107,7 +103,7 @@ export async function addListByUrl({ mac: macInput, name, url, ip, authorizedDev
       await locked.update({ pendingPlaylistName: null, pendingPlaylistUrlEnc: null, pendingPlaylistAt: null }, { transaction });
       const { decision } = await checkActivation(standalone.id, { transaction });
       await audit({
-        actor: { type: "device_key", id: authorizedDeviceId, ip }, action: "device.playlist.by_url", entityType: "activation", entityId: standalone.id,
+        actor: { type: "anonymous", id: null, ip }, action: "device.playlist.by_url", entityType: "activation", entityId: standalone.id,
         metadata: { mac, listName, host, licensed: !!decision.allowed, created }, transaction,
       });
       return { activationId: standalone.id, created, licensed: !!decision.allowed, code: decision.allowed ? "OK" : decision.code };
@@ -128,7 +124,7 @@ export async function addListByUrl({ mac: macInput, name, url, ip, authorizedDev
       await act.update({ playlistName: listName, playlistUrlEnc: urlEnc }, { transaction });
       await locked.update({ pendingPlaylistName: null, pendingPlaylistUrlEnc: null, pendingPlaylistAt: null }, { transaction });
       await audit({
-        actor: { type: "device_key", id: authorizedDeviceId, ip }, action: "device.playlist.by_url", entityType: "activation", entityId: act.id,
+        actor: { type: "anonymous", id: null, ip }, action: "device.playlist.by_url", entityType: "activation", entityId: act.id,
         metadata: { mac, listName, host, licensed: true, created, viaPartner: true }, transaction,
       });
       return { activationId: act.id, created, licensed: true, code: "OK" };
@@ -137,7 +133,7 @@ export async function addListByUrl({ mac: macInput, name, url, ip, authorizedDev
     const created = !locked.pendingPlaylistUrlEnc;
     await locked.update({ pendingPlaylistName: listName, pendingPlaylistUrlEnc: urlEnc, pendingPlaylistAt: new Date() }, { transaction });
     await audit({
-      actor: { type: "device_key", id: authorizedDeviceId, ip }, action: "device.playlist.by_url_pending", entityType: "device", entityId: locked.id,
+      actor: { type: "anonymous", id: null, ip }, action: "device.playlist.by_url_pending", entityType: "device", entityId: locked.id,
       metadata: { mac, listName, host, created }, transaction,
     });
     return { activationId: null, created, licensed: false, code: "NO_LICENSE" };

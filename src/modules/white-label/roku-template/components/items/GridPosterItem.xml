@@ -22,5 +22,4 @@
         <Poster id="fav" uri="pkg:/images/ic_heart_filled.png" width="20" height="20" blendColor="0xFF6B9DFF" visible="false" />
         <Label id="title" wrap="true" maxLines="2" lineSpacing="0" />
     </children>
-    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
 </component>

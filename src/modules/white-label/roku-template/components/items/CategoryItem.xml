@@ -16,5 +16,4 @@
         <Poster id="pill" uri="pkg:/images/round.9.png" visible="false" />
         <EmojiLabel id="label" />
     </children>
-    <script type="text/brightscript" uri="pkg:/source/Config.brs" />
 </component>
