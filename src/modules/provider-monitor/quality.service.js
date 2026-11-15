@@ -12,6 +12,7 @@ const read = (sql,replacements) => sequelize.query(sql,{replacements,type:QueryT
 const cache = new Map();
 const CACHE_MS = 60_000;
 const LIMIT = 120;
+export function invalidateQualityCache() { cache.clear(); }
 /** Cada amostra usa o servidor selecionado MAIS RECENTEMENTE, não comprova
  * a origem final depois de redirects, portanto exibimos atribuição estimada. */
 // Uma linha por TV no CTE 'selection' (indice unico activation_id,source).
@@ -51,7 +52,7 @@ SELECT pp.id AS "providerId", pp.partner_id AS "partnerId", pp.name,
 FROM partner_providers pp
 LEFT JOIN provider_health h ON h.provider_id=pp.id
 LEFT JOIN provider_totals pt ON pt.provider_id=pp.id
-WHERE (:partner IS NULL OR pp.partner_id=:partner)
+WHERE pp.deleted_at IS NULL AND (:partner IS NULL OR pp.partner_id=:partner)
 ORDER BY "affectedDevices" DESC, "sampleDevices" DESC
 LIMIT :limit`;
 
@@ -120,6 +121,6 @@ export async function recentQualityAlerts(partnerId=null){
     q.affected_devices AS "affectedDevices",q.sample_devices AS "sampleDevices",
     q.first_seen_at AS "firstSeenAt",q.last_seen_at AS "lastSeenAt",q.resolved_at AS "resolvedAt"
     FROM provider_quality_alerts q JOIN partner_providers pp ON pp.id=q.provider_id
-    WHERE (:partner IS NULL OR q.partner_id=:partner) AND q.last_seen_at>now()-interval '7 days'
+    WHERE pp.deleted_at IS NULL AND (:partner IS NULL OR q.partner_id=:partner) AND q.last_seen_at>now()-interval '7 days'
     ORDER BY q.last_seen_at DESC LIMIT 50`,{partner:partnerId});
 }

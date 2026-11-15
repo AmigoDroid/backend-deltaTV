@@ -14,7 +14,8 @@ import { listCodeServerIds } from "./code-pool.service.js";
 import { AppError } from "../../shared/errors.js";
 import { validate, partialInput } from "../../shared/validate.js";
 import { actorOf } from "../../shared/audit.js";
-import { listProviders,createProvider,updateProvider,deleteProvider } from "../providers/provider.service.js";
+import { listProviders,createProvider,updateProvider } from "../providers/provider.service.js";
+import {codeDeletionPreview,deleteCodeOperational,providerDeletionPreview,deleteProviderOperational} from "../providers/operational-deletion.service.js";
 import * as partners from "../partners/partner.service.js";
 import { overview } from "./monitor.service.js";
 import * as commerce from "../content-commerce/commerce.service.js";
@@ -54,7 +55,7 @@ r.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(a
 r.get("/servers/:id/history",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{
   const plan=await getServicePlan(req.user.partnerId);
   if(!plan.features.detailedHistory)throw new AppError(403,"PLAN_HISTORY_REQUIRED","Histórico detalhado disponível no Premium.");
-  const provider=await PartnerProvider.findOne({where:{id:req.valid.params.id,partnerId:req.user.partnerId},attributes:["id"]});
+  const provider=await PartnerProvider.findOne({where:{id:req.valid.params.id,partnerId:req.user.partnerId,deletedAt:null},attributes:["id"]});
   if(!provider)throw new AppError(404,"NOT_FOUND","Servidor não encontrado.");
   const events=await ProviderHealthEvent.findAll({where:{providerId:provider.id},order:[["occurredAt","DESC"]],limit:50,raw:true});
   res.set("Cache-Control","no-store").json({data:events});
@@ -66,12 +67,18 @@ r.post("/devices/:id/revoke",validate({params:z.object({id:z.string().uuid()}),b
   async(req,res)=>{await devices.changeActivation(req.valid.params.id,"revoke",{scope:{partnerId:req.user.partnerId},actor:actorOf(req),reason:req.valid.body.reason});res.status(204).end();});
 r.post("/codes/:id/credits",validate({params:z.object({id:z.string().uuid()}),body:z.object({quantity:z.number().int().min(-100000).max(100000).refine(n=>n!==0)})}),
   async(req,res)=>res.json(await commerce.allocate(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req))));
+const deleteRequest = z.object({
+  confirmation: z.string().trim().min(1).max(160),
+  reason: z.string().trim().max(400).optional(),
+  replacementProviderId: z.string().uuid().nullable().optional(),
+  force: z.boolean().optional(),
+}).strict();
 const srv=z.object({name:z.string().trim().min(2).max(120),baseUrl:z.string().url().max(500),priority:z.number().int().min(0).max(1000).default(0),status:z.enum(["active","disabled"]).default("active")});
 // Busca e paginação no banco: milhares de códigos sem carregar tudo no navegador.
 r.get("/codes",validate({query:z.object({q:z.string().trim().max(80).optional(),page:z.coerce.number().int().min(1).max(100000).default(1)})}),async(req,res)=>{
   const page=req.valid.query.page;
   const q=(req.valid.query.q||"").replace(/[\\%_]/g,"\\$&");
-  const where={partnerId:req.user.partnerId,...(q?{[Op.or]:[{code:{[Op.iLike]:`%${q}%`}},{label:{[Op.iLike]:`%${q}%`}}]}:{})};
+  const where={partnerId:req.user.partnerId,deletedAt:null,...(q?{[Op.or]:[{code:{[Op.iLike]:`%${q}%`}},{label:{[Op.iLike]:`%${q}%`}}]}:{})};
   const {rows,count}=await PartnerCode.findAndCountAll({where,attributes:["id","code","label","status","providerId","maxActivations","allowWebIssuance","expiresAt"],order:[["createdAt","DESC"]],limit:25,offset:(page-1)*25});
   const pools=await listCodeServerIds(rows.map(c=>c.id));
   const balances=await commerce.balancesForCodes(rows.map(c=>c.id));
@@ -83,9 +90,12 @@ r.get("/codes",validate({query:z.object({q:z.string().trim().max(80).optional(),
   res.set("Cache-Control","no-store").json({rows:rows.map(c=>({...c.toJSON(),serverIds:pools.get(c.id)||(c.providerId?[c.providerId]:[]),credits:balances.get(c.id)||{allocated:0,spent:0,available:0},activationCount:activationUsage.get(c.id)||0})),count,page,pageSize:25});
 });
 r.post("/servers",validate({body:srv}),async(req,res)=>res.status(201).json(await createProvider(req.user.partnerId,req.valid.body,actorOf(req),{max:50})));
-r.delete("/servers/:id",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{await deleteProvider(req.user.partnerId,req.valid.params.id,actorOf(req));res.status(204).end();});
+r.get("/servers/:id/deletion-preview",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>res.set("Cache-Control","no-store").json(await providerDeletionPreview(req.user.partnerId,req.valid.params.id)));
+r.delete("/servers/:id",macWriteLimiter,validate({params:z.object({id:z.string().uuid()}),body:deleteRequest}),async(req,res)=>res.json(await deleteProviderOperational(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req))));
 r.patch("/servers/:id",validate({params:z.object({id:z.string().uuid()}),body:partialInput(srv)}),async(req,res)=>res.json(await updateProvider(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req))));
 r.post("/codes",validate({body:z.object({code:z.string().trim().min(4).max(12).optional(),label:z.string().trim().max(120).optional(),providerId:z.string().uuid()})}),async(req,res)=>res.status(201).json(await partners.createCode(req.user.partnerId,req.valid.body,actorOf(req))));
+r.get("/codes/:id/deletion-preview",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>res.set("Cache-Control","no-store").json(await codeDeletionPreview(req.user.partnerId,req.valid.params.id)));
+r.delete("/codes/:id",macWriteLimiter,validate({params:z.object({id:z.string().uuid()}),body:deleteRequest}),async(req,res)=>res.json(await deleteCodeOperational(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req))));
 r.post("/codes/:id/revoke",validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{await partners.revokeCode(req.user.partnerId,req.valid.params.id,actorOf(req));res.status(204).end();});
 r.put("/codes/:id/servers",validate({params:z.object({id:z.string().uuid()}),
   body:z.object({serverIds:z.array(z.string().uuid()).min(1)})}),

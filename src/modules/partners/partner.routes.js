@@ -10,6 +10,7 @@ import { listActivations } from "../devices/device.service.js";
 import * as svc from "./partner.service.js";
 import { getPartnerAvatarImages } from "./partner-avatar.service.js";
 import * as providers from "../providers/provider.service.js";
+import {codeDeletionPreview,deleteCodeOperational,providerDeletionPreview,deleteProviderOperational} from "../providers/operational-deletion.service.js";
 import * as stock from "../stock/stock.service.js";
 import { DEFAULT_TEMPLATE } from "../providers/playlist-url.js";
 import { codeCheckLimiter } from "../../middleware/security.js";
@@ -27,6 +28,12 @@ import { audit } from "../../shared/audit.js";
 import { AppError, notFound } from "../../shared/errors.js";
 const router = Router();
 const id = z.object({ id: z.string().uuid() });
+const deleteRequest = z.object({
+  confirmation: z.string().trim().min(1).max(160),
+  reason: z.string().trim().max(400).optional(),
+  replacementProviderId: z.string().uuid().nullable().optional(),
+  force: z.boolean().optional(),
+}).strict();
 const cents = z.number().int().min(0).max(100_000_000);
 
 const commercial = z.object({
@@ -198,15 +205,20 @@ router.post("/:id/codes/:codeId/revoke", requirePermission("partners:write"), va
   res.status(204).end();
 });
 
+router.get("/:id/codes/:codeId/deletion-preview", requirePermission("override"), validate({params:z.object({id:z.string().uuid(),codeId:z.string().uuid()})}),async(req,res)=>
+  res.set("Cache-Control","no-store").json(await codeDeletionPreview(req.valid.params.id,req.valid.params.codeId)));
+router.delete("/:id/codes/:codeId", requirePermission("override"), validate({params:z.object({id:z.string().uuid(),codeId:z.string().uuid()}),body:deleteRequest}), async(req,res)=>
+  res.json(await deleteCodeOperational(req.valid.params.id,req.valid.params.codeId,req.valid.body,actorOf(req))));
+
 router.get("/:id/providers", requirePermission("partners:read"), validate({ params: id }), async (req, res) => res.json({ data: await providers.listProviders(req.valid.params.id) }));
 router.post("/:id/providers", requirePermission("partners:write"), validate({ params: id, body: providerBody }), async (req, res) =>
   res.status(201).json(await providers.createProvider(req.valid.params.id, req.valid.body, actorOf(req))));
 router.patch("/:id/providers/:providerId", requirePermission("partners:write"), validate({ params: prov, body: partialInput(providerBody) }), async (req, res) =>
   res.json(await providers.updateProvider(req.valid.params.id, req.valid.params.providerId, req.valid.body, actorOf(req))));
-router.delete("/:id/providers/:providerId", requirePermission("partners:write"), validate({ params: prov }), async (req, res) => {
-  await providers.deleteProvider(req.valid.params.id, req.valid.params.providerId, actorOf(req));
-  res.status(204).end();
-});
+router.get("/:id/providers/:providerId/deletion-preview",requirePermission("override"),validate({params:prov}),async(req,res)=>
+  res.set("Cache-Control","no-store").json(await providerDeletionPreview(req.valid.params.id,req.valid.params.providerId)));
+router.delete("/:id/providers/:providerId", requirePermission("override"),validate({params:prov,body:deleteRequest}),async(req,res)=>
+  res.json(await deleteProviderOperational(req.valid.params.id,req.valid.params.providerId,req.valid.body,actorOf(req))));
 
 // Estoque de licenças do revendedor (lançamento manual pelo admin).
 // Duração padrão: 1 mês (quando o campo é omitido).
@@ -241,7 +253,7 @@ router.post("/:id/invoices", requirePermission("billing:write"), validate({ para
 const codeParams = z.object({ id: z.string().uuid(), codeId: z.string().uuid() });
 router.get("/:id/codes/:codeId/management", requirePermission("override"), validate({params:codeParams}), async(req,res)=>{
  const {id,codeId}=req.valid.params;
- const code=await PartnerCode.findOne({where:{id:codeId,partnerId:id}});
+ const code=await PartnerCode.findOne({where:{id:codeId,partnerId:id,deletedAt:null}});
  if(!code)throw notFound("Código");
  const [pools,balances]=await Promise.all([listCodeServerIds([codeId]),commerce.balancesForCodes([codeId])]);
  res.set("Cache-Control","no-store").json({serverIds:pools.get(codeId)||(code.providerId?[code.providerId]:[]),credits:balances.get(codeId)||{allocated:0,spent:0,available:0}});
@@ -253,7 +265,7 @@ router.post("/:id/codes/:codeId/restore",requirePermission("override"),validate(
  await sequelize.transaction(async t=>{
  const partner=await Partner.findByPk(id,{transaction:t,lock:t.LOCK.UPDATE});
  if(!partner||partner.status!=="active")throw new AppError(409,"PARTNER_INACTIVE","Ative a parceria antes de restaurar o código.");
- const code=await PartnerCode.findOne({where:{id:codeId,partnerId:id},transaction:t,lock:t.LOCK.UPDATE});
+ const code=await PartnerCode.findOne({where:{id:codeId,partnerId:id,deletedAt:null},transaction:t,lock:t.LOCK.UPDATE});
  if(!code)throw notFound("Código");
  if(code.expiresAt&&new Date(code.expiresAt)<=new Date())throw new AppError(409,"CODE_EXPIRED","Altere o vencimento antes de restaurar.");
  await code.update({status:"active"},{transaction:t});

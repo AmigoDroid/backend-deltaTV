@@ -33,7 +33,7 @@ const codeOut = (c, stock = null) => {
 };
 const stockMap = async (partnerId) => new Map((await balancesOf(partnerId)).map((b) => [b.months, b.quantity]));
 const findCodes = (partnerId) => PartnerCode.findAll({
-  where: { partnerId }, attributes: { include: [[sequelize.literal(CODE_ACTIVATIONS), "activationCount"]] }, order: [["createdAt", "DESC"]],
+  where: { partnerId, deletedAt: null }, attributes: { include: [[sequelize.literal(CODE_ACTIVATIONS), "activationCount"]] }, order: [["createdAt", "DESC"]],
   include: [{ model: PartnerProvider, as: "provider", attributes: ["id", "name", "baseUrl", "status"], required: false }],
 });
 
@@ -66,7 +66,7 @@ export async function getPartner(id) {
     findCodes(id),
     stockMap(id),
     Invoice.findAll({ where: { partnerId: id }, order: [["competence", "DESC"]], limit: 24 }),
-    PartnerProvider.findAll({ where: { partnerId: id }, order: [["priority", "ASC"], ["createdAt", "ASC"]] }),
+    PartnerProvider.findAll({ where: { partnerId: id, deletedAt: null }, order: [["priority", "ASC"], ["createdAt", "ASC"]] }),
   ]);
   return { ...out(p), codes: codes.map((c) => codeOut(c, stock)), invoices, providers };
 }
@@ -200,11 +200,11 @@ export async function checkCode(raw) {
  */
 async function resolveProviderId(partnerId, providerId, transaction) {
   if (providerId === undefined) {
-    const all = await PartnerProvider.findAll({ where: { partnerId }, attributes: ["id"], limit: 2, transaction });
+    const all = await PartnerProvider.findAll({ where: { partnerId, deletedAt: null }, attributes: ["id"], limit: 2, transaction });
     return all.length === 1 ? all[0].id : null;
   }
   if (providerId === null) return null;
-  const provider = await PartnerProvider.findOne({ where: { id: providerId, partnerId }, transaction });
+  const provider = await PartnerProvider.findOne({ where: { id: providerId, partnerId, deletedAt: null }, transaction });
   if (!provider) throw new AppError(422, "INVALID_PROVIDER", "Servidor inválido para esta parceria.");
   if (provider.status !== "active") throw new AppError(422, "PROVIDER_DISABLED", "O servidor escolhido está desativado.");
   return provider.id;
@@ -285,7 +285,7 @@ export async function listCodes(partnerId) {
 export async function updateCode(partnerId, codeId, input, actor) {
   const updated = await sequelize.transaction(async (t) => {
     const partner = await Partner.findByPk(partnerId, { transaction: t, lock: t.LOCK.UPDATE });
-    const c = await PartnerCode.findOne({ where: { id: codeId, partnerId }, transaction: t, lock: t.LOCK.UPDATE });
+    const c = await PartnerCode.findOne({ where: { id: codeId, partnerId, deletedAt: null }, transaction: t, lock: t.LOCK.UPDATE });
     if (!partner || !c) throw notFound("Código");
     const patch = {};
     for (const k of ["label", "maxActivations", "expiresAt", "allowWebIssuance"]) if (input[k] !== undefined) patch[k] = input[k];
@@ -320,7 +320,7 @@ export async function updateCode(partnerId, codeId, input, actor) {
 export async function revokeCode(partnerId, codeId, actor) {
   const result=await sequelize.transaction(async (t) => {
     await Partner.findByPk(partnerId, { transaction: t, lock: t.LOCK.UPDATE }); // mesma ordem de locks da ativação
-    const c = await PartnerCode.findOne({ where: { id: codeId, partnerId }, transaction: t, lock: t.LOCK.UPDATE });
+    const c = await PartnerCode.findOne({ where: { id: codeId, partnerId, deletedAt: null }, transaction: t, lock: t.LOCK.UPDATE });
     if (!c) throw notFound("Código");
     await c.update({ status: "revoked" }, { transaction: t });
     await audit({ actor, action: "partner.code.revoke", entityType: "partner", entityId: partnerId, metadata: { codeId }, transaction: t });

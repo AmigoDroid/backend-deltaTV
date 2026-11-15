@@ -21,7 +21,7 @@ export async function freshnessWindowSeconds() {
   }
   if (!activeCountCache.pending) {
     activeCountCache.pending = sequelize.query(
-      "SELECT count(*)::integer AS total FROM partner_providers WHERE status = 'active'",
+      "SELECT count(*)::integer AS total FROM partner_providers WHERE status = 'active' AND deleted_at IS NULL",
       { type: QueryTypes.SELECT },
     ).then(([row]) => {
       activeCountCache.value = Number(row?.total) || 0;
@@ -57,7 +57,7 @@ export async function listServerHealth({ partnerId = null, q = "", status = "", 
     pattern: `%${String(q || "").trim().replace(/[\\%_]/g, "\\$&")}%`,
     status, limit: size, offset: (currentPage - 1) * size,
   };
-  const conditions = [];
+  const conditions = ["pp.deleted_at IS NULL"];
   if (partnerId) conditions.push("pp.partner_id = :partnerId");
   if (q) conditions.push("(pp.name ILIKE :pattern ESCAPE '\\' OR pp.base_url ILIKE :pattern ESCAPE '\\' OR p.name ILIKE :pattern ESCAPE '\\')");
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -136,7 +136,7 @@ async function fetchPartnerServerAlerts(partnerId) {
       END AS kind
     FROM partner_providers pp
     JOIN provider_health ph ON ph.provider_id = pp.id
-    WHERE pp.partner_id = :partnerId AND pp.status = 'active'
+    WHERE pp.partner_id = :partnerId AND pp.status = 'active' AND pp.deleted_at IS NULL
       AND ph.last_checked_at >= :freshAfter
       AND (ph.state IN ('down', 'suspect', 'slow') OR ph.latency_ms >= :slowMs)
   )

@@ -29,11 +29,11 @@ export async function serversForCode(code, { bypassCache = false } = {}) {
   if (!ids.length) {
     // Compatibilidade com códigos antigos sem provider_id: esses códigos já aceitavam qualquer servidor
     // ativo da própria parceria. Não alterar esse comportamento silenciosamente.
-    const legacy=await PartnerProvider.findAll({where:{partnerId:code.partnerId,status:"active"},order:[["priority","ASC"],["createdAt","ASC"]],raw:true});
+    const legacy=await PartnerProvider.findAll({where:{partnerId:code.partnerId,status:"active",deletedAt:null},order:[["priority","ASC"],["createdAt","ASC"]],raw:true});
     const allowed=plan.features.autoFailover ? (plan.features.maxServers === null ? legacy : legacy.slice(0,plan.features.maxServers)) : legacy.slice(0,1);
     save(code.id,allowed);return allowed;
   }
-  const rows = await PartnerProvider.findAll({where:{id:{[Op.in]:ids},partnerId:code.partnerId,status:"active"},raw:true});
+  const rows = await PartnerProvider.findAll({where:{id:{[Op.in]:ids},partnerId:code.partnerId,status:"active",deletedAt:null},raw:true});
   rows.sort((a,b) => Number(b.id === code.providerId) - Number(a.id === code.providerId) || a.priority - b.priority || new Date(a.createdAt) - new Date(b.createdAt) || a.id.localeCompare(b.id));
   const allowed=plan.features.autoFailover ? (plan.features.maxServers === null ? rows : rows.slice(0,plan.features.maxServers)) : rows.filter(s=>s.id===code.providerId).slice(0,1);
   save(code.id,allowed);
@@ -54,7 +54,7 @@ export async function setCodeServers(partnerId, codeId, ids, actor) {
     const code = await PartnerCode.findOne({where:{id:codeId,partnerId},transaction:t,lock:t.LOCK.UPDATE});
     if (!code) throw notFound("Código");
     if (code.status !== "active") throw new AppError(409,"CODE_INACTIVE","Código inativo.");
-    const servers = await PartnerProvider.findAll({where:{id:{[Op.in]:ids},partnerId,status:"active"},transaction:t});
+    const servers = await PartnerProvider.findAll({where:{id:{[Op.in]:ids},partnerId,status:"active",deletedAt:null},transaction:t});
     if (servers.length !== ids.length) throw new AppError(422,"INVALID_SERVER_POOL","Os servidores devem estar ativos e pertencer à sua parceria.");
     // Não alterar o provedor da ativação; ele permanece como origem segura para rollback.
     await CodeServerPool.destroy({where:{codeId},transaction:t});

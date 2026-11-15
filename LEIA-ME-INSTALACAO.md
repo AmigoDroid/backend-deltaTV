@@ -1,99 +1,63 @@
-# DeltaTV — correção das listas móveis e migração controlada de dispositivos legados
+# DeltaTV — Gerenciamento de exclusão operacional de códigos e servidores
+**Patch:** `DELTA-DELETE-20261115-01` · **Data:** 15/11/2026
 
-Data da entrega: 2026-11-15. Projetos **independentes**: Admin, Revenda e Backend.
+## Escopo e regras
+- **Superadmin:** pode remover operacionalmente códigos e servidores de qualquer parceria por `/api/v1/admin/partners/:id/...`; nenhum papel `admin` comum recebe essa autorização.
+- **Revenda / Master / Submaster:** pode remover somente códigos e servidores da própria conta autenticada por `/api/v1/partner/...`. O escopo vem do JWT, não do ID enviado no corpo.
+- **Parceiro de conteúdo:** pode remover somente códigos e servidores da própria conta autenticada por `/api/v1/content-partner/...`.
+- **Código:** operação `DELETE` autentica, exige confirmação digitada, revoga o uso, marca `deleted_at`, remove pools do código e grava auditoria. **Não apaga licenças, ativações, créditos ou lançamentos financeiros.** Códigos excluídos não voltam a ficar disponíveis para outro parceiro: o código textual continua reservado globalmente por segurança.
+- **Servidor:** prévia de impacto, substituto opcional do mesmo parceiro, migração dos vínculos do servidor para o substituto quando escolhido, desativação e marcação `deleted_at`. Para excluir um servidor com TVs vigentes sem substituto, é preciso marcar consentimento expresso do risco de interrupção. Transação e auditoria.
+- **Histórico:** exclusão é **operacional (arquivamento)**, não `DROP` físico. Isso é necessário para manter FKs RESTRICT de cobrança, auditoria e licenças. Arquivamento não altera saldos comerciais nem transfere créditos do código excluído; créditos existentes ficam preservados, mas inacessíveis para novas operações até uma recuperação administrativa.
+- Não se trata de exclusão de dispositivos, licenças, pagamentos ou contas. As funções existentes desses domínios foram preservadas.
 
-## O que esta entrega faz
+## **ALERTA: migração conflitante de mensagens para TVs**
+Em 15/11/2026, a VPS apresentou `down 20261217000001-tv-messages.cjs` e `ERROR: column "sender_user_id" does not exist`. Se isso ainda ocorrer, **NÃO execute** `npm run db:migrate`: corrigir a migração antiga conforme o reparo de mensagens entregue antes. O pré-verificador abaixo bloqueia a migração enquanto houver outra `down` não revisada.
 
-### Revenda
-- Diminui reconsultas de listas quando chegam eventos WebSocket sem relação com a tela aberta.
-- Impede que polling em segundo plano sobreponha buscas em andamento; preserva resultados visíveis em falhas de rede.
-- Dispositivos: atualizações completas de contingência passam de 20 para 60 segundos, pausam em aba oculta, mantendo eventos em tempo real filtrados.
-- Tabelas móveis com rótulos no React, sem MutationObserver global; dados principais compactos e informações extras expansíveis.
-- Clientes comerciais: busca com debounce de 350 ms, cancelamento de requisições antigas e paginação real de 30 itens (antes só a primeira página de até 50).
-- Portal: atualização seletiva de perfil, códigos, fontes e contadores após eventos.
+## Instalação segura (por painel independente)
+**1. Faça backup completo do PostgreSQL e de cada pasta de produção. Homologue em cópia da VPS primeiro.**
 
-### Superadmin
-- As mesmas melhorias de listas, dispositivos e tabelas móveis.
-- Nova ferramenta `Migração de legados` em Atendimento e TVs, também listada dentro do dashboard da área.
-- Inventário por revenda, situação das ativações, licença vigente, proprietário, MAC compartilhado, plataforma/versão quando conhecidos.
-- Importação **explícita** de ficha comercial legada para `commerce_customers`.
-- Seleção/criação de plano comercial; criação e aprovação *explícitas* de assinatura.
-- Vínculo **explícito** de ativação e licença técnica já vigentes a uma vaga comercial, com transação e auditoria.
-
-### Backend
-- APIs Superadmin: `GET /api/v1/admin/devices/legacy-migration/preview`, `POST .../import-customer`, `POST .../link-activation`.
-- Restrição a Superadmin e permissões do backend; operações identificam parceiro, cadastro legado, ativação e assinatura.
-- Não cria, renova, transfere ou altera licenças e suas datas; não altera estoques, PIX, créditos ou dispositivos.
-- Migração sem backfill em massa. Ativações sem cadastro legado precisam de revisão fora deste assistente; MAC com mais de uma parceria exige confirmação explícita.
-- **Nenhuma migração SQL adicionada**, reutiliza tabelas das migrações de 2026-10/12 já aplicadas.
-- Script de registro de rotas faz backup do `admin.routes.js`; **não substitui `src/app.js`**.
-
-## Aplicação segura — homologação primeiro
-
-Use **cada ZIP em sua pasta**, nunca os três no mesmo diretório. Verifique que a VPS já tem a base mais recente do código e faça backups do projeto e do PostgreSQL antes de aplicar.
-
-### 1. Backend — instalar primeiro
+**2. Backend:** extrair `DeltaTV-exclusao-backend-hotfix.zip` **na raiz** da pasta `/var/www/backend-deltaTV`:
 
 ```bash
 cd /var/www/backend-deltaTV
-# Backup recomendado em outro local/disco antes de modificar
-unzip -o DeltaTV-legados-backend-hotfix.zip
-node scripts/install-legacy-migration.mjs          # simulação, sem mudanças
-node scripts/install-legacy-migration.mjs --apply  # registro de rota, com backup
-node --check src/modules/admin.routes.js
-node --test tests/unit/legacy-migration-*.test.js
+unzip -o DeltaTV-exclusao-backend-hotfix.zip
+node --check src/modules/providers/operational-deletion.service.js
+node --test tests/unit/operational-deletion.test.js
+bash scripts/check-deletion-migrations.sh
+# somente se o pré-verificador aprovar e depois do backup do banco:
+npm run db:migrate
+npm run db:migrate:status
 pm2 restart DeltaTV-Server --update-env
-pm2 logs DeltaTV-Server --lines 60 --nostream
+pm2 logs DeltaTV-Server --lines 80 --nostream
 ```
 
-**Atenção:** o histórico anterior aponta `20261217000001-tv-messages.cjs` como migração pendente e conflitante. **Não execute `npm run db:migrate` para instalar este hotfix.** Resolva o conflito de mensagens separadamente; este hotfix não depende dele. Não use comandos `DROP` ou rollback automático.
+**3. Superadmin:** extrair `DeltaTV-exclusao-admin-hotfix.zip` na raiz de `/var/www/painel-admin-DeltaTV` e executar `npm test && npm run build`.
 
-Verifique o endpoint de inventário com uma sessão autenticada de Superadmin. Espera-se `200` com `{ data,meta,summary,missingClientRecords }`. O endpoint não é público; um visitante ou conta sem permissão deve receber `401/403`, não um inventário.
+**4. Revenda:** extrair `DeltaTV-exclusao-revenda-hotfix.zip` na raiz de `/var/www/revenda-DeltaTV` e executar `npm test && npm run build`.
 
-### 2. Admin
+**5. Parceiro:** extrair `DeltaTV-exclusao-parceiro-hotfix.zip` na raiz de `/var/www/painel_parceiro` e executar `npm run build` (este pacote apenas troca `App.jsx` e adiciona o componente de exclusão; o PWA/favicons instalados anteriormente ficam preservados).
 
-```bash
-cd /var/www/painel-admin-DeltaTV
-unzip -o DeltaTV-mobile-admin-e-legados-hotfix.zip
-npm test
-npm run build
+Não copie a pasta `packages/` nem unifique diretórios entre painéis.
+
+## Testes manuais obrigatórios em homologação
+1. Como **Revenda**, exclua um código sem ativações e confirme que some da lista. Tente excluir um código de outra parceria por ID: espera-se HTTP 404.
+2. Como **Parceiro de conteúdo**, exclua um código com créditos; confira o aviso, auditoria e preservação dos lançamentos. O código deve desaparecer das listas, mas seus créditos não são automaticamente transferidos a outro código.
+3. Exclua um servidor sem vínculo. Recrie a mesma URL na conta: deve ser permitido (índice único parcial).
+4. Exclua um servidor em pool; confira que os vínculos do pool não bloqueiam a operação e que código continua apontando para servidor ativo.
+5. Exclua um servidor com TV vinculada **escolhendo substituto**: confirme que a ativação passa a referenciar o novo servidor e teste reprodução real com credenciais válidas.
+6. Com TV em uso e sem substituto, a interface deve exigir consentimento de que o conteúdo pode deixar de funcionar.
+7. Como Superadmin, repita em uma parceria qualquer; como `admin` comum, o endpoint de exclusão deve retornar HTTP 403.
+8. Teste busca e listagem, código duplicado, monitoramento de servidores e atualização dos dados após exclusão.
+
+## Diagnóstico
+A interface inclui `DELTA-DELETE-20261115-01`; na VPS use:
 ```
-
-Abra o painel em uma conta Superadmin: `Atendimento e TVs > Migração de legados`. Escolha uma revenda de teste, confira o inventário e a prévia; só execute operações de POST em homologação depois de checar os dados.
-
-### 3. Revenda
-
-```bash
-cd /var/www/revenda-DeltaTV
-unzip -o DeltaTV-mobile-revenda-hotfix.zip
-npm test
-npm run build
+grep -R -l 'DELTA-DELETE-20261115-01' dist/assets | head
 ```
+Se não houver resultado após `npm run build`, o pacote certo não foi compilado. Se houver no `dist` mas não no navegador, verifique `root` do Nginx e cache do navegador/CDN.
 
-Teste `Dispositivos`, `Clientes`, rolagem em celular, busca digitando rapidamente, próxima/anterior, navegação e ações da TV. Faça a comparação de velocidade antes/depois com o navegador.
-
-### 4. Nginx e cache
-
-Se `npm run build` concluir mas a UI não mudar, verifique o `root` configurado pelo Nginx, o `dist/assets` publicado e o cache do navegador/Cloudflare. O backend não precisa de reinício do Nginx.
-
-## Regras de migração e limitações
-
-1. O inventário trabalha sobre `reseller_clients` e ativações vinculadas por parceiro+MAC. **Não cobre automaticamente toda ativação órfã**: informa quantas não possuem ficha legada.
-2. Vínculos com vários parceiros, ativação bloqueada ou duplicada, licença vencida/sem proprietário compatível não são migrados automaticamente.
-3. A operação pode criar uma ficha, um plano ou uma assinatura comercial, **mas isso não altera o licenciamento técnico da TV**. A ativação existente continua no mesmo prazo.
-4. Um plano de recursos novos só deve ser concedido depois de avaliar as capacidades e a versão do aplicativo instalado. A interface registra o dado disponível; **não instala app, não força upgrade e não habilita recursos incompatíveis**.
-5. `acknowledgeSharedMac` exige revisão de MAC compartilhado, mas não substitui confirmação de titularidade na operação real.
-6. A migração é por escolha explícita de um cadastro e uma ativação, com auditoria. Não existe botão de migração em massa nesta entrega.
-7. A reversão de vínculos comerciais deve ser feita conscientemente pelo fluxo de liberação de vaga; não altere dados históricos diretamente no PostgreSQL.
-
-## Validação local realizada
-
-- Admin `npm test`: 20 aprovados, 1 ignorado, 0 falhas.
-- Revenda `npm test`: 56 aprovados, 1 ignorado, 0 falhas.
-- Backend: 7 testes específicos aprovados, incluindo idempotência do instalador.
-- Análise sintática (TypeScript parser, JS/JSX): Admin 70 arquivos; Revenda 62; Backend 295; imports relativos verificados.
-- Não foi possível executar **build Vite completo**, testes visuais em smartphone real ou integração PostgreSQL nesta sessão (dependências de renderização/DB indisponíveis). **Homologue antes de publicar.**
-
-## Recuperação
-
-Preserve cópia integral dos arquivos anteriores. O instalador backend guarda cópia com extensão `backup-<timestamp>` de `src/modules/admin.routes.js`. Em caso de problema, interrompa o deploy, restaure o build/pasta anterior do painel correspondente, restaure o registro de rotas do backup e reinicie apenas a API. **Não reverta licenças nem migre banco por conta desta atualização**.
+## Limitações
+- Não foi possível validar as transações num PostgreSQL real nem executar `npm run build` (dependências de produção não disponíveis neste ambiente). **Não liberar em produção sem homologação**.
+- A migração é aditiva, mas altera o índice de unicidade das URLs. Deve ser executada numa janela controlada, pois adquire bloqueios breves na tabela.
+- Excluir servidor em uso pode interromper TV se não existir substituto compatível. Mesmo com substituto, as credenciais Xtream precisam funcionar nesse destino.
+- Não foi criada nesta entrega uma lixeira visual para restaurar códigos/servidores. O histórico permanece preservado, mas restaurar dados arquivados exige procedimento administrativo posterior.

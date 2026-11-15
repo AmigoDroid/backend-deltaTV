@@ -19,7 +19,8 @@ import * as devices from "../devices/device.service.js";
 import * as partners from "../partners/partner.service.js";
 import { listInvoices } from "../billing/billing.service.js";
 import { effectivePartnerStatus } from "../access/access.policy.js";
-import { listProviders, createProvider, updateProvider, deleteProvider } from "../providers/provider.service.js";
+import { listProviders, createProvider, updateProvider } from "../providers/provider.service.js";
+import {codeDeletionPreview,deleteCodeOperational,providerDeletionPreview,deleteProviderOperational} from "../providers/operational-deletion.service.js";
 import { codeCheckLimiter, macLookupLimiter, macWriteLimiter, stockLookupLimiter, stockWriteLimiter } from "../../middleware/security.js";
 import * as stock from "../stock/stock.service.js";
 import { activateDirect } from "../stock/direct-device-activation.service.js";
@@ -205,15 +206,21 @@ const providerBody = z.object({
   status: z.enum(["active", "disabled"]).default("active"),
 });
 const providerOut = (p) => ({ id: p.id, name: p.name, baseUrl: p.baseUrl, status: p.status, priority: p.priority, deliveryMode: p.deliveryMode });
+const deleteRequest = z.object({
+  confirmation: z.string().trim().min(1).max(160),
+  reason: z.string().trim().max(400).optional(),
+  replacementProviderId: z.string().uuid().nullable().optional(),
+  force: z.boolean().optional(),
+}).strict();
 const providerParams = z.object({ providerId: z.string().uuid() });
 router.post("/providers", macWriteLimiter, requireReseller, validate({ body: providerBody }), async (req, res) =>
   res.status(201).json(providerOut(await createProvider(req.user.partnerId, req.valid.body, actorOf(req), { max: (await effectiveResources(req.user.partnerId)).servers.limit }))));
 router.patch("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams, body: partialInput(providerBody) }), async (req, res) =>
   res.json(providerOut(await updateProvider(req.user.partnerId, req.valid.params.providerId, req.valid.body, actorOf(req)))));
-router.delete("/providers/:providerId", macWriteLimiter, requireReseller, validate({ params: providerParams }), async (req, res) => {
-  await deleteProvider(req.user.partnerId, req.valid.params.providerId, actorOf(req));
-  res.status(204).end();
-});
+router.get("/providers/:providerId/deletion-preview",requireReseller,validate({params:providerParams}),async(req,res)=>
+  res.set("Cache-Control","no-store").json(await providerDeletionPreview(req.user.partnerId,req.valid.params.providerId)));
+router.delete("/providers/:providerId",macWriteLimiter,requireReseller,validate({params:providerParams,body:deleteRequest}),async(req,res)=>
+  res.json(await deleteProviderOperational(req.user.partnerId,req.valid.params.providerId,req.valid.body,actorOf(req))));
 
 // Código de ativação. Para revendedor, `licenseMonths` (duração da licença do estoque que o código consome) é obrigatório
 // e o estoque precisa ter essa duração; a validação está em partners.createCode / updateCode.
@@ -228,6 +235,10 @@ router.post("/codes", validate({ body: z.object({ code: z.string().trim().min(4)
   res.status(201).json(await partners.createCode(req.user.partnerId, req.valid.body, actorOf(req))));
 router.patch("/codes/:id", validate({ params: id, body: z.object(codeFields).partial() }), async (req, res) =>
   res.json(await partners.updateCode(req.user.partnerId, req.valid.params.id, req.valid.body, actorOf(req))));
+router.get("/codes/:id/deletion-preview",validate({params:id}),async(req,res)=>
+  res.set("Cache-Control","no-store").json(await codeDeletionPreview(req.user.partnerId,req.valid.params.id)));
+router.delete("/codes/:id",stockWriteLimiter,validate({params:id,body:deleteRequest}),async(req,res)=>
+  res.json(await deleteCodeOperational(req.user.partnerId,req.valid.params.id,req.valid.body,actorOf(req))));
 router.post("/codes/:id/revoke", validate({ params: id }), async (req, res) => {
   await partners.revokeCode(req.user.partnerId, req.valid.params.id, actorOf(req));
   res.status(204).end();

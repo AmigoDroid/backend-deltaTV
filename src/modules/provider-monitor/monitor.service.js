@@ -96,7 +96,7 @@ export async function monitorOnce() {
       SELECT pp.id, pp.base_url AS "baseUrl", pp.partner_id AS "partnerId"
       FROM partner_providers pp
       LEFT JOIN provider_health h ON h.provider_id = pp.id
-      WHERE pp.status='active'
+      WHERE pp.status='active' AND pp.deleted_at IS NULL
       ORDER BY h.last_checked_at ASC NULLS FIRST, pp.id ASC
       LIMIT :limit`, { replacements: { limit: MAX_PER_CYCLE }, type: QueryTypes.SELECT });
     if (!providers.length) return;
@@ -139,18 +139,18 @@ export async function monitorOnce() {
 // Notifica somente incidentes confirmados, por código, e apenas quando TODAS suas URLs estão DOWN.
 async function alertOutages() {
   // Cursor com lote fixo: independe do número total de códigos cadastrados.
-  const where = { status: "active", ...(alertCursor ? { id: { [Op.gt]: alertCursor } } : {}) };
+  const where = { status: "active", deletedAt:null, ...(alertCursor ? { id: { [Op.gt]: alertCursor } } : {}) };
   let codes = await PartnerCode.findAll({where, attributes:["id","partnerId","code","providerId"],order:[["id","ASC"]],limit:200,raw:true});
   if (!codes.length && alertCursor) {
     alertCursor = null;
-    codes = await PartnerCode.findAll({where:{status:"active"},attributes:["id","partnerId","code","providerId"],order:[["id","ASC"]],limit:200,raw:true});
+    codes = await PartnerCode.findAll({where:{status:"active",deletedAt:null},attributes:["id","partnerId","code","providerId"],order:[["id","ASC"]],limit:200,raw:true});
   }
   if (!codes.length) return;
   alertCursor = codes[codes.length - 1].id;
   const links=await CodeServerPool.findAll({where:{codeId:{[Op.in]:codes.map(c=>c.id)}},attributes:["codeId","providerId"],raw:true});
   const pools=new Map();for(const l of links){if(!pools.has(l.codeId))pools.set(l.codeId,[]);pools.get(l.codeId).push(l.providerId);}
   const providerIds = [...new Set(codes.flatMap(c => [...(pools.get(c.id) || []), c.providerId].filter(Boolean)))];
-  const activeProviders=await PartnerProvider.findAll({where:{status:"active",id:{[Op.in]:providerIds}},attributes:["id"],raw:true});
+  const activeProviders=await PartnerProvider.findAll({where:{status:"active",deletedAt:null,id:{[Op.in]:providerIds}},attributes:["id"],raw:true});
   const activeIds=new Set(activeProviders.map(p=>p.id));
   const states=await ProviderHealth.findAll({where:{providerId:{[Op.in]:providerIds}},attributes:["providerId","state","lastCheckedAt"],raw:true});
   const health=new Map(states.map(s=>[s.providerId,s]));
@@ -194,11 +194,11 @@ export function startProviderMonitor() {
 export function stopProviderMonitor(){if(timer)clearInterval(timer);}
 
 export async function overview(partnerId) {
-  const providers=await PartnerProvider.findAll({where:{partnerId},order:[["priority","ASC"]],raw:true});
+  const providers=await PartnerProvider.findAll({where:{partnerId,deletedAt:null},order:[["priority","ASC"]],raw:true});
   const states=providers.length?await ProviderHealth.findAll({where:{providerId:{[Op.in]:providers.map(p=>p.id)}},raw:true}):[];
   const byId=new Map(states.map(s=>[s.providerId,s]));
   const availability=await availabilityForIds(providers.map(p=>p.id));
-  const totalCodes=await PartnerCode.count({where:{partnerId}});
+  const totalCodes=await PartnerCode.count({where:{partnerId,deletedAt:null}});
   const servicePlan=await getServicePlan(partnerId);
   const automated=servicePlan.features.autoPriority;
   const effectiveOrder=[...providers].sort((a,b)=>{

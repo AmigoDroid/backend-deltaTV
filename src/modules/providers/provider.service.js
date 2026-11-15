@@ -1,11 +1,9 @@
-import { Op } from "sequelize";
-import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation } from "../../db/models/index.js";
+import { sequelize, Partner, PartnerProvider } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { assertPublicUrl } from "../../shared/ssrf.js";
 import { probeAccount, xtreamOrigin } from "../xtream/xtream.service.js";
 import { DEFAULT_TEMPLATE, buildPlaylistUrl, normalizeBaseUrl, validateTemplate } from "./playlist-url.js";
-import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { invalidateServerPools } from "../provider-monitor/code-pool.service.js";
 import { clearResolutionCache } from "../provider-monitor/resolve.service.js";
 import { ProviderHealth } from "../../db/models/index.js";
@@ -31,7 +29,7 @@ export async function probeCredentials(provider, credentials) {
 /* ---------- Cadastro de provedores da parceria ---------- */
 
 export const listProviders = (partnerId) =>
-  PartnerProvider.findAll({ where: { partnerId }, order: [["priority", "ASC"], ["createdAt", "ASC"]] });
+  PartnerProvider.findAll({ where: { partnerId, deletedAt: null }, order: [["priority", "ASC"], ["createdAt", "ASC"]] });
 
 async function prepare(input, current) {
   const patch = {};
@@ -62,7 +60,7 @@ export async function createProvider(partnerId, input, actor, { max } = {}) {
       if (!resources.servers.enabled) throw new AppError(403, "NETWORK_RESOURCE_DISABLED", "Seu Master desativou o cadastro de servidores.");
       if (resources.servers.limit !== null) effectiveMax = Math.min(effectiveMax ?? Infinity, resources.servers.limit);
     }
-    if (quotaReached(effectiveMax, await PartnerProvider.count({ where: { partnerId }, transaction: t }))) {
+    if (quotaReached(effectiveMax, await PartnerProvider.count({ where: { partnerId, deletedAt: null }, transaction: t }))) {
       throw new AppError(409, "PROVIDER_LIMIT", `Limite de ${effectiveMax} servidores atingido.`);
     }
     const p = await PartnerProvider.create({ partnerId, ...patch }, { transaction: t });
@@ -72,7 +70,7 @@ export async function createProvider(partnerId, input, actor, { max } = {}) {
 }
 
 export async function updateProvider(partnerId, id, input, actor) {
-  const p = await PartnerProvider.findOne({ where: { id, partnerId } });
+  const p = await PartnerProvider.findOne({ where: { id, partnerId, deletedAt: null } });
   if (!p) throw notFound("Provedor");
   const patch = await prepare(input, p);
   await p.update(patch);
@@ -83,28 +81,4 @@ export async function updateProvider(partnerId, id, input, actor) {
     await ProviderHealth.update({state:"unknown",failures:0,successes:0,latencyMs:null,lastCheckedAt:null},{where:{providerId:id}});
   }
   return p;
-}
-
-export async function deleteProvider(partnerId, id, actor) {
-  const p = await PartnerProvider.findOne({ where: { id, partnerId } });
-  if (!p) throw notFound("Provedor");
-  const used = await Activation.count({ where: { providerId: id, status: { [Op.ne]: "revoked" } } });
-  if (used > 0) {
-    throw new AppError(409, "PROVIDER_IN_USE", `${used} dispositivo(s) usam este provedor. Desative-o em vez de excluir.`);
-  }
-  // Códigos ativos apontando para este servidor: o admin precisa movê-los/revogá-los antes (senão ficariam sem destino).
-  const additionalPools = await CodeServerPool.count({where:{providerId:id}});
-  if(additionalPools>0)throw new AppError(409,"PROVIDER_IN_CODE_POOL",
-    `Este servidor participa de ${additionalPools} pool(s). Remova-o dos códigos antes de excluir.`);
-  const codes = await PartnerCode.count({ where: { providerId: id, status: { [Op.ne]: "revoked" } } });
-  if (codes > 0) {
-    throw new AppError(409, "PROVIDER_HAS_CODES", `${codes} código(s) apontam para este servidor. Mova-os para outro servidor ou revogue-os antes de excluir.`);
-  }
-  await sequelize.transaction(async (t) => {
-    // Códigos revogados só guardam histórico: soltam a referência para não travar a exclusão (FK).
-    await PartnerCode.update({ providerId: null }, { where: { providerId: id }, transaction: t });
-    await p.destroy({ transaction: t });
-  });
-  invalidateServerPools();clearResolutionCache();
-  await audit({ actor, action: "provider.delete", entityType: "partner", entityId: partnerId, metadata: { providerId: id } });
 }

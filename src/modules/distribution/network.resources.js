@@ -72,6 +72,10 @@ const matchResource=(path)=>{
   return null;
 };
 export async function networkResourceGuard(req,_res,next){
+  // Permite limpar os próprios recursos mesmo quando o Master bloqueou novos cadastros.
+  // As rotas ainda exigem autenticação, escopo do token e confirmação.
+  if(req.method==='DELETE' && /^\/(?:providers|servers|codes)\/[a-f0-9-]{36}$/i.test(req.path))return next();
+  if(req.method==='GET' && /^\/(?:providers|servers|codes)\/[a-f0-9-]{36}\/deletion-preview$/i.test(req.path))return next();
   const key=matchResource(req.path);
   if(!key) return next();
   const effective=await effectiveResources(req.user.partnerId);

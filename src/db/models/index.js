@@ -122,6 +122,7 @@ export const PartnerCode = def("PartnerCode", "partner_codes", {
   // Duração (meses) da licença do ESTOQUE do dono que este código consome ao ativar um dispositivo. NULL = código sem licença.
   licenseMonths: { type: T.INTEGER },
   allowWebIssuance: {type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  deletedAt: ts(),
 });
 
 export const PartnerServicePlan = sequelize.define("PartnerServicePlan", {
@@ -165,6 +166,7 @@ export const PartnerProvider = def("PartnerProvider", "partner_providers", {
   baseUrl: str(500, { allowNull: false }), playlistTemplate: str(500, { allowNull: false }),
   deliveryMode: str(20, { allowNull: false, defaultValue: "redirect" }), priority: int(0),
   status: str(20, { allowNull: false, defaultValue: "active" }),
+  deletedAt: ts(),
 });
 
 // Servidores explicitamente autorizados por código. Sem linhas = só o provedor principal (legado).
