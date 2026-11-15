@@ -10,6 +10,7 @@ import { Partner } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
 import * as net from "./network.service.js";
 import * as issuance from "./master-issuance.service.js";
+import * as deliveries from "./master-license-delivery.service.js";
 
 const uuid = z.string().uuid();
 const paramsId = z.object({ id: uuid });
@@ -30,6 +31,10 @@ adminNetwork.get("/accounts/:id/prices",requirePermission("partners:read"),valid
   res.set("Cache-Control","no-store").json({data:await net.listOwnPrices(req.valid.params.id,{adminOverride:true})}));
 adminNetwork.get("/accounts/:id/sales",requirePermission("partners:read"),validate({params:paramsId}),async(req,res)=>
   res.set("Cache-Control","no-store").json({data:await net.salesFor(req.valid.params.id)}));
+adminNetwork.get("/accounts/:id/license-deliveries",requirePermission("partners:read"),validate({params:paramsId}),async(req,res)=>{
+  if(req.user.role!=="superadmin")throw new AppError(403,"FORBIDDEN","Consulta reservada ao Superadmin.");
+  res.set("Cache-Control","no-store").json(await deliveries.listDeliveries(req.valid.params.id,{admin:true}));
+});
 adminNetwork.put("/accounts/:id/prices",requirePermission("partners:write"),
   validate({params:paramsId,body:offer}),async(req,res)=>{
     if(req.user.role!=="superadmin") throw new AppError(403,"FORBIDDEN","Somente o superadmin altera preços de outras contas.");
@@ -127,6 +132,18 @@ partnerNetwork.get("/tree",validate({query:z.object({page:z.coerce.number().int(
   async(req,res)=>res.set("Cache-Control","no-store").json(await net.descendantTree(ctx(req),req.valid.query)));
 partnerNetwork.get("/summary",async(req,res)=>res.set("Cache-Control","no-store").json(await net.networkSummary(ctx(req))));
 partnerNetwork.get("/sales",async(req,res)=>res.set("Cache-Control","no-store").json({data:await net.salesFor(ctx(req))}));
+// O Master entrega LICENÇAS do próprio estoque para uma revenda direta.
+// Nunca declara recebimento Pix nem debita créditos do comprador sem autorização.
+partnerNetwork.get("/license-deliveries",async(req,res)=>
+  res.set("Cache-Control","no-store").json(await deliveries.listDeliveries(ctx(req))));
+partnerNetwork.get("/license-deliveries/by-key/:id",validate({params:paramsId}),async(req,res)=>
+  res.set("Cache-Control","no-store").json(await deliveries.deliveryByKey(ctx(req),req.valid.params.id)));
+partnerNetwork.post("/license-deliveries",stockWriteLimiter,
+  validate({body:z.object({buyerPartnerId:uuid,months:z.number().int().min(1).max(120),
+    quantity:z.number().int().min(1).max(10000),idempotencyKey:uuid,
+    purpose:z.enum(["external_payment","complimentary"]),note:z.string().trim().max(200).default("")}).strict()}),
+  async(req,res)=>res.status(201).set("Cache-Control","no-store").json(
+    await deliveries.deliverLicenses(ctx(req),req.valid.body,actorOf(req))));
 partnerNetwork.get("/purchases",async(req,res)=>res.set("Cache-Control","no-store").json({data:await net.salesFor(ctx(req),{as:"buyer"})}));
 // Recover an uncertain checkout after network timeout; scoped to authenticated buyer.
 partnerNetwork.get("/purchases/by-key/:id",validate({params:paramsId}),async(req,res)=>
