@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import { QueryTypes } from 'sequelize';
 import { sequelize, Partner, AdminUser } from '../../db/models/index.js';
 import { AppError, notFound } from '../../shared/errors.js';
 import { audit } from '../../shared/audit.js';
@@ -8,25 +7,26 @@ import { createMercadoPago, verifySignature } from '../pix/providers/mercadopago
 import { move as stockMove, balancesOf } from '../stock/stock-ledger.js';
 import { ensurePlan } from '../licenses/plan.service.js';
 import { requireMaster } from './network.service.js';
+import { select, exec, fail, chooseOrder, deliverPaid, releaseReserve } from './master-pix.core.js';
+import * as gateways from './gateway-orders.service.js';
+import { isProvider, GATEWAY_LABELS } from './gateways/index.js';
 import { effectiveResources } from './network.resources.js';
 import { env } from '../../config/env.js';
-import { totalCents, verifyPaymentMatch, canDeliver, isSettled, reserveCanRelease } from './master-pix.policy.js';
+import { totalCents, verifyPaymentMatch, isSettled, reserveCanRelease } from './master-pix.policy.js';
 
-const select = (sql, replacements={}, transaction) => sequelize.query(sql, { replacements, transaction, type:QueryTypes.SELECT });
-const exec = (sql, replacements={}, transaction) => sequelize.query(sql, { replacements, transaction, type:QueryTypes.RAW });
-const fail = (status,code,message) => new AppError(status,code,message);
-const chooseAccount = async(id, transaction) => (await select(`SELECT * FROM reseller_master_pix_accounts WHERE partner_id=:id`,{id},transaction))[0];
-const chooseOrder = async(id, transaction, lock=false) => (await select(`SELECT * FROM reseller_master_pix_orders WHERE id=:id ${lock?'FOR UPDATE':''}`,{id},transaction))[0];
+// Mercado Pago agora vive em reseller_payment_gateways (account_ref = merchant id); demais meios: gateway-orders.service.js.
+const chooseAccount = async(id, transaction) => (await select(`SELECT *,account_ref AS merchant_id FROM reseller_payment_gateways WHERE partner_id=:id AND provider='mercadopago'`,{id},transaction))[0];
 const providerOf = (acct) => createMercadoPago({accessToken: decryptSecret(acct.access_token_enc), webhookSecret:decryptSecret(acct.webhook_secret_enc)});
 const webUrl = sellerId => `${env.publicBaseUrl}/api/v1/webhooks/master-pix/mercadopago/${sellerId}`;
 
 export function publicOrder(o) {
   if(!o) return null;
   return {
-    id:o.id, buyerPartnerId:o.buyer_partner_id, sellerPartnerId:o.seller_partner_id,
+    id:o.id, provider:o.provider||'mercadopago', buyerPartnerId:o.buyer_partner_id, sellerPartnerId:o.seller_partner_id,
     months:Number(o.months), quantity:Number(o.quantity), unitPriceCents:Number(o.unit_price_cents),
     totalCents:Number(o.total_cents), status:o.status, qrCode:o.status==='pending'?o.qr_code:null,
-    ticketUrl:o.status==='pending'?o.ticket_url:null, expiresAt:o.expires_at,
+    ticketUrl:o.status==='pending'?o.ticket_url:null, checkoutUrl:o.status==='pending'?(o.checkout_url||null):null,
+    claimedAt:o.payer_claimed_at||null, expiresAt:o.expires_at,
     createdAt:o.created_at, paidAt:o.paid_at, fulfilledAt:o.fulfilled_at,
     reviewReason:o.status==='review'?o.review_reason:null,
   };
@@ -38,7 +38,7 @@ export async function mySettings(sellerId, {admin=false}={}) {
   return {configured:!!a,enabled:!!a?.active,provider:'mercadopago',webhookUrl:webUrl(sellerId),
     merchantId:a?.merchant_id || null,updatedAt:a?.updated_at || null,
     pendingPayments:a?Number((await select(`SELECT count(*)::int AS n FROM reseller_master_pix_orders
-      WHERE seller_partner_id=:id AND status IN ('creating','pending','review')`,{id:sellerId}))[0]?.n||0):0};
+      WHERE seller_partner_id=:id AND provider='mercadopago' AND status IN ('creating','pending','review')`,{id:sellerId}))[0]?.n||0):0};
 }
 
 async function merchantFromToken(token) {
@@ -69,13 +69,13 @@ export async function saveSettings(sellerId, {accessToken,webhookSecret,currentP
     const existing=await chooseAccount(sellerId,t);
     if(existing){
       const live=Number((await select(`SELECT count(*)::int AS n FROM reseller_master_pix_orders
-        WHERE seller_partner_id=:id AND status IN ('creating','pending','review')`,{id:sellerId},t))[0]?.n||0);
+        WHERE seller_partner_id=:id AND provider='mercadopago' AND status IN ('creating','pending','review')`,{id:sellerId},t))[0]?.n||0);
       if(live) throw fail(409,'MP_PENDING_PAYMENTS','Existem cobranças pendentes ou em análise. Concilie antes de trocar credenciais.');
     }
-    await exec(`INSERT INTO reseller_master_pix_accounts(partner_id,access_token_enc,webhook_secret_enc,merchant_id,active)
-      VALUES(:id,:token,:secret,:merchant,:active) ON CONFLICT(partner_id) DO UPDATE SET
+    await exec(`INSERT INTO reseller_payment_gateways(partner_id,provider,access_token_enc,webhook_secret_enc,account_ref,active)
+      VALUES(:id,'mercadopago',:token,:secret,:merchant,:active) ON CONFLICT(partner_id,provider) DO UPDATE SET
       access_token_enc=EXCLUDED.access_token_enc,webhook_secret_enc=EXCLUDED.webhook_secret_enc,
-      merchant_id=EXCLUDED.merchant_id,active=EXCLUDED.active,updated_at=now()`,{
+      account_ref=EXCLUDED.account_ref,active=EXCLUDED.active,updated_at=now()`,{
       id:sellerId,token:encryptSecret(accessToken),secret:encryptSecret(webhookSecret),merchant:merchantId,active,
     },t);
     await audit({actor,action:'distribution.pix.account.configured',entityType:'partner',entityId:sellerId,
@@ -93,10 +93,10 @@ export async function setActive(sellerId, active,actor,{admin=false}={}) {
     if(!admin) await requireMaster(sellerId,'canSell',t);
     if(!active){
       const n=(await select(`SELECT count(*)::int AS n FROM reseller_master_pix_orders
-        WHERE seller_partner_id=:id AND status IN ('creating','pending','review')`,{id:sellerId},t))[0]?.n;
+        WHERE seller_partner_id=:id AND provider='mercadopago' AND status IN ('creating','pending','review')`,{id:sellerId},t))[0]?.n;
       if(Number(n)>0) throw fail(409,'MP_PENDING_PAYMENTS','Concilie as cobranças pendentes antes de desativar o Pix.');
     }
-    await exec(`UPDATE reseller_master_pix_accounts SET active=:active,updated_at=now() WHERE partner_id=:id`,{id:sellerId,active},t);
+    await exec(`UPDATE reseller_payment_gateways SET active=:active,updated_at=now() WHERE partner_id=:id AND provider='mercadopago'`,{id:sellerId,active},t);
     await audit({actor,action:'distribution.pix.account.status',entityType:'partner',entityId:sellerId,metadata:{active},transaction:t});
     return {enabled:active};
   });
@@ -125,14 +125,15 @@ export async function savePrice(sellerId, {months,unitPriceCents,active}, actor,
 
 export async function offersForBuyer(buyerId) {
   const buyer=await Partner.findByPk(buyerId,{attributes:['id','parentPartnerId']});
-  if(!buyer?.parentPartnerId)return {seller:null,offers:[]};
+  if(!buyer?.parentPartnerId)return {seller:null,offers:[],methods:[]};
   const seller=await Partner.findByPk(buyer.parentPartnerId,{attributes:['id','name']});
-  const account=await chooseAccount(seller.id);
-  if(!account?.active)return {seller:{id:seller.id,name:seller.name},offers:[]};
-  try{await requireMaster(seller.id,'canSell');}catch{return {seller:{id:seller.id,name:seller.name},offers:[]};}
+  const empty={seller:{id:seller.id,name:seller.name},offers:[],methods:[]};
+  try{await requireMaster(seller.id,'canSell');}catch{return empty;}
+  const methods=(await gateways.activeMethods(seller.id)).map(provider=>({provider,label:GATEWAY_LABELS[provider]}));
+  if(!methods.length)return empty;
   const offers=await select(`SELECT months,unit_price_cents AS "unitPriceCents" FROM reseller_master_pix_prices
     WHERE partner_id=:id AND active=true ORDER BY months`,{id:seller.id});
-  return {seller:{id:seller.id,name:seller.name},offers:offers.map(o=>({...o,unitPriceCents:Number(o.unitPriceCents)}))};
+  return {seller:{id:seller.id,name:seller.name},offers:offers.map(o=>({...o,unitPriceCents:Number(o.unitPriceCents)})),methods};
 }
 
 async function assertBuyer(buyerId,sellerId,t){
@@ -154,14 +155,15 @@ const orderViewFor=async(buyerId,id)=>{
 };
 
 /** Reserva estoque ANTES de chamar MP. Requisições repetidas recuperam a mesma cobrança. */
-export async function startOrder(buyerId,{months,quantity,expectedUnitPriceCents,idempotencyKey,document},actor){
+export async function startOrder(buyerId,{months,quantity,expectedUnitPriceCents,idempotencyKey,document,provider='mercadopago'},actor){
+  if(!isProvider(provider))throw fail(422,'INVALID_PROVIDER','Meio de pagamento desconhecido.');
   let order=await sequelize.transaction(async t=>{
     await exec('SELECT pg_advisory_xact_lock(99111701)',{},t);
     await exec('SELECT pg_advisory_xact_lock(hashtext(:key))',{key:`masterpix:${buyerId}:${idempotencyKey}`},t);
     const prev=(await select(`SELECT * FROM reseller_master_pix_orders WHERE buyer_partner_id=:buyer AND idempotency_key=:key FOR UPDATE`,
       {buyer:buyerId,key:idempotencyKey},t))[0];
     if(prev){
-      if(Number(prev.months)!==months || Number(prev.quantity)!==quantity || Number(prev.unit_price_cents)!==expectedUnitPriceCents)
+      if(Number(prev.months)!==months || Number(prev.quantity)!==quantity || Number(prev.unit_price_cents)!==expectedUnitPriceCents || prev.provider!==provider)
         throw fail(409,'IDEMPOTENCY_MISMATCH','Esta tentativa de compra já existe com outros valores.');
       return prev;
     }
@@ -169,8 +171,8 @@ export async function startOrder(buyerId,{months,quantity,expectedUnitPriceCents
     if(!buyer?.parentPartnerId)throw fail(422,'NO_MASTER','Sua revenda não está vinculada a um Master.');
     const sellerId=buyer.parentPartnerId;
     const {seller}=await assertBuyer(buyerId,sellerId,t);
-    const acct=await chooseAccount(sellerId,t);
-    if(!acct?.active)throw fail(422,'MASTER_PIX_DISABLED','Seu Master ainda não habilitou recebimentos por Pix.');
+    const gateway=(await select(`SELECT active FROM reseller_payment_gateways WHERE partner_id=:id AND provider=:provider`,{id:sellerId,provider},t))[0];
+    if(!gateway?.active)throw fail(422,'MASTER_PIX_DISABLED','Seu vendedor ainda não habilitou este meio de pagamento.');
     const price=(await select(`SELECT unit_price_cents FROM reseller_master_pix_prices
       WHERE partner_id=:seller AND months=:months AND active=true FOR UPDATE`,{seller:sellerId,months},t))[0];
     if(!price)throw fail(422,'PRICE_NOT_AVAILABLE','Esta licença não está à venda por Pix.');
@@ -184,11 +186,11 @@ export async function startOrder(buyerId,{months,quantity,expectedUnitPriceCents
       counterpartyPartnerId:buyerId,transferId:id,
       note:`Pix Master ${id}: estoque RESERVADO, ainda não entregue`,actor});
     const inserted=(await select(`INSERT INTO reseller_master_pix_orders
-      (id,buyer_partner_id,seller_partner_id,months,quantity,unit_price_cents,total_cents,idempotency_key,actor_user_id)
-      VALUES(:id,:buyer,:seller,:months,:quantity,:unit,:total,:key,:user) RETURNING *`,
-      {id,buyer:buyerId,seller:seller.id,months,quantity,unit:expectedUnitPriceCents,total,key:idempotencyKey,user:actor?.id??null},t))[0];
+      (id,buyer_partner_id,seller_partner_id,months,quantity,unit_price_cents,total_cents,idempotency_key,actor_user_id,provider)
+      VALUES(:id,:buyer,:seller,:months,:quantity,:unit,:total,:key,:user,:provider) RETURNING *`,
+      {id,buyer:buyerId,seller:seller.id,months,quantity,unit:expectedUnitPriceCents,total,key:idempotencyKey,user:actor?.id??null,provider},t))[0];
     await audit({actor,action:'distribution.pix.order.reserved',entityType:'partner',entityId:buyerId,
-      metadata:{orderId:id,sellerId,months,quantity,totalCents:total},transaction:t});
+      metadata:{orderId:id,sellerId,months,quantity,totalCents:total,provider},transaction:t});
     return inserted;
   });
   if(order.status==='creating' && !order.provider_ref)order=await issuePayment(order,document);
@@ -198,6 +200,8 @@ export async function startOrder(buyerId,{months,quantity,expectedUnitPriceCents
 
 // A chave do pedido é a chave idempotente do Mercado Pago. POST repetido não cria segunda cobrança.
 async function issuePayment(order,document){
+  if(order.provider==='infinitepay')return gateways.issueInfinitePay(order);
+  if(order.provider==='manual_pix')return gateways.issueManual(order);
   const acct=await chooseAccount(order.seller_partner_id);
   if(!acct?.active)throw fail(409,'MASTER_PIX_DISABLED','O recebimento deste Master está desativado.');
   const buyerUser=order.actor_user_id?await AdminUser.findByPk(order.actor_user_id):null;
@@ -231,6 +235,7 @@ export async function reconcileOrder(id,{force=false}={}) {
   if(!order || (isSettled(order.status) && !(force && order.status==='paid')))return order;
   if(order.status==='review' && !force)return order;
   if(!force && order.checked_at && Date.now()-new Date(order.checked_at).getTime()<6500)return order;
+  if(order.provider!=='mercadopago')return gateways.reconcileGatewayOrder(order);
   const account=await chooseAccount(order.seller_partner_id);
   if(!account)throw fail(503,'MASTER_PIX_CONFIG_MISSING','Conta recebedora indisponível para conciliação.');
   if(!order.provider_ref){
@@ -266,43 +271,9 @@ export async function reconcileOrder(id,{force=false}={}) {
         review_reason='Pagamento com reembolso parcial; exige conciliação manual',
         checked_at=now(),updated_at=now() WHERE id=:id RETURNING *`,{id},t))[0];
     }
-    if(payment.status==='paid'){
-      const locked=await Partner.findAll({where:{id:[current.buyer_partner_id,current.seller_partner_id].sort()},
-        transaction:t,lock:t.LOCK.UPDATE});
-      const buyer=locked.find(p=>p.id===current.buyer_partner_id);
-      const seller=locked.find(p=>p.id===current.seller_partner_id);
-      let allowed=false;
-      try {
-        await requireMaster(current.seller_partner_id,'canSell',t);
-        const resource=await effectiveResources(current.buyer_partner_id,t);
-        allowed=resource.stock.enabled;
-      } catch { allowed=false; }
-      if(!allowed || !canDeliver(current,buyer,seller)) {
-        return (await select(`UPDATE reseller_master_pix_orders SET status='review',
-          review_reason='Pagamento confirmado, mas vínculo ou permissão mudou; exige conciliação',
-          paid_at=:paidAt,checked_at=now(),updated_at=now() WHERE id=:id RETURNING *`,
-          {id,paidAt:payment.paidAt||new Date()},t))[0];
-      }
-      await stockMove(t,{partnerId:current.buyer_partner_id,months:Number(current.months),
-        delta:Number(current.quantity),kind:'transfer_in',counterpartyPartnerId:current.seller_partner_id,
-        transferId:id,note:`Pix Master ${id} confirmado no Mercado Pago`,actor:{type:'system',name:'Pix Master'}});
-      await audit({actor:{type:'system',name:'Pix Master'},action:'distribution.pix.order.fulfilled',entityType:'partner',
-        entityId:current.buyer_partner_id,metadata:{orderId:id,sellerId:current.seller_partner_id,
-        amountCents:Number(current.total_cents),providerRef:current.provider_ref},transaction:t});
-      return (await select(`UPDATE reseller_master_pix_orders SET status='paid',paid_at=:paidAt,
-        fulfilled_at=now(),qr_code=NULL,checked_at=now(),updated_at=now()
-        WHERE id=:id RETURNING *`,{id,paidAt:payment.paidAt||new Date()},t))[0];
-    }
-    if(reserveCanRelease(payment.status)){
-      if(!current.released_at && !current.fulfilled_at){
-        await stockMove(t,{partnerId:current.seller_partner_id,months:Number(current.months),
-          delta:Number(current.quantity),kind:'transfer_in',counterpartyPartnerId:current.buyer_partner_id,
-          transferId:id,note:`Pix Master ${id}: reserva cancelada pelo provedor`,actor:{type:'system',name:'Pix Master'}});
-      }
-      return (await select(`UPDATE reseller_master_pix_orders SET status=:status,released_at=COALESCE(released_at,now()),
-        qr_code=NULL,checked_at=now(),updated_at=now() WHERE id=:id RETURNING *`,
-        {id,status:payment.status},t))[0];
-    }
+    if(payment.status==='paid')return deliverPaid(t,current,{paidAt:payment.paidAt});
+    if(reserveCanRelease(payment.status))
+      return releaseReserve(t,current,payment.status,{note:`Pix Master ${id}: reserva cancelada pelo provedor`});
     return (await select(`UPDATE reseller_master_pix_orders SET status='pending',checked_at=now(),updated_at=now()
       WHERE id=:id RETURNING *`,{id},t))[0];
   });
