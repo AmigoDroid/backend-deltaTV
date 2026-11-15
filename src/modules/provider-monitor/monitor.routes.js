@@ -1,3 +1,5 @@
+import {partnerPortalSales} from "../partner-portal-sales/sales.routes.js";
+import {contentPortalAccessGuard} from "../partner-portal-sales/sales.service.js";
 import { networkResourceGuard } from "../distribution/network.resources.js";
 import { queueRemoteCommand, remoteControlOverview } from '../../realtime/remote-control.service.js';
 import { providerQuality, recentQualityAlerts } from './quality.service.js';
@@ -26,7 +28,13 @@ const r=Router();
 r.use(authenticate,requirePartnerRole,portalPermissionGate);
 r.use(async(req,_res,next)=>{const p=await Partner.findByPk(req.user.partnerId);if(!p|| !["content","both"].includes(p.kind)) throw new AppError(403,"FORBIDDEN","Portal exclusivo de parceiros de conteúdo.");next();});
 // Scope realtime invalidations to THIS content partnership; never broadcast to unrelated revendas.
+r.use(async(req,_res,next)=>{
+  // Permite ao assinante vencido visualizar contrato/faturas e consultar distribuidor, sem liberar gestão operacional.
+  if(req.method!=="GET" || !/^\/(?:account|billing|portal-sales)(?:\/|$)/.test(req.path)) await contentPortalAccessGuard(req.user.partnerId);
+  next();
+});
 r.use(networkResourceGuard);
+r.use("/portal-sales",partnerPortalSales);
 r.use((req,res,next)=>{
   if (["POST","PUT","PATCH","DELETE"].includes(req.method)) res.on("finish",()=>{
     if (res.statusCode >= 200 && res.statusCode < 300) {

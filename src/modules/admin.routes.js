@@ -1,3 +1,4 @@
+import {adminPortalSales} from "./partner-portal-sales/sales.routes.js";
 import control from "./superadmin/control.routes.js";
 import { adminNetwork } from "./distribution/network.routes.js";
 import { adminMasterPixRouter } from "./distribution/master-pix.routes.js";
@@ -29,6 +30,7 @@ import { adminRouter as appDownloads } from "./downloads/download.routes.js";
 // Tudo em /api/v1/admin exige autenticação; cada rota exige a permissão correspondente.
 const router = Router();
 router.use(authenticate);
+router.use("/portal-sales",adminPortalSales);
 router.use("/control", control);
 router.use("/platform-settings", platformSettings);
 router.use("/notifications", adminNotificationRoutes);

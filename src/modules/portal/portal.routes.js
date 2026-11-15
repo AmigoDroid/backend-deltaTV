@@ -1,3 +1,4 @@
+import {contentPortalAccessGuard} from "../partner-portal-sales/sales.service.js";
 import { networkResourceGuard, effectiveResources } from "../distribution/network.resources.js";
 import { partnerNetwork } from "../distribution/network.routes.js";
 import { partnerMasterPixRouter } from "../distribution/master-pix.routes.js";
@@ -47,6 +48,12 @@ import {getServicePlan} from "../service-plans/plan.service.js";
  */
 const router = Router();
 router.use(authenticate, requirePartnerRole, portalPermissionGate);
+// O contrato do Painel do Parceiro cobre também as ferramentas white-label servidas em /partner.
+// Sem contrato comercial registrado, as parcerias legadas não mudam de comportamento.
+router.use(async(req,_res,next)=>{
+  if(!(req.method==="GET" && req.path==="/me"))await contentPortalAccessGuard(req.user.partnerId);
+  next();
+});
 router.use(networkResourceGuard);
 router.use("/notifications", partnerNotificationRoutes);
 router.use("/help", partnerHelpRoutes);
