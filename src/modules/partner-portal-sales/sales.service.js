@@ -2,11 +2,12 @@ import {QueryTypes} from 'sequelize';
 import {sequelize} from '../../db/models/index.js';
 import {AppError,notFound} from '../../shared/errors.js';
 import {audit} from '../../shared/audit.js';
+import {reclaimCommercialSellerInvites} from './invitations.service.js';
 import {addMonthsUtc,isContentPartner,resaleAllowed,safeTotal,allowedChildRole,forecastMonthlyCost} from './sales.rules.js';
 
 const fail=(status,code,message)=>{throw new AppError(status,code,message)};
 const adminActor=actor=>{if(actor?.role!=='superadmin')fail(403,'SUPERADMIN_ONLY','Somente o Superadmin pode realizar esta operação.');};
-const sellerActor=(actor,sellerPartnerId)=>{if(actor?.role!=='partner'||actor?.partnerId!==sellerPartnerId)fail(403,'SELLER_ACTOR_MISMATCH','Vendedor inválido.');};
+const sellerActor=(actor,sellerPartnerId)=>{if(actor?.type!=='partner'||actor?.role!=='partner'||actor?.partnerId!==sellerPartnerId)fail(403,'SELLER_ACTOR_MISMATCH','Vendedor inválido.');};
 const read=async(sql,replacements={},transaction)=>sequelize.query(sql,{replacements,type:QueryTypes.SELECT,transaction});
 const run=async(sql,replacements={},transaction)=>sequelize.query(sql,{replacements,transaction});
 const one=async(sql,replacements={},transaction)=>(await read(sql,replacements,transaction))[0]||null;
@@ -60,7 +61,7 @@ async function receiveStock(id,code,months,t) {
     WHERE seller_partner_id=:id AND plan_code=:code`,{id,code,months},t);
 }
 export async function adminOverview() {
-  const [plans,sellers,orders,contracts,forecast,finance]=await Promise.all([
+  const [plans,sellers,orders,contracts,forecast,finance,invitationSummary]=await Promise.all([
     read('SELECT * FROM partner_portal_sales_plans ORDER BY created_at DESC'),
     read(`SELECT s.*,p.name,p.status,COALESCE((SELECT sum(st.available_months) FROM partner_portal_stock st WHERE st.seller_partner_id=s.partner_id),0) AS stock_months FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id ORDER BY s.created_at DESC LIMIT 200`),
     read(`SELECT o.*,p.name AS seller_name FROM partner_portal_stock_orders o JOIN partners p ON p.id=o.seller_partner_id ORDER BY o.created_at DESC LIMIT 100`),
@@ -70,10 +71,15 @@ export async function adminOverview() {
       COALESCE(sum(total_cents) FILTER (WHERE status='pending'),0) AS pending_cents,
       count(*) FILTER (WHERE status='paid' AND settled_at>=date_trunc('month',now()))::int AS paid_orders_this_month
       FROM partner_portal_stock_orders`),
+    one(`SELECT count(*) FILTER (WHERE status='pending' AND expires_at>now())::int AS pending,
+      COALESCE(sum(months) FILTER (WHERE status='pending' AND expires_at>now()),0) AS reserved_months,
+      count(*) FILTER (WHERE status='accepted')::int AS accepted
+      FROM partner_portal_sales_invitations`),
   ]);
-  return {plans,sellers,orders,contracts,forecast,finance:{...finance,estimatedCashAfterForecastCostsCents:Number(finance?.received_this_month_cents||0)-forecast.monthlyFixedCents-forecast.forecastProxyCents},caveat:'Receitas de revenda são declaradas, não liquidadas automaticamente. Pagamentos de estoque são atestados manualmente pelo Superadmin até a integração Pix.'};
+  return {plans,sellers,orders,contracts,forecast,invitationSummary,finance:{...finance,estimatedCashAfterForecastCostsCents:Number(finance?.received_this_month_cents||0)-forecast.monthlyFixedCents-forecast.forecastProxyCents},caveat:'Receitas de revenda são declaradas, não liquidadas automaticamente. Pagamentos de estoque são atestados manualmente pelo Superadmin até a integração Pix.'};
 }
 export async function sellerOverview(id) {
+  await reclaimCommercialSellerInvites(id);
   const seller=await sellerRow(id);
   const [stock,children,transfers,contracts,orders]=await Promise.all([
     read(`SELECT st.plan_code,st.available_months,pl.name AS plan_name,pl.min_resale_cents FROM partner_portal_stock st JOIN partner_portal_sales_plans pl ON pl.code=st.plan_code WHERE st.seller_partner_id=:id ORDER BY st.plan_code`,{id}),
@@ -290,4 +296,29 @@ export async function updateCosts(input,actor) {
   await audit({actor,action:'portal.sales.cost.forecast.update',entityType:'portal_cost_settings',entityId:null,metadata:input,transaction:t});
   return row;
  });
+}
+
+/** Árvore comercial independente da rede de dispositivos/TVs.
+ * A consulta por vendedor usa somente descendants de seu próprio nó.
+ * O limite da consulta é proteção de renderização, NÃO quota de contas ou profundidade.
+ */
+export async function portalSalesTree({sellerPartnerId=null,actor}={}){
+  if(sellerPartnerId)sellerActor(actor,sellerPartnerId);else adminActor(actor);
+  return read(`WITH RECURSIVE tree AS (
+     SELECT s.partner_id,s.parent_partner_id,s.role,s.active,s.can_sell,p.name,p.status,0::int AS depth,
+       ARRAY[s.partner_id] AS path
+     FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id
+     WHERE (:sellerPartnerId IS NULL AND s.parent_partner_id IS NULL) OR s.partner_id=:sellerPartnerId
+     UNION ALL
+     SELECT c.partner_id,c.parent_partner_id,c.role,c.active,c.can_sell,p.name,p.status,tree.depth+1,
+       tree.path||c.partner_id
+     FROM tree JOIN partner_portal_sellers c ON c.parent_partner_id=tree.partner_id
+     JOIN partners p ON p.id=c.partner_id
+     WHERE NOT c.partner_id=ANY(tree.path)
+   ) SELECT partner_id,parent_partner_id,role,active,can_sell,name,status,depth,
+      (SELECT COALESCE(sum(st.available_months),0) FROM partner_portal_stock st
+        WHERE st.seller_partner_id=tree.partner_id) AS available_months,
+      (SELECT count(*)::int FROM partner_portal_access_contracts ac
+        WHERE ac.seller_partner_id=tree.partner_id) AS direct_customers
+     FROM tree ORDER BY path LIMIT 500`,{sellerPartnerId});
 }

@@ -2,6 +2,7 @@ import { reconcile as reconcilePix } from "../modules/pix/pix.service.js";
 import { reconcilePending as reconcileMasterPix } from "../modules/distribution/master-pix.service.js";
 import { generateForAll, sweepDelinquency, lastClosedCompetence, recoverMissedInvoices } from "../modules/billing/billing.service.js";
 import { startMailWorker } from "../modules/mail/mail.worker.js";
+import {sweepExpiredCommercialInvites} from "../modules/partner-portal-sales/invitations.service.js";
 
 // Rotina horária e idempotente: gera a cobrança do mês e aplica a política de inadimplência.
 export async function runBillingJobs({ recovery = false } = {}) {
@@ -40,5 +41,16 @@ export function startScheduler() {
   const safePix = () => runPixJobs().catch((e) => console.error("[jobs] pix falhou:", e.message));
   setTimeout(safePix, 20_000).unref();
   setInterval(safePix, 2 * 60 * 1000).unref();
+  // Expira reservas comerciais a cada 5 minutos. Nunca afeta licenças de TV.
+  let commercialSweepRunning=false;
+  const commercialSweep=async()=>{
+    if(commercialSweepRunning)return;
+    commercialSweepRunning=true;
+    try{const result=await sweepExpiredCommercialInvites();if(result.expired)console.info(`[portal-sales] ${result.expired} convites vencidos: estoque devolvido`);}
+    catch(e){console.warn('[portal-sales] expiração de convites falhou:',e.message)}
+    finally{commercialSweepRunning=false;}
+  };
+  setTimeout(()=>void commercialSweep(),25_000).unref();
+  setInterval(()=>void commercialSweep(),5*60*1000).unref();
   startMailWorker(); // fila de e-mails (só age se SMTP_HOST/MAIL_FROM estiverem definidos)
 }

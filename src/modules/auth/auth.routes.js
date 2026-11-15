@@ -1,4 +1,5 @@
 import { verifyNetworkInvite } from "../distribution/network.routes.js";
+import {publicPortalSalesInvitations} from "../partner-portal-sales/sales.routes.js";
 import { Router } from "express";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
@@ -18,6 +19,7 @@ import { verifyPreRegistration, completePreRegistration } from "../partners/part
 
 const router = Router();
 router.use("/network-invite", verifyNetworkInvite);
+router.use("/portal-sales-invite", publicPortalSalesInvitations);
 router.use("/history", history);
 router.use("/profile", profileRoutes);
 const meta = (req) => ({ ip: req.ip, userAgent: req.get("user-agent") });

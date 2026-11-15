@@ -21,6 +21,10 @@ export async function verifyRequiredSchema(sequelize) {
     admin_user_profiles: ["admin_user_id", "phone", "avatar_data", "show_unread_banner", "show_notification_badge"],
     web_accesses: ["id", "status", "status_reason", "content_owner_partner_id", "source_partner_code_id"],
     partner_trash_snapshots: ["partner_id", "previous_status", "users", "codes", "providers", "web_accesses"],
+    partner_portal_sellers: ["partner_id","parent_partner_id","active","can_sell"],
+    partner_portal_stock: ["seller_partner_id","plan_code","available_months"],
+    partner_portal_access_contracts: ["customer_partner_id","seller_partner_id","expires_at"],
+    partner_portal_sales_invitations: ["id","seller_partner_id","token_hash","status","expires_at","months","accepted_partner_id"],
   };
   for (const [table, columns] of Object.entries(required)) {
     let schema;

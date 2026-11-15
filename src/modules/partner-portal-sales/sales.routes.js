@@ -4,6 +4,8 @@ import {validate} from '../../shared/validate.js';
 import {actorOf} from '../../shared/audit.js';
 import {AppError} from '../../shared/errors.js';
 import * as svc from './sales.service.js';
+import * as invitations from './invitations.service.js';
+import {stockWriteLimiter,loginLimiter,signupLimiter} from '../../middleware/security.js';
 
 const noStore=(_req,res,next)=>{res.set('Cache-Control','no-store');next();};
 const uuid=z.string().uuid();
@@ -19,6 +21,9 @@ export const adminPortalSales=Router();
 adminPortalSales.use(adminOnly,noStore);
 adminPortalSales.get('/',async(_req,res)=>res.json(await svc.adminOverview()));
 adminPortalSales.put('/costs',validate({body:z.object({vpsMonthlyCents:cents,domainAnnualCents:cents,otherMonthlyCents:cents,proxyCostPerGbCents:cents,forecastProxyGbPerPartner:z.number().int().min(0).max(1000000),targetMarginBp:z.number().int().min(0).max(8000),taxBp:z.number().int().min(0).max(2500),reserveBp:z.number().int().min(0).max(6000)}).strict().refine(x=>x.targetMarginBp+x.taxBp<9000)}),async(req,res)=>res.json(await svc.updateCosts(req.valid.body,actorOf(req))));
+adminPortalSales.get('/tree',async(req,res)=>res.json({items:await svc.portalSalesTree({actor:actorOf(req)})}));
+adminPortalSales.get('/invitations',async(req,res)=>res.json({items:await invitations.adminInvitations(actorOf(req))}));
+adminPortalSales.post('/invitations/:id/revoke',validate({params:actionId}),async(req,res)=>res.json(await invitations.adminRevokeInvitation(req.valid.params.id,actorOf(req))));
 adminPortalSales.get('/candidates',validate({query:z.object({q:z.string().trim().max(80).default('')})}),async(req,res)=>res.json(await svc.adminCandidates(req.valid.query.q)));
 adminPortalSales.post('/sellers',validate({body:z.object({partnerId:uuid,parentPartnerId:uuid.nullable().optional()}).strict()}),async(req,res)=>res.status(201).json(await svc.registerSeller(req.valid.body,actorOf(req))));
 adminPortalSales.patch('/sellers/:id',validate({params:actionId,body:z.object({active:z.boolean().optional(),canSell:z.boolean().optional()}).strict().refine(x=>Object.keys(x).length>0)}),async(req,res)=>res.json(await svc.setSellerState(req.valid.params.id,req.valid.body,actorOf(req))));
@@ -33,3 +38,26 @@ partnerPortalSales.use(noStore);
 partnerPortalSales.get('/',async(req,res)=>res.json(await svc.sellerOverview(req.user.partnerId)));
 partnerPortalSales.post('/transfers',validate({body:transfer}),async(req,res)=>res.status(201).json(await svc.transfer({...req.valid.body,sellerPartnerId:req.user.partnerId},actorOf(req))));
 partnerPortalSales.post('/renewals',validate({body:assignment.omit({sellerPartnerId:true})}),async(req,res)=>res.status(201).json(await svc.assignAccess({...req.valid.body,sellerPartnerId:req.user.partnerId},actorOf(req))));
+
+// Convites comerciais pagam o PAINEL DO PARCEIRO; nunca criam licenças de TV.
+const inviteBody=z.object({
+  invitedName:z.string().trim().min(2).max(160),invitedEmail:z.string().trim().email().max(200),
+  inviteType:z.enum(['customer','submaster']),planCode:z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/),
+  months:z.number().int().min(1).max(120),unitResaleCents:cents,monthlyFeeCents:cents.default(0),
+}).strict();
+partnerPortalSales.get('/tree',async(req,res)=>res.json({items:await svc.portalSalesTree({sellerPartnerId:req.user.partnerId,actor:actorOf(req)})}));
+partnerPortalSales.get('/invitations',async(req,res)=>res.json({items:await invitations.listInvitations(req.user.partnerId,actorOf(req))}));
+partnerPortalSales.post('/invitations',stockWriteLimiter,validate({body:inviteBody}),async(req,res)=>
+  res.status(201).json(await invitations.createInvitation({...req.valid.body,sellerPartnerId:req.user.partnerId},actorOf(req))));
+partnerPortalSales.post('/invitations/:id/revoke',stockWriteLimiter,validate({params:actionId}),async(req,res)=>
+  res.json(await invitations.revokeInvitation(req.user.partnerId,req.valid.params.id,actorOf(req))));
+
+// Rota pública: token SOMENTE em POST body. Controle de frequência e sem cookies de sessão.
+export const publicPortalSalesInvitations=Router();
+publicPortalSalesInvitations.use(noStore);
+const invitationToken=z.string().min(32).max(100).regex(/^[A-Za-z0-9_-]+$/);
+publicPortalSalesInvitations.post('/verify',loginLimiter,validate({body:z.object({token:invitationToken}).strict()}),
+  async(req,res)=>res.json(await invitations.verifyInvitation(req.valid.body.token)));
+publicPortalSalesInvitations.post('/complete',signupLimiter,validate({body:z.object({
+  token:invitationToken,companyName:z.string().trim().min(2).max(160),password:z.string().min(12).max(128),
+}).strict()}),async(req,res)=>res.status(201).json(await invitations.completeInvitation(req.valid.body)));
