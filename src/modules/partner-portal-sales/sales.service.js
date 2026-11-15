@@ -5,6 +5,8 @@ import {audit} from '../../shared/audit.js';
 import {reclaimCommercialSellerInvites} from './invitations.service.js';
 import {postgresMigrationError,verifiedAmountMatches} from './checkout.rules.js';
 import {addMonthsUtc,isContentPartner,resaleAllowed,safeTotal,allowedChildRole,forecastMonthlyCost} from './sales.rules.js';
+import {packageSnapshot} from './commercial-v2.rules.js';
+import {activateMasterPackageForPaidOrder} from './commercial-v2.service.js';
 
 const fail=(status,code,message)=>{throw new AppError(status,code,message)};
 const adminActor=actor=>{if(actor?.role!=='superadmin')fail(403,'SUPERADMIN_ONLY','Somente o Superadmin pode realizar esta operação.');};
@@ -71,7 +73,12 @@ async function receiveStock(id,code,months,t) {
 export async function adminOverview() {
   const [plans,sellers,orders,contracts,forecast,finance,invitationSummary]=await Promise.all([
     read('SELECT * FROM partner_portal_sales_plans ORDER BY created_at DESC'),
-    read(`SELECT s.*,p.name,p.status,COALESCE((SELECT sum(st.available_months) FROM partner_portal_stock st WHERE st.seller_partner_id=s.partner_id),0) AS stock_months FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id ORDER BY s.created_at DESC LIMIT 200`),
+    read(`SELECT s.*,p.name,p.status,p.public_partner_number,mp.status AS master_package_status,pl.name AS master_package_name,
+    COALESCE((SELECT sum(st.available_months) FROM partner_portal_stock st WHERE st.seller_partner_id=s.partner_id),0) AS stock_months
+    FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id
+    LEFT JOIN partner_portal_master_packages mp ON mp.partner_id=s.partner_id
+    LEFT JOIN partner_portal_sales_plans pl ON pl.code=mp.plan_code
+    ORDER BY s.created_at DESC LIMIT 200`),
     read(`SELECT o.*,p.name AS seller_name FROM partner_portal_stock_orders o JOIN partners p ON p.id=o.seller_partner_id ORDER BY o.created_at DESC LIMIT 100`),
     read(`SELECT c.*,p.name AS customer_name,s.name AS seller_name FROM partner_portal_access_contracts c JOIN partners p ON p.id=c.customer_partner_id JOIN partners s ON s.id=c.seller_partner_id ORDER BY c.updated_at DESC LIMIT 100`),
     costForecast(),
@@ -94,7 +101,7 @@ export async function sellerEligibility(partnerId) {
   const seller=await sellerRow(partnerId,null,{required:false});
   if(!seller || !isContentPartner(seller.kind)) return {
     registered:false,enabled:false,role:null,
-    reason:'Sua conta ainda não está habilitada como Master ou Submaster. Solicite a ativação ao Superadmin.'
+    reason:'Sua conta ainda não está habilitada como Master ou Submaster. Solicite a ativação à DeltaTV.'
   };
   try {
     await activeSeller(partnerId);
@@ -102,7 +109,7 @@ export async function sellerEligibility(partnerId) {
   } catch(e) {
     if(['SELLER_INACTIVE','ANCESTOR_BLOCKED'].includes(e.code)) return {
       registered:true,enabled:false,role:seller.role,
-      reason:'A distribuição comercial está suspensa para esta conta ou para um Master ancestral. Consulte o Superadmin.'
+      reason:'A distribuição comercial está suspensa para esta conta ou para um Master ancestral. Consulte a DeltaTV.'
     };
     throw e;
   }
@@ -116,9 +123,9 @@ export async function sellerOverview(id) {
     read(`SELECT s.partner_id,s.parent_partner_id,s.role,s.active,p.name FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id WHERE s.parent_partner_id=:id ORDER BY p.name LIMIT 200`,{id}),
     read(`SELECT * FROM partner_portal_transfers WHERE seller_partner_id=:id OR buyer_partner_id=:id ORDER BY created_at DESC LIMIT 60`,{id}),
     read(`SELECT c.*,p.name AS customer_name FROM partner_portal_access_contracts c JOIN partners p ON p.id=c.customer_partner_id WHERE c.seller_partner_id=:id ORDER BY c.updated_at DESC LIMIT 100`,{id}),
-    read(`SELECT id,plan_code,quantity_months,total_cents,status,payment_gateway,checkout_url,pix_copy_paste,
+    seller.can_view_finance?read(`SELECT id,plan_code,quantity_months,total_cents,status,payment_gateway,checkout_url,pix_copy_paste,
       payment_expires_at,created_at,settled_at FROM partner_portal_stock_orders
-      WHERE seller_partner_id=:id ORDER BY created_at DESC LIMIT 60`,{id}),
+      WHERE seller_partner_id=:id ORDER BY created_at DESC LIMIT 60`,{id}):Promise.resolve([]),
   ]);
   return {seller:{partnerId:seller.partner_id,name:seller.name,role:seller.role,active:seller.active,canSell:seller.can_sell},stock,children,transfers,contracts,orders,
     caveat:'Meses são acessos ao painel de parceiros, não licenças de TV. Valores declarados de repasses não são pagamentos confirmados.'};
@@ -132,6 +139,7 @@ export async function registerSeller({partnerId,parentPartnerId=null},actor) {
     const old=await sellerRow(partnerId,t,{required:false});
     if(old)fail(409,'SELLER_EXISTS','Já é distribuidor. Mudança de árvore exige migração auditada específica.');
     if(parentPartnerId)await activeSeller(parentPartnerId,t,{locked:true});
+    if(parentPartnerId){const parent=await sellerRow(parentPartnerId,t);if(!parent.can_create_submasters)fail(403,'SUBMASTER_CREATION_FORBIDDEN','Este Master não tem permissão para cadastrar Submasters.');}
     const role=allowedChildRole(parentPartnerId);
     const r=await one(`INSERT INTO partner_portal_sellers(partner_id,parent_partner_id,role) VALUES (:partnerId,:parentPartnerId,:role)
       RETURNING *`,{partnerId,parentPartnerId,role},t);
@@ -168,7 +176,9 @@ export async function createStockOrder({sellerPartnerId,planCode,quantityMonths}
     const seller=await activeSeller(sellerPartnerId,t,{locked:true});
     if(seller.parent_partner_id)fail(403,'BUY_FROM_PARENT','Submasters recebem estoque do Master responsável; compras diretas da plataforma são reservadas aos Masters raiz.');
     const plan=await planRow(planCode,t,{active:true});
-    const unit=Number(plan.wholesale_cents),total=safeTotal(unit,quantityMonths);
+    const agreed=await one(`SELECT unit_price_cents FROM partner_portal_seller_prices
+      WHERE seller_partner_id=:sellerPartnerId AND plan_code=:planCode`,{sellerPartnerId,planCode},t);
+    const unit=Number(agreed?.unit_price_cents??plan.wholesale_cents),total=safeTotal(unit,quantityMonths);
     const config=await one('SELECT default_gateway FROM partner_portal_payment_settings WHERE singleton_id=1',{},t);
     const gateway=config?.default_gateway||'manual';
     const row=await one(`INSERT INTO partner_portal_stock_orders(seller_partner_id,plan_code,quantity_months,unit_price_cents,total_cents,payment_gateway)
@@ -196,6 +206,7 @@ export async function settleStockOrder(orderId,{settlementRef,method},actor) {
       settlement_method=:method,approved_by=:actorId,settled_at=now() WHERE id=:orderId RETURNING *`,
       {orderId,settlementRef,method,actorId:actor.id},t);
     await receiveStock(row.seller_partner_id,row.plan_code,row.quantity_months,t);
+    await activateMasterPackageForPaidOrder(orderId,t);
     await audit({actor,action:'portal.sales.stock.paid',entityType:'portal_stock_order',entityId:orderId,metadata:{sellerPartnerId:row.seller_partner_id,planCode:row.plan_code,quantityMonths:row.quantity_months,totalCents:Number(row.total_cents),settlementRef,method,verifiedManually:true},transaction:t});
     return updated;
   });
@@ -224,6 +235,7 @@ export async function settleVerifiedPortalOrder(orderId,{gateway,transactionNsu,
       payment_transaction_nsu=:transactionNsu,payment_slug=:slug
       WHERE id=:orderId RETURNING *`,{orderId,settlementRef,gateway,transactionNsu,slug},t);
     await receiveStock(order.seller_partner_id,order.plan_code,order.quantity_months,t);
+    await activateMasterPackageForPaidOrder(orderId,t);
     await audit({actor:{type:'system',role:'system'},action:'portal.sales.stock.payment_api_verified',
       entityType:'portal_stock_order',entityId:orderId,metadata:{gateway,orderId,amountCents,transactionNsu,verifiedByProvider:true,quantityMonths:order.quantity_months},transaction:t});
     return updated;
@@ -247,7 +259,8 @@ export async function transfer({sellerPartnerId,buyerPartnerId,planCode,quantity
   sellerActor(actor,sellerPartnerId);
   return tx(async t=>{
     // Identificador da requisição é único por vendedor. Lock da linha do vendedor serializa retries.
-    await activeSeller(sellerPartnerId,t,{locked:true});
+    const movingSeller=await activeSeller(sellerPartnerId,t,{locked:true});
+    if(!movingSeller.can_transfer_stock)fail(403,'STOCK_TRANSFER_FORBIDDEN','O Master responsável não autorizou a transferência de estoque.');
     const existing=await one(`SELECT * FROM partner_portal_transfers WHERE seller_partner_id=:sellerPartnerId AND request_id=:requestId`,{sellerPartnerId,requestId},t);
     if(existing) {
       if(existing.buyer_partner_id!==buyerPartnerId||existing.plan_code!==planCode||existing.quantity_months!==quantityMonths||Number(existing.declared_unit_price_cents)!==unitResaleCents)
@@ -309,9 +322,9 @@ export async function assignAccess({sellerPartnerId,customerPartnerId,planCode,m
         declared_resale_cents=declared_resale_cents+:declaredTotal,updated_at=now() WHERE id=:id RETURNING *`,
         {expires,months,declaredTotal,id:current.id},t);
     }else {
-      contract=await one(`INSERT INTO partner_portal_access_contracts(customer_partner_id,seller_partner_id,plan_code,start_at,expires_at,months_paid,declared_resale_cents,monthly_fee_cents)
-        VALUES (:customerPartnerId,:sellerPartnerId,:planCode,:startAt,:expires,:months,:declaredTotal,:monthlyFeeCents) RETURNING *`,
-        {customerPartnerId,sellerPartnerId,planCode,startAt,expires,months,declaredTotal,monthlyFeeCents},t);
+      contract=await one(`INSERT INTO partner_portal_access_contracts(customer_partner_id,seller_partner_id,plan_code,start_at,expires_at,months_paid,declared_resale_cents,monthly_fee_cents,package_snapshot)
+        VALUES (:customerPartnerId,:sellerPartnerId,:planCode,:startAt,:expires,:months,:declaredTotal,:monthlyFeeCents,CAST(:snapshot AS jsonb)) RETURNING *`,
+        {customerPartnerId,sellerPartnerId,planCode,startAt,expires,months,declaredTotal,monthlyFeeCents,snapshot:JSON.stringify(packageSnapshot(plan))},t);
     }
     // Preserva prazo mais longo de parceiro legado: não reduz duração existente da conta.
     await run('UPDATE partners SET ends_at=GREATEST(ends_at,:expires) WHERE id=:customerPartnerId',{customerPartnerId,expires},t);
@@ -337,7 +350,7 @@ export async function adminCandidates(query='') {
   const pattern=`%${String(query).replace(/[\\%_]/g,c=>'\\'+c)}%`;
   try {
     return await read(`WITH candidates AS (
-       SELECT id,name,slug,kind,status FROM partners
+       SELECT id,name,slug,kind,status,public_partner_number FROM partners
        WHERE kind IN ('content','both') AND status <> 'deleted'
          AND (:q = '' OR name ILIKE :pattern OR slug ILIKE :pattern)
        ORDER BY name,id LIMIT 50

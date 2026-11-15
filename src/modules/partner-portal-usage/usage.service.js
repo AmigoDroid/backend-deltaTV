@@ -88,7 +88,7 @@ export async function usageReport({month,sellerPartnerId=null}={}){
   const [records,costs,settings]=await Promise.all([
     sellerPartnerId&&!ownerIds.length?Promise.resolve([]):read(`SELECT partner_id::text,media_kind,transport,
       sum(bytes_out)::text AS bytes_out,sum(request_count)::text AS request_count,sum(error_count)::text AS error_count
-      FROM partner_portal_usage_hourly WHERE bucket_at>=:start AND bucket_at<:end ${scopedSql}
+      FROM partner_portal_usage_hourly WHERE bucket_at >= :start AND bucket_at < :end ${scopedSql}
       GROUP BY partner_id,media_kind,transport`,{...window,ownerIds}),
     one(COST_SETTINGS),one(ALERT_SETTINGS),
   ]);
@@ -118,7 +118,7 @@ export async function dailyUsage({month,sellerPartnerId=null}={}){
   const permitted=new Set(owners.map(o=>o.owner_id));
   if(sellerPartnerId&&!permitted.size)return [];
   const rows=await read(`SELECT date_trunc('day',bucket_at)::date::text AS day,partner_id::text,transport,sum(bytes_out)::text AS bytes_out
-    FROM partner_portal_usage_hourly WHERE bucket_at>=:start AND bucket_at<:end ${sellerPartnerId?'AND partner_id IN (:ownerIds)':''}
+    FROM partner_portal_usage_hourly WHERE bucket_at >= :start AND bucket_at < :end ${sellerPartnerId?'AND partner_id IN (:ownerIds)':''}
     GROUP BY 1,2,3 ORDER BY 1`,{...window,ownerIds:[...permitted]});
   const trend=new Map();
   for(const r of rows){if(sellerPartnerId&&!permitted.has(r.partner_id))continue;
@@ -136,7 +136,7 @@ export async function topDevices({month,sellerPartnerId=null}={}){
  const rows=await read(`SELECT partner_id::text,device_id::text,sum(bytes_out) FILTER(WHERE transport='node')::text AS bytes_out,
     count(*) FILTER (WHERE transport='nginx_unmetered')::int AS nginx_unmetered_buckets,
     sum(request_count) FILTER(WHERE transport='nginx_unmetered')::text AS nginx_unmetered_requests
-   FROM partner_portal_usage_hourly WHERE bucket_at>=:start AND bucket_at<:end ${sellerPartnerId?'AND partner_id IN (:ownerIds)':''}
+   FROM partner_portal_usage_hourly WHERE bucket_at >= :start AND bucket_at < :end ${sellerPartnerId?'AND partner_id IN (:ownerIds)':''}
    GROUP BY partner_id,device_id ORDER BY sum(bytes_out) FILTER(WHERE transport='node') DESC NULLS LAST LIMIT 50`,{...window,ownerIds:[...permitted]});
  return rows.filter(x=>!sellerPartnerId||permitted.has(x.partner_id)).slice(0,50).map(x=>({partnerId:x.partner_id,deviceId:x.device_id,
    nodeGb:Math.round(Number(x.bytes_out||0)/GB*1000)/1000,nginxUnmeteredRequests:Number(x.nginx_unmetered_requests||0)}));

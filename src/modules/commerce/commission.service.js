@@ -58,7 +58,7 @@ export async function setRule(sellerId,beneficiaryId,basisPoints,actor,{admin=fa
     }
     const maxTotalBps=(await currentConfig(t)).maxTotalBps;
     const others=(await select(`SELECT COALESCE(SUM(basis_points),0)::int AS sum FROM commerce_commission_rules
-      WHERE seller_partner_id=:sellerId AND beneficiary_partner_id<>:beneficiaryId AND active=true`,{sellerId,beneficiaryId},t))[0].sum;
+      WHERE seller_partner_id=:sellerId AND beneficiary_partner_id <> :beneficiaryId AND active=true`,{sellerId,beneficiaryId},t))[0].sum;
     if(Number(others)+basisPoints>maxTotalBps) throw invalid('A soma das comissões ultrapassa o teto configurado pelo Superadmin.');
     const row=(await select(`INSERT INTO commerce_commission_rules(seller_partner_id,beneficiary_partner_id,basis_points,active)
       VALUES(:sellerId,:beneficiaryId,:basisPoints,:active)

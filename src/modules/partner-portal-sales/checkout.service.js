@@ -165,3 +165,29 @@ export async function checkOrder(id,actor){
   // InfinitePay não permite consultar sem transaction_nsu E slug. Aguarde webhook/retorno.
   return orderFor(id);
 }
+
+/** Um Master direto pode escolher checkout DeltaTV ou Pix externo ANTES da emissão da cobrança.
+ * A seleção nunca mexe na transação já iniciada, e somente a DeltaTV confirma pagamento externo.
+ */
+export async function chooseStockOrderPaymentMethod(orderId,sellerId,mode,actor){
+ if(actor?.type!=='partner'||actor.partnerId!==sellerId)
+  reject('SELLER_REQUIRED','Apenas o Master comprador pode escolher a forma de pagamento.',403);
+ if(!['default','manual'].includes(mode))reject('INVALID_PAYMENT_MODE','Forma de pagamento inválida.',422);
+ return sequelize.transaction(async t=>{
+  await run('SELECT pg_advisory_xact_lock(99111712)',{},t);
+  const row=await one(`SELECT o.*,s.parent_partner_id,s.can_view_finance,s.active
+   FROM partner_portal_stock_orders o JOIN partner_portal_sellers s ON s.partner_id=o.seller_partner_id
+   WHERE o.id=:orderId AND o.seller_partner_id=:sellerId FOR UPDATE OF o`,{orderId,sellerId},t);
+  if(!row)reject('ORDER_NOT_FOUND','Pedido não encontrado.',404);
+  if(row.parent_partner_id||!row.can_view_finance||!row.active)reject('PAYMENT_NOT_ALLOWED','Conta não autorizada para esta compra.',403);
+  if(row.status!=='pending'||row.checkout_url||row.pix_copy_paste||row.provider_ref||row.payment_expires_at)
+   reject('PAYMENT_METHOD_LOCKED','A cobrança já foi iniciada ou encerrada. Solicite uma nova compra.',409);
+  const setting=await one('SELECT default_gateway FROM partner_portal_payment_settings WHERE singleton_id=1',{},t);
+  const provider=mode==='manual'?'manual':setting?.default_gateway||'manual';
+  if(provider!=='manual'&&!available(provider))reject('GATEWAY_NOT_CONFIGURED','Gateway da DeltaTV ainda não está configurado.',409);
+  await run(`UPDATE partner_portal_stock_orders SET payment_gateway=:provider WHERE id=:orderId`,{provider,orderId},t);
+  await audit({actor,action:'portal.sales.stock.payment_method_selected',entityType:'portal_stock_order',entityId:orderId,
+    metadata:{provider,mode},transaction:t});
+  return {id:orderId,paymentGateway:provider};
+ });
+}

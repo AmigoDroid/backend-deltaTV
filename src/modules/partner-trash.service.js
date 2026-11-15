@@ -171,6 +171,17 @@ export async function permanentlyDeletePartner(id, input, actor) {
       if (!p) throw notFound("Cadastro da lixeira");
       if (p.status !== "deleted") throw new AppError(409, "NOT_IN_TRASH", "Só é possível apagar permanentemente um cadastro arquivado.");
       if (!matchesPartnerDeletionConfirmation(input.confirmSlug, p)) throw new AppError(422, "CONFIRMATION_MISMATCH", "Confirme o identificador ou nome exato.");
+      // Não apagar a rede comercial nem recibos de terceiros por efeito cascata.
+      // A baixa/anonimização contábil exige rotina própria de retenção e conciliação.
+      const commercial = await select(`SELECT
+        (SELECT count(*)::int FROM partner_portal_sellers WHERE partner_id=:id OR parent_partner_id=:id) AS sellers,
+        (SELECT count(*)::int FROM partner_portal_access_contracts WHERE customer_partner_id=:id OR seller_partner_id=:id) AS contracts,
+        (SELECT count(*)::int FROM partner_portal_stock_orders WHERE seller_partner_id=:id) AS orders,
+        (SELECT count(*)::int FROM partner_portal_sales_invitations WHERE seller_partner_id=:id OR accepted_partner_id=:id) AS invites,
+        (SELECT count(*)::int FROM partner_portal_support_tickets WHERE creator_partner_id=:id OR assigned_partner_id=:id) AS tickets`, {id}, transaction);
+      if (commercial[0] && Object.values(commercial[0]).some(value=>Number(value)>0))
+        throw new AppError(409, 'PURGE_COMMERCIAL_HISTORY_REQUIRES_REVIEW',
+          'Este parceiro possui rede, contratos, pedidos ou chamados. Concilie, transfira descendentes e cumpra a retenção financeira antes da exclusão definitiva.');
       const preview = await previewInTransaction(id, transaction);
       if (preview.blockers.length) throw new AppError(409, "PURGE_BLOCKED", preview.blockers.join(" "));
       if (preview.financialRecords && input.purgeFinancialHistory !== true)
