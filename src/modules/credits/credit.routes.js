@@ -25,7 +25,7 @@ const requireReseller = async (req, _res, next) => {
 };
 
 partnerRouter.get("/", pixReadLimiter, requireReseller, async (req, res) =>
-  res.set("Cache-Control", "no-store").json(await svc.overviewFor(req.reseller.partner, { pixEnabled: pixEnabled() })));
+  res.set("Cache-Control", "no-store").json(await svc.overviewFor(req.reseller.partner, { pixEnabled: await pixEnabled() })));
 
 partnerRouter.get("/ledger", pixReadLimiter, requireReseller, validate({ query: z.object({ ...pageQuery }) }), async (req, res) =>
   res.set("Cache-Control", "no-store").json(await svc.listLedger({ partnerId: req.user.partnerId, ...req.valid.query })));

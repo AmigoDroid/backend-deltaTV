@@ -44,3 +44,23 @@ test('Migração cria exclusão lógica sem remover histórico',()=>{
   assert.match(s,/WHERE deleted_at IS NULL/);
   assert.doesNotMatch(s,/DROP TABLE/);
 });
+test('Restaurar encontra código excluído e limpa deletedAt (C1)',()=>{
+  const s=file('../../src/modules/partners/partner.routes.js');
+  const i=s.indexOf('codes/:codeId/restore');
+  const block=s.slice(i,s.indexOf('export default router',i));
+  assert.doesNotMatch(block,/deletedAt:null\},transaction:t,lock/);
+  assert.match(block,/deletedAt:null\}/);
+  assert.match(block,/status:"active",deletedAt:null/);
+  assert.match(s,/codes\/deleted",requirePermission\("override"\)/);
+});
+test('Excluir código devolve créditos livres à carteira (C2)',()=>{
+  const s=file('../../src/modules/providers/operational-deletion.service.js');
+  assert.match(s,/creditMove\(transaction/);
+  assert.match(s,/content_code_balances/);
+  assert.match(s,/creditsRefunded/);
+});
+test('Excluir servidor não escolhe outro servidor sozinho (C3)',()=>{
+  const s=file('../../src/modules/providers/operational-deletion.service.js');
+  assert.doesNotMatch(s,/alternatives\[0\]\?\.id\|\|null/);
+  assert.match(s,/replacement\?\.id\|\|pool\?\.providerId\|\|null/);
+});

@@ -134,7 +134,9 @@ export async function enforceSessionCap(activationId, transaction) {
     where: { activationId, revokedAt: null, expiresAt: { [Op.gt]: new Date() } },
     attributes: ["id", "createdAt", "revokedAt", "expiresAt"], transaction, lock: transaction.LOCK.UPDATE,
   });
-  const ids = sessionsToRevoke(rows.map((r) => r.toJSON()), env.maxSessionsPerActivation);
+  const activation=await Activation.findByPk(activationId,{include:[License,{model:License,as:"GrantedLicense"}],transaction});
+  const cap=activation?.GrantedLicense?.maxSessionsPerActivation ?? activation?.License?.maxSessionsPerActivation ?? env.maxSessionsPerActivation;
+  const ids = sessionsToRevoke(rows.map((r) => r.toJSON()), cap);
   if (ids.length) await DeviceSession.update({ revokedAt: new Date() }, { where: { id: { [Op.in]: ids } }, transaction });
   return ids.length;
 }

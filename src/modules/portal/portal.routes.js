@@ -14,7 +14,7 @@ import { validate, partialInput } from "../../shared/validate.js";
 import { pageQuery } from "../../shared/pagination.js";
 import { notFound } from "../../shared/errors.js";
 import { actorOf } from "../../shared/audit.js";
-import { authenticate, requirePartnerRole } from "../../middleware/authenticate.js";
+import { authenticate, requirePartnerRole, portalPermissionGate } from "../../middleware/authenticate.js";
 import * as devices from "../devices/device.service.js";
 import * as partners from "../partners/partner.service.js";
 import { listInvoices } from "../billing/billing.service.js";
@@ -46,7 +46,7 @@ import {getServicePlan} from "../service-plans/plan.service.js";
  * (req.user.partnerId). Nenhuma rota aceita partnerId do cliente; ids de outros parceiros resultam em 404.
  */
 const router = Router();
-router.use(authenticate, requirePartnerRole);
+router.use(authenticate, requirePartnerRole, portalPermissionGate);
 router.use(networkResourceGuard);
 router.use("/notifications", partnerNotificationRoutes);
 router.use("/help", partnerHelpRoutes);

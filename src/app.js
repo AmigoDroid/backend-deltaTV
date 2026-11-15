@@ -1,4 +1,6 @@
-import { panelMessages, clientMessages } from "./modules/tv-messages/routes.js";
+import {panelMessages,clientMessages} from "./modules/tv-messages/routes.js";
+import {authenticate} from './middleware/authenticate.js';
+import {maintenanceGate,publicControls} from './modules/superadmin/settings.js';
 import { broadcastDeviceHint } from "./realtime/device-channel.js";
 import { classifyDeviceChange } from "./realtime/change-routing.js";
 import express from "express";
@@ -43,6 +45,7 @@ export function createApp() {
       allowedHeaders: ["Content-Type", "Authorization", "Range", "X-Webhook-Signature", "X-Webhook-Timestamp"],
     }),
   );
+  app.use('/api/v1/admin/control/data/import',authenticate,express.json({limit:'32mb'}));
   // rawBody é necessário para validar a assinatura HMAC dos webhooks.
   app.use(express.json({ limit: "256kb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
@@ -58,6 +61,8 @@ export function createApp() {
 
   // Sessões de players white-label têm limite próprio por token (não por IP público compartilhado).
   app.use("/api/v1/player-apps", whiteLabelPublic);
+  app.use("/api/v1/client/tv-messages",clientMessages);
+  app.use("/api/v1/client/messages",clientMessages);
   app.use(apiLimiter);
   // Notificar após respostas bem-sucedidas; o convite público também cria uma parceria.
   app.use((req, res, next) => {
@@ -83,13 +88,13 @@ export function createApp() {
     next();
   });
 
+  app.get('/api/v1/platform',async(_req,res)=>res.set('Cache-Control','no-store').json(await publicControls()));
+  app.use(maintenanceGate);
   app.get("/health", (_req, res) => res.json({ ok: true }));
   app.use("/pair", pairingRoutes);
 
+  app.use("/api/v1/tv-messages",panelMessages);
   app.use("/api/v1/auth", authRoutes);
-  // Mensagens para TVs (esquema legado sender_id, criado por 20261212000001-tv-messages). Antes de /client para não cair em 404.
-  app.use("/api/v1/tv-messages", panelMessages);
-  app.use("/api/v1/client/messages", clientMessages);
   app.use("/api/v1/content-partner", contentPartnerRoutes);
   app.use("/api/v1/admin", adminRoutes);
   app.use("/api/v1/partner", portalRoutes);

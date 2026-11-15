@@ -190,7 +190,7 @@ export async function checkCode(raw) {
   const problem = shortCodeProblem(code);
   if (problem) return { code, valid: false, available: false, message: problem };
   const taken = (await PartnerCode.count({ where: { code } })) > 0;
-  return { code, valid: true, available: !taken, message: taken ? "Este código já está em uso." : "Código disponível." };
+  return { code, valid: true, available: !taken, message: taken ? "Este código já foi utilizado (inclusive se foi excluído) e não pode ser reaproveitado." : "Código disponível." };
 }
 
 /**

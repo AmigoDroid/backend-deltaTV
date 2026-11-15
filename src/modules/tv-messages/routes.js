@@ -27,6 +27,7 @@ function target(req, body) {
 }
 export const panelMessages = Router();
 panelMessages.use(authenticate, async (req,res,next)=>{
+ if(req.user.role==='partner' && req.user.permissionRoleId && !req.user.permissions?.includes(`partner:messages:${['GET','HEAD'].includes(req.method)?'read':'write'}`))throw new AppError(403,'FORBIDDEN','Seu papel não permite esta ação.');
  const scope=messageScope(req.user);
  if(!scope) throw new AppError(403,'FORBIDDEN','Acesso restrito ao superadmin e parceiros.');
  if(!scope.global) {
@@ -73,7 +74,7 @@ panelMessages.post('/',rateLimit({windowMs:60000,limit:6,keyGenerator:req=>req.u
 });
 panelMessages.get('/',validate({query:z.object({page:z.coerce.number().int().min(1).max(100000).default(1)})}),async(req,res)=>{
  const r={...req.messageScope,offset:(req.valid.query.page-1)*20};
- const data=await select(`SELECT c.*,COUNT(d.device_id)::int total,COUNT(d.read_at)::int read
+ const data=await select(`SELECT c.id,c.sender_id,c.partner_id,c.request_id,c.payload_hash,c.title,c.message,c.created_at,c.expires_at,c.cancelled_at,COUNT(d.device_id)::int total,COUNT(d.read_at)::int read
  FROM (SELECT * FROM tv_message_campaigns WHERE (:global OR partner_id=:partner) ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET :offset) c
  LEFT JOIN tv_message_deliveries d ON d.campaign_id=c.id GROUP BY c.id,c.sender_id,c.partner_id,c.request_id,c.payload_hash,c.title,c.message,c.created_at,c.expires_at,c.cancelled_at ORDER BY c.created_at DESC,c.id DESC`,r);
  res.json({data:data.map(({payload_hash,request_id,...row})=>row)});

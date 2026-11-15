@@ -11,7 +11,7 @@ import * as svc from "./auth.service.js";
 import history from "./login-history.routes.js";
 import profileRoutes from "../profile/profile.routes.js";
 import * as resetSvc from "./password-reset.service.js";
-import { actorOf } from "../../shared/audit.js";
+import { audit, actorOf } from "../../shared/audit.js";
 import { disconnectAdminUser } from "../../realtime/socket.js";
 import { registerReseller } from "../partners/reseller-signup.service.js";
 import { verifyPreRegistration, completePreRegistration } from "../partners/partner-invite.service.js";
@@ -89,6 +89,11 @@ router.post(
   },
 );
 
+router.post('/impersonation/end',authenticate,async(req,res)=>{
+ if(!req.impersonationId)throw new AppError(409,'NO_IMPERSONATION','Nenhuma impersonação ativa.');
+ const {ImpersonationGrant}=await import('../../db/models/index.js');
+ await sequelize.transaction(async transaction=>{await ImpersonationGrant.update({revokedAt:new Date()},{where:{id:req.impersonationId,revokedAt:null},transaction});await audit({actor:actorOf(req),action:'impersonation.end',entityType:'impersonation_grant',entityId:req.impersonationId,transaction})});res.status(204).end();
+});
 router.get("/me", authenticate, async (req, res) => res.json({ user: req.user }));
 
 router.post(

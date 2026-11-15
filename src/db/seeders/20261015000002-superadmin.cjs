@@ -15,13 +15,13 @@ module.exports = {
 
     const { hashPassword } = await import("../../shared/crypto.js");
     const hash = await hashPassword(password);
-    const [, meta] = await queryInterface.sequelize.query(
+    const [rows] = await queryInterface.sequelize.query(
       `INSERT INTO admin_users (name, email, password_hash, role)
        SELECT 'Administrador', :email, :hash, 'superadmin'
-       WHERE NOT EXISTS (SELECT 1 FROM admin_users WHERE lower(email) = lower(:email))`,
+       WHERE NOT EXISTS (SELECT 1 FROM admin_users WHERE lower(email) = lower(:email)) RETURNING id`,
       { replacements: { email, hash } },
     );
-    const created = (meta?.rowCount ?? 0) > 0;
+    const created = Array.isArray(rows) && rows.length > 0;
     console.log(created ? `Superadmin criado: ${email}` : `Superadmin já existe (${email}); nada alterado.`);
   },
   async down(queryInterface) {

@@ -34,6 +34,7 @@ export const AdminUser = def("AdminUser", "admin_users", {
   name: str(160, { allowNull: false }), email: str(200, { allowNull: false }),
   passwordHash: { type: T.TEXT, allowNull: false }, role: str(20, { allowNull: false }),
   partnerId: { type: T.UUID }, status: str(20, { allowNull: false, defaultValue: "active" }),
+  permissionRoleId: { type: T.UUID }, deletedAt: ts(),
   failedLogins: int(0), lockedUntil: ts(), tokenVersion: int(0), lastLoginAt: ts(), lastActivityAt: ts(),
   passwordResetHash: str(64), passwordResetExpiresAt: ts(), passwordResetIssuedAt: ts(),
 });
@@ -110,7 +111,7 @@ export const License = def("License", "licenses", {
   isTrial: { type: T.BOOLEAN, allowNull: false, defaultValue: false },
   startsAt: ts(), expiresAt: ts(), maxDevices: int(1), notes: T.TEXT, createdBy: { type: T.UUID },
   // Revendedor dono do estoque (NULL = licença da plataforma). Migration 20261018000004.
-  ownerPartnerId: { type: T.UUID }, assignedAt: ts(),
+  ownerPartnerId: { type: T.UUID }, assignedAt: ts(), maxSessionsPerActivation: {type:T.INTEGER},
 });
 
 export const PartnerCode = def("PartnerCode", "partner_codes", {
@@ -516,3 +517,11 @@ export const DeviceTrial = sequelize.define("DeviceTrial", {
   mac: { type: T.STRING(17), primaryKey: true }, licenseId: { type: T.UUID },
   status: { type: T.STRING(30), allowNull: false }, startsAt: ts(), expiresAt: ts(),
 }, { tableName: "device_trials", timestamps: false });
+
+export const PermissionRole = def("PermissionRole", "permission_roles", {
+ name:str(80,{allowNull:false}),baseRole:str(20,{allowNull:false}),permissions:{type:T.JSONB,allowNull:false,defaultValue:[]},
+});
+export const ImpersonationGrant = def("ImpersonationGrant", "impersonation_grants", {
+ actorId:{type:T.UUID,allowNull:false},targetId:{type:T.UUID,allowNull:false},sessionId:{type:T.UUID,allowNull:false},
+ expiresAt:{...ts(),allowNull:false},revokedAt:ts(),reason:str(500,{allowNull:false}),
+});

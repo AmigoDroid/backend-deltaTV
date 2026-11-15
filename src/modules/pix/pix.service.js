@@ -4,7 +4,7 @@ import { env } from "../../config/env.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { pageOf, paged } from "../../shared/pagination.js";
-import { getProvider, pixEnabled } from "./providers/index.js";
+import { getProvider, pixEnabled, runtimePixConfig } from "./providers/index.js";
 import { confirmPaymentTx, refundPaymentTx } from "../billing/billing.service.js";
 import { STOCK_KINDS, move } from "../stock/stock-ledger.js";
 import { ensurePlan } from "../licenses/plan.service.js";
@@ -81,7 +81,7 @@ function webhookUrlFor(providerName) {
   if (/^(localhost|127\.|0\.0\.0\.0|\[::1\])/.test(u.hostname)) return undefined;
   return `${env.publicBaseUrl}/api/v1/webhooks/pix/${providerName}`;
 }
-export const webhookUrl = () => (env.pixProvider === "mercadopago" ? webhookUrlFor("mercadopago") : undefined);
+export const webhookUrl = async () => ((await runtimePixConfig()).provider === "mercadopago" ? webhookUrlFor("mercadopago") : undefined);
 
 async function openCharge({ provider, partner, user, actor, fields, reuseWhere, description }) {
   const now = new Date();
@@ -124,7 +124,7 @@ async function openCharge({ provider, partner, user, actor, fields, reuseWhere, 
 
 /** Mensalidade (parceiro de conteúdo ou qualquer parceiro com fatura): cobra o SALDO da fatura. */
 export async function createInvoiceCharge({ partner, user, actor, invoiceId }) {
-  const provider = getProvider();
+  const provider = await getProvider();
   assertCanPay(partner);
   const invoice = await Invoice.findOne({ where: { id: invoiceId, partnerId: partner.id } }); // outro parceiro => 404
   if (!invoice) throw notFound("Fatura");
@@ -139,7 +139,7 @@ export async function createInvoiceCharge({ partner, user, actor, invoiceId }) {
 
 /** Compra de licenças para o estoque do revendedor. O preço vem da tabela de preços, nunca do cliente. */
 export async function createStockCharge({ partner, user, actor, months, quantity }) {
-  const provider = getProvider();
+  const provider = await getProvider();
   assertCanPay(partner);
   if (!STOCK_KINDS.includes(partner.kind)) throw new AppError(422, "NOT_A_RESELLER", "Só revendedores compram licenças para estoque.");
   if (partner.parentPartnerId) throw new AppError(409, "MASTER_PURCHASE_REQUIRED", "Licenças desta revenda devem ser compradas do Master.");
@@ -162,7 +162,7 @@ export async function createStockCharge({ partner, user, actor, months, quantity
  * o front só diz QUANTOS créditos quer; o valor em R$ é créditos × câmbio, calculado aqui.
  */
 export async function createCreditCharge({ partner, user, actor, credits }) {
-  const provider = getProvider();
+  const provider = await getProvider();
   assertCanPay(partner);
   if (!STOCK_KINDS.includes(partner.kind)) throw new AppError(422, "NOT_A_RESELLER", "Só revendedores têm carteira de créditos.");
   if (!Number.isInteger(credits) || credits < 1 || credits > MAX_CREDIT_RECHARGE) {
@@ -183,9 +183,9 @@ export async function createCreditCharge({ partner, user, actor, credits }) {
 /* ---------- Estado e entrega ---------- */
 
 // O provedor da cobrança precisa ser o que está configurado agora (trocar PIX_PROVIDER não pode confundir cobranças antigas).
-const providerFor = (name) => {
-  if (!pixEnabled()) return null;
-  const p = getProvider();
+const providerFor = async (name) => {
+  if (!await pixEnabled()) return null;
+  const p = await getProvider();
   return p.name === name ? p : null;
 };
 
@@ -441,7 +441,7 @@ async function applyProviderState(chargeId, info, actor = SYSTEM) {
 /** Consulta o provedor e atualiza uma cobrança pendente (confirmação mesmo sem webhook, ex.: ambiente local). */
 async function refreshIfPending(charge, { force = false } = {}) {
   if (!["pending", "expired"].includes(charge.status)) return charge;
-  const provider = providerFor(charge.provider);
+  const provider = await providerFor(charge.provider);
   const recent = charge.lastCheckedAt && Date.now() - new Date(charge.lastCheckedAt).getTime() < CHECK_INTERVAL_MS;
   if (!provider || !charge.providerRef || (recent && !force)) return expireIfDue(charge);
   try {
@@ -477,7 +477,7 @@ export async function listChargesFor({ partnerId, page, pageSize }) {
  * Pagamento que não é de uma cobrança nossa (outra integração na mesma conta) é ignorado com 200 para não gerar reentregas.
  */
 export async function handleNotification(providerName, paymentId, actor) {
-  const provider = providerFor(providerName);
+  const provider = await providerFor(providerName);
   if (!provider) throw new AppError(404, "NOT_FOUND", "Provedor desconhecido.");
   let info;
   try {
@@ -510,7 +510,7 @@ export async function listCharges({ status, partnerId, purpose, page, pageSize }
 export async function reprocessCharge(id, actor) {
   const charge = await PixCharge.findByPk(id);
   if (!charge) throw notFound("Cobrança");
-  const provider = providerFor(charge.provider);
+  const provider = await providerFor(charge.provider);
   if (!provider) throw new AppError(409, "PIX_PROVIDER_MISMATCH", "O provedor configurado agora não é o desta cobrança.");
   if (!charge.providerRef) throw new AppError(409, "NO_PROVIDER_REF", "Cobrança sem pagamento no provedor.");
   const info = await provider.getPayment(charge.providerRef);
@@ -531,7 +531,7 @@ export async function resolveCharge(id, { note }, actor) {
 
 /** Somente com PIX_PROVIDER=mock (desenvolvimento): marca a cobrança como paga, como se o banco tivesse confirmado. */
 export async function simulatePayment(id, actor) {
-  const provider = getProvider();
+  const provider = await getProvider();
   if (provider.name !== "mock") throw new AppError(404, "NOT_FOUND", "Rota não encontrada.");
   const charge = await PixCharge.findByPk(id);
   if (!charge) throw notFound("Cobrança");
@@ -545,8 +545,8 @@ export async function simulatePayment(id, actor) {
  * Falha de uma cobrança não interrompe as demais.
  */
 export async function reconcile({ limit = 100 } = {}) {
-  if (!pixEnabled()) return { checked: 0, paid: 0, expired: 0 };
-  const provider = getProvider();
+  if (!await pixEnabled()) return { checked: 0, paid: 0, expired: 0 };
+  const provider = await getProvider();
   const rows = await PixCharge.findAll({
     where: { status: { [Op.in]: ["pending", "expired"] }, provider: provider.name,
       providerRef: { [Op.ne]: null }, createdAt: { [Op.lt]: new Date(Date.now() - 2 * 60_000) },
@@ -601,7 +601,7 @@ const fmtDate = (d) => new Date(d).toLocaleDateString("pt-BR", { timeZone: "Amer
 /** O que está à venda no site e por quanto. O preço vem da tabela geral (license_prices, partner_id NULL) — nunca do cliente. */
 export async function licenseOffer() {
   const months = LICENSE_SALE_MONTHS;
-  if (!pixEnabled()) return { enabled: false, months, priceCents: null };
+  if (!await pixEnabled()) return { enabled: false, months, priceCents: null };
   const found = (await pricesFor(null)).find((p) => p.months === months);
   return { enabled: !!found, months, priceCents: found?.priceCents ?? null };
 }
@@ -619,7 +619,7 @@ const standaloneOf = (mac, transaction, lock = false) =>
  * Só vende se o MAC NÃO tem licença individual em vigor (vencida = renovação, conta a partir do pagamento).
  */
 export async function createLicenseCharge({ mac: macInput, email, ip }) {
-  const provider = getProvider();
+  const provider = await getProvider();
   const mac = normalizeMac(macInput);
   if (!mac) throw new AppError(400, "INVALID_MAC", "MAC inválido. Use os 12 caracteres que aparecem na tela do DeltaTV.");
   const device = await Device.findOne({ where: { mac }, attributes: ["id"] });

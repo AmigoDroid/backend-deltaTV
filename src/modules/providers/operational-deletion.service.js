@@ -5,6 +5,7 @@ import { Op, QueryTypes } from 'sequelize';
 import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, CodeFailover } from '../../db/models/index.js';
 import { AppError, notFound } from '../../shared/errors.js';
 import { audit } from '../../shared/audit.js';
+import { creditMove } from '../credits/credit-ledger.js';
 import { invalidateServerPools } from '../provider-monitor/code-pool.service.js';
 import { clearResolutionCache } from '../provider-monitor/resolve.service.js';
 import { invalidateQualityCache } from '../provider-monitor/quality.service.js';
@@ -34,7 +35,7 @@ export async function codeDeletionPreview(partnerId, codeId, {transaction}={}) {
   ]);
   return { id:c.id,code:c.code,status:c.status,activations,liveActivations,pools,
     financialCharges:Number(financial?.charges||0),allocatedCredits:Number(financial?.allocated||0),availableCredits:Number(financial?.available||0),
-    mode:'archive',warning:[liveActivations>0 ? 'Novas ativações serão impedidas. TVs existentes conservam suas licenças, mas recursos que exijam o código podem precisar de reconfiguração.' : null, Number(financial?.available||0)>0 ? 'Este código tem créditos disponíveis: eles ficarão preservados no histórico, porém indisponíveis até a recuperação administrativa do código.' : null].filter(Boolean).join(' ') || null };
+    mode:'archive',warning:[liveActivations>0 ? 'Novas ativações serão impedidas. TVs existentes conservam suas licenças, mas recursos que exijam o código podem precisar de reconfiguração.' : null, Number(financial?.available||0)>0 ? 'Os créditos ainda não usados deste código serão devolvidos automaticamente à sua carteira.' : null].filter(Boolean).join(' ') || null };
 }
 
 export async function deleteCodeOperational(partnerId, codeId, input, actor) {
@@ -50,9 +51,22 @@ export async function deleteCodeOperational(partnerId, codeId, input, actor) {
     // Pools servem apenas para distribuição operacional. Apagar vínculos do código arquivado
     // libera os servidores sem alterar as ativações anteriores.
     const poolsRemoved=await CodeServerPool.destroy({where:{codeId},transaction});
+    // Créditos reservados e não consumidos voltam à carteira: o código arquivado some da lista e ninguém mais poderia devolvê-los.
+    let creditsRefunded=0;
+    const [bal]=await sequelize.query(`SELECT allocated, spent FROM content_code_balances WHERE code_id = :codeId FOR UPDATE`,
+      {replacements:{codeId},transaction,type:QueryTypes.SELECT});
+    if(bal){
+      const free=Number(bal.allocated)-Number(bal.spent);
+      if(free>0){
+        await sequelize.query(`UPDATE content_code_balances SET allocated = allocated - :free WHERE code_id = :codeId`,
+          {replacements:{codeId,free},transaction});
+        await creditMove(transaction,{partnerId,delta:free,kind:'adjust',note:`Devolução automática ao excluir o código ${code.code}`,actor});
+        creditsRefunded=free;
+      }
+    }
     await audit({actor,action:'partner.code.delete_operational',entityType:'partner_code',entityId:code.id,
-      metadata:{partnerId,code:code.code,liveActivations:count,poolsRemoved,reason:String(input.reason||'').slice(0,400),historyPreserved:true},transaction});
-    return {deleted:true,mode:'archived',id:code.id,liveActivations:count,poolsRemoved};
+      metadata:{partnerId,code:code.code,liveActivations:count,poolsRemoved,creditsRefunded,reason:String(input.reason||'').slice(0,400),historyPreserved:true},transaction});
+    return {deleted:true,mode:'archived',id:code.id,liveActivations:count,poolsRemoved,creditsRefunded};
   });
   invalidateServerPools(codeId);
   clearContractAccessCache();
@@ -105,10 +119,10 @@ export async function deleteProviderOperational(partnerId, providerId, input, ac
     const codeIds=[...new Set([...primary.map(x=>x.id),...affectedCodeIds])];
     const alternatives=preview.alternatives;
     for(const code of primary){
-      // Sem destino escolhido, preservar o restante do pool; caso não exista, usar
-      // outro servidor ativo da mesma parceria. NULL aciona o fallback legado.
+      // Sem destino escolhido, preservar o restante do pool; caso não exista, NULL aciona o fallback legado.
       const pool=await CodeServerPool.findOne({where:{codeId:code.id},attributes:['providerId'],transaction,raw:true});
-      const next=replacement?.id||pool?.providerId||alternatives[0]?.id||null;
+      // Nunca escolher um servidor por conta própria: sem substituto nem pool, fica NULL (fallback legado) e o preview já avisa.
+      const next=replacement?.id||pool?.providerId||null;
       await code.update({providerId:next},{transaction});
     }
     if(replacement){

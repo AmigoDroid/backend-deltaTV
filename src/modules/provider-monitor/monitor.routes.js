@@ -7,7 +7,7 @@ import { Router } from "express";
 import { broadcastChange } from "../../realtime/socket.js";
 import partnerOperations from "./partner-operations.routes.js";
 import { z } from "zod";
-import { authenticate,requirePartnerRole } from "../../middleware/authenticate.js";
+import { authenticate,requirePartnerRole,portalPermissionGate } from "../../middleware/authenticate.js";
 import { Partner, PartnerCode, Activation, PartnerProvider, ProviderHealthEvent } from "../../db/models/index.js";
 import { Op, fn, col } from "sequelize";
 import { listCodeServerIds } from "./code-pool.service.js";
@@ -23,7 +23,7 @@ import * as devices from "../devices/device.service.js";
 import { getServicePlan } from "../service-plans/plan.service.js";
 import { setCodeServers, invalidateServerPools } from "./code-pool.service.js";
 const r=Router();
-r.use(authenticate,requirePartnerRole);
+r.use(authenticate,requirePartnerRole,portalPermissionGate);
 r.use(async(req,_res,next)=>{const p=await Partner.findByPk(req.user.partnerId);if(!p|| !["content","both"].includes(p.kind)) throw new AppError(403,"FORBIDDEN","Portal exclusivo de parceiros de conteúdo.");next();});
 // Scope realtime invalidations to THIS content partnership; never broadcast to unrelated revendas.
 r.use(networkResourceGuard);

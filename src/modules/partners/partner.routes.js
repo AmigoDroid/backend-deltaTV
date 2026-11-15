@@ -23,7 +23,9 @@ import { listPartnerTrash, trashPreview, restorePartnerFromTrash, permanentlyDel
 import * as preReg from "./partner-invite.service.js";
 
 import { setCodeServers, listCodeServerIds, invalidateServerPools } from "../provider-monitor/code-pool.service.js";
-import { PartnerCode, Partner, sequelize } from "../../db/models/index.js";
+import { PartnerCode, PartnerProvider, Partner, sequelize } from "../../db/models/index.js";
+import { Op } from "sequelize";
+import { clearContractAccessCache } from "../access/access.service.js";
 import { audit } from "../../shared/audit.js";
 import { AppError, notFound } from "../../shared/errors.js";
 const router = Router();
@@ -169,7 +171,7 @@ router.post("/:id/renew", requirePermission("partners:write"), validate({ params
 });
 for (const action of ["suspend", "block", "reactivate", "cancel"]) {
   router.post(`/:id/${action}`, requirePermission("partners:write"), validate({ params: id, body: reason }), async (req, res) => {
-    await svc.changePartnerStatus(req.valid.params.id, action, { ...req.valid.body, force: can(req.user.role, "override") }, actorOf(req));
+    await svc.changePartnerStatus(req.valid.params.id, action, { ...req.valid.body, force: can(req.user, "override") }, actorOf(req));
     res.json(await svc.getPartner(req.valid.params.id));
   });
 }
@@ -260,16 +262,29 @@ router.get("/:id/codes/:codeId/management", requirePermission("override"), valid
 });
 router.put("/:id/codes/:codeId/servers", requirePermission("override"), validate({params:codeParams,body:z.object({serverIds:z.array(z.string().uuid()).min(1)})}),async(req,res)=>res.json(await setCodeServers(req.valid.params.id,req.valid.params.codeId,req.valid.body.serverIds,actorOf(req))));
 router.post("/:id/codes/:codeId/credits", requirePermission("override"), validate({params:codeParams,body:z.object({quantity:z.number().int().min(-100000).max(100000).refine(n=>n!==0)})}),async(req,res)=>res.json(await commerce.allocate(req.valid.params.id,req.valid.params.codeId,req.valid.body,actorOf(req))));
+// Códigos excluídos (arquivados): só o superadmin consulta e restaura.
+router.get("/:id/codes/deleted",requirePermission("override"),validate({params:id}),async(req,res)=>{
+ const rows=await PartnerCode.findAll({where:{partnerId:req.valid.params.id,deletedAt:{[Op.ne]:null}},attributes:["id","code","label","status","deletedAt","expiresAt"],order:[["deletedAt","DESC"]],limit:200,raw:true});
+ res.set("Cache-Control","no-store").json({data:rows});
+});
+// Restaura código revogado OU excluído (deletedAt preenchido). O servidor do código é revalidado: se foi excluído, volta sem servidor fixo (fallback).
 router.post("/:id/codes/:codeId/restore",requirePermission("override"),validate({params:codeParams}),async(req,res)=>{
  const {id,codeId}=req.valid.params;
+ let wasDeleted=false;
  await sequelize.transaction(async t=>{
  const partner=await Partner.findByPk(id,{transaction:t,lock:t.LOCK.UPDATE});
  if(!partner||partner.status!=="active")throw new AppError(409,"PARTNER_INACTIVE","Ative a parceria antes de restaurar o código.");
- const code=await PartnerCode.findOne({where:{id:codeId,partnerId:id,deletedAt:null},transaction:t,lock:t.LOCK.UPDATE});
+ const code=await PartnerCode.findOne({where:{id:codeId,partnerId:id},transaction:t,lock:t.LOCK.UPDATE});
  if(!code)throw notFound("Código");
  if(code.expiresAt&&new Date(code.expiresAt)<=new Date())throw new AppError(409,"CODE_EXPIRED","Altere o vencimento antes de restaurar.");
- await code.update({status:"active"},{transaction:t});
- await audit({actor:actorOf(req),action:"partner.code.restore",entityType:"partner_code",entityId:codeId,transaction:t});
- });invalidateServerPools(codeId);res.json({ok:true});
+ wasDeleted=!!code.deletedAt;
+ const patch={status:"active",deletedAt:null};
+ if(code.providerId){
+  const provider=await PartnerProvider.findOne({where:{id:code.providerId,partnerId:id,deletedAt:null},attributes:["id"],transaction:t});
+  if(!provider)patch.providerId=null;
+ }
+ await code.update(patch,{transaction:t});
+ await audit({actor:actorOf(req),action:"partner.code.restore",entityType:"partner_code",entityId:codeId,metadata:{wasDeleted,providerReset:patch.providerId===null},transaction:t});
+ });invalidateServerPools(codeId);clearContractAccessCache();res.json({ok:true,restoredFromDeleted:wasDeleted});
 });
 export default router;

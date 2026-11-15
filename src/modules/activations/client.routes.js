@@ -1,3 +1,4 @@
+import {requireDeviceScope} from "../devices/device-access.service.js";
 import { Router } from "express";
 import { tmdbProxy } from "./tmdb-proxy.routes.js";
 import { z } from "zod";
@@ -346,10 +347,10 @@ router.post(
   },
 );
 
-// Cadastro pelo site (rota /upload/playlist do QR da TV): MAC + nome + link M3U completo. Público (sem sessão da TV): o servidor só
-// extrai servidor/usuário/senha do link e NÃO baixa a lista. Sem licença o cadastro é aceito, mas só passa a valer quando houver uma.
+// Cadastro pelo site exige sessão limitada por chave da TV, vinculada ao mesmo dispositivo.
 router.post(
   "/playlist/by-url",
+  requireDeviceScope,
   listUrlIpLimiter,
   listUrlMacLimiter,
   validate({
@@ -360,7 +361,7 @@ router.post(
     }),
   }),
   async (req, res) => {
-    res.set("Cache-Control", "no-store").json(await addListByUrl({ ...req.valid.body, ip: req.ip }));
+    res.set("Cache-Control", "no-store").json(await addListByUrl({ ...req.valid.body, ip: req.ip, authorizedDeviceId: req.deviceScope.device.id }));
   },
 );
 

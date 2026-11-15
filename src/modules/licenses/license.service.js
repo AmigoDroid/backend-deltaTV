@@ -31,13 +31,14 @@ const out = (l) => {
   return j;
 };
 
-export async function listLicenses({ q, status, planId, expiringInDays, page, pageSize }) {
+export async function listLicenses({ q, status, planId, expiringInDays, isTrial, sortBy="createdAt", sortDir="DESC", page, pageSize }) {
   const where = {};
   const now = new Date();
   if (status === "expired") Object.assign(where, { status: "active", expiresAt: { [Op.lte]: now } });
   else if (status === "active") Object.assign(where, { status: "active", expiresAt: { [Op.gt]: now } });
   else if (status) where.status = status;
   if (planId) where.planId = planId;
+  if (isTrial !== undefined) where.isTrial = isTrial === "true";
   // Combina com o filtro de status (ex.: "expiradas" + "vence em 7 dias" = nenhuma), em vez de sobrescrevê-lo.
   if (expiringInDays) where.expiresAt = { ...where.expiresAt, [Op.between]: [now, new Date(now.getTime() + expiringInDays * 86400000)] };
   if (q) {
@@ -51,7 +52,7 @@ export async function listLicenses({ q, status, planId, expiringInDays, page, pa
     where,
     attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"]] },
     include: [{ model: Customer }, { model: Plan, attributes: ["id", "name", "durationMonths"] }],
-    order: [["createdAt", "DESC"]], ...pageOf({ page, pageSize }), distinct: true, subQuery: false,
+    order: [[sortBy, sortDir], ["id","ASC"]], ...pageOf({ page, pageSize }), distinct: true, subQuery: false,
   });
   return paged(rows.map(out), count, { page, pageSize });
 }
@@ -109,7 +110,7 @@ export async function updateLicense(id, input, actor) {
     const l = await License.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!l) throw notFound("Licença");
     if (input.maxDevices !== undefined) {
-      const used = await Activation.count({ where: { licenseId: id, status: { [Op.ne]: "revoked" } }, transaction: t });
+      const used = await Activation.count({ where: { [Op.or]: [{ licenseId: id }, { grantedLicenseId: id }], status: { [Op.ne]: "revoked" } }, transaction: t });
       if (input.maxDevices < used && actor?.role !== "superadmin") throw new AppError(409, "LIMIT_BELOW_USAGE", `Existem ${used} dispositivos vinculados; remova ativações antes de reduzir o limite.`);
       l.maxDevices = input.maxDevices;
     }

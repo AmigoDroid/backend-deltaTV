@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Op } from "sequelize";
-import { AdminUser, AuthSession, Partner } from "../../db/models/index.js";
+import { sequelize, AdminUser, Partner } from "../../db/models/index.js";
 import { validate } from "../../shared/validate.js";
 import { pageQuery, pageOf, paged } from "../../shared/pagination.js";
 import { AppError, notFound } from "../../shared/errors.js";
@@ -9,7 +9,7 @@ import { actorOf, audit } from "../../shared/audit.js";
 import { hashPassword } from "../../shared/crypto.js";
 import { can } from "../../middleware/authenticate.js";
 import { revokeAllSessions } from "../auth/auth.service.js";
-import { disconnectAdminUser, disconnectAdminSession } from "../../realtime/socket.js";
+import { disconnectAdminUser } from "../../realtime/socket.js";
 import { sendPasswordResetToUser } from "../auth/password-reset.service.js";
 import { passwordResetSendLimiter } from "../../middleware/security.js";
 
@@ -25,8 +25,8 @@ const safe = (u, partner) => { const j = u.toJSON(); delete j.passwordHash; dele
 const ROLES = ["superadmin", "admin", "support", "partner"];
 
 router.use((req, _res, next) => {
-  if (can(req.user.role, "users:manage")) req.userScope = "all";
-  else if (can(req.user.role, "partner-users:manage")) req.userScope = "partner";
+  if (can(req.user, "users:manage")) req.userScope = "all";
+  else if (can(req.user, "partner-users:manage")) req.userScope = "partner";
   else throw new AppError(403, "FORBIDDEN", "Você não tem permissão para esta operação.");
   next();
 });
@@ -44,7 +44,7 @@ router.get("/", validate({ query: z.object({
   status: z.enum(["active", "disabled"]).optional(), partnerId: z.string().uuid().optional(),
 }) }), async (req, res) => {
   const { q, role, status, partnerId } = req.valid.query;
-  const where = {};
+  const where = { deletedAt: null };
   // Escopo "partner": filtrar por outra função não encontra nada (e nunca revela contas da equipe).
   if (req.userScope === "partner" && role && role !== "partner") return res.json(paged([], 0, req.valid.query));
   where.role = req.userScope === "partner" ? "partner" : role;
@@ -78,53 +78,6 @@ router.post("/:id/send-password-reset", passwordResetSendLimiter, validate({ par
   res.set("Cache-Control", "no-store").status(202).json(await sendPasswordResetToUser(target.id, actorOf(req)));
 });
 
-// ── Sessões e bloqueio de login (superadmin; admin só nas contas do portal de parceiros) ─────────────────────────────
-const sessionParams = z.object({ id: z.string().uuid(), sessionId: z.string().uuid() });
-const loadTarget = async (req) => {
-  const target = await AdminUser.findByPk(req.valid.params.id);
-  if (!target) throw notFound("Usuário");
-  if (req.userScope === "partner" && target.role !== "partner") throw forbiddenRole();
-  return target;
-};
-
-// Sessões abertas (refresh tokens ativos) do usuário.
-router.get("/:id/sessions", validate({ params: id }), async (req, res) => {
-  const target = await loadTarget(req);
-  const rows = await AuthSession.findAll({
-    where: { adminUserId: target.id, revokedAt: null, expiresAt: { [Op.gt]: new Date() } },
-    attributes: ["id", "ip", "userAgent", "createdAt", "expiresAt"], order: [["createdAt", "DESC"]], limit: 100,
-  });
-  res.set("Cache-Control", "no-store").json({ data: rows.map((s) => ({ ...s.get({ plain: true }), current: s.id === req.sessionId })) });
-});
-
-// Encerra UMA sessão do usuário, sem derrubar as demais.
-router.delete("/:id/sessions/:sessionId", validate({ params: sessionParams }), async (req, res) => {
-  const target = await loadTarget(req);
-  const { sessionId } = req.valid.params;
-  const [affected] = await AuthSession.update({ revokedAt: new Date() }, { where: { id: sessionId, adminUserId: target.id, revokedAt: null } });
-  if (!affected) throw notFound("Sessão");
-  disconnectAdminSession(target.id, sessionId);
-  await audit({ actor: actorOf(req), action: "user.session.revoke", entityType: "auth_session", entityId: sessionId, metadata: { userId: target.id } });
-  res.json({ ok: true, currentSessionRevoked: sessionId === req.sessionId });
-});
-
-// Encerra TODAS as sessões do usuário (access e refresh tokens), sem alterar mais nada na conta.
-router.delete("/:id/sessions", validate({ params: id }), async (req, res) => {
-  const target = await loadTarget(req);
-  await revokeAllSessions(target.id);
-  await audit({ actor: actorOf(req), action: "user.session.revoke_all", entityType: "admin_user", entityId: target.id, metadata: { self: target.id === req.user.id } });
-  res.json({ ok: true });
-});
-
-// Remove o bloqueio temporário por tentativas de login erradas (a conta volta a aceitar login imediatamente).
-router.post("/:id/unlock", validate({ params: id }), async (req, res) => {
-  const target = await loadTarget(req);
-  const wasLocked = !!(target.lockedUntil && target.lockedUntil > new Date());
-  await target.update({ failedLogins: 0, lockedUntil: null });
-  await audit({ actor: actorOf(req), action: "user.unlock", entityType: "admin_user", entityId: target.id, metadata: { wasLocked } });
-  res.json(await present(target));
-});
-
 router.patch(
   "/:id", validate({ params: id, body: z.object({
     name: z.string().min(2).max(160).optional(), email: z.string().email().max(200).optional(),
@@ -132,8 +85,11 @@ router.patch(
     role: z.enum(ROLES).optional(), partnerId: z.string().uuid().nullable().optional(),
   }).refine((b) => Object.keys(b).length > 0, "Nada para alterar.") }),
   async (req, res) => {
-    const u = await AdminUser.findByPk(req.valid.params.id);
-    if (!u) throw notFound("Usuário");
+    const u = await sequelize.transaction(async transaction => {
+    // Lock the complete set in a stable order before checking the final active superadmin.
+    await AdminUser.findAll({ where: { role: "superadmin" }, order: [["id", "ASC"]], transaction, lock: transaction.LOCK.UPDATE });
+    const u = await AdminUser.findByPk(req.valid.params.id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!u || u.deletedAt) throw notFound("Usuário");
     if (req.userScope === "partner" && (u.role !== "partner" || (req.valid.body.role && req.valid.body.role !== "partner"))) throw forbiddenRole();
     const { password, ...rest } = req.valid.body;
     const self = u.id === req.user.id;
@@ -145,19 +101,21 @@ router.patch(
     const partnerId = rest.partnerId !== undefined ? rest.partnerId : (role === "partner" ? u.partnerId : null);
     if ((role === "partner") !== !!partnerId) throw new AppError(422, "PARTNER_REQUIRED", "Usuários 'partner' exigem um parceiro (e somente eles).");
     if (partnerId && !(await Partner.findOne({ where: { id: partnerId, status: { [Op.ne]: "deleted" } } }))) throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente ou excluído.");
-    const changes = { ...rest, role, partnerId };
+    const changes = { ...rest, role, partnerId, ...(role !== u.role ? {permissionRoleId:null} : {}) };
 
     // Nunca deixar a plataforma sem superadmin ativo.
     const losesSuper = u.role === "superadmin" && u.status === "active" && (role !== "superadmin" || changes.status === "disabled");
-    if (losesSuper && (await AdminUser.count({ where: { role: "superadmin", status: "active", id: { [Op.ne]: u.id } } })) === 0) {
+    if (losesSuper && (await AdminUser.count({ where: { role: "superadmin", status: "active", id: { [Op.ne]: u.id } }, transaction })) === 0) {
       throw new AppError(409, "LAST_SUPERADMIN", "É preciso manter ao menos um superadmin ativo.");
     }
 
     const sensitive = !!password || changes.status === "disabled" || role !== u.role || partnerId !== u.partnerId || (changes.email && changes.email !== u.email);
     await u.update({ ...changes, ...(password ? { passwordHash: await hashPassword(password) } : {}),
-      ...(sensitive ? { passwordResetHash: null, passwordResetExpiresAt: null, passwordResetIssuedAt: null } : {}) });
-    if (sensitive) { await revokeAllSessions(u.id); disconnectAdminUser(u.id); }
-    await audit({ actor: actorOf(req), action: "user.update", entityType: "admin_user", entityId: u.id, metadata: { ...rest, partnerId, passwordChanged: !!password } });
+      ...(sensitive ? { passwordResetHash: null, passwordResetExpiresAt: null, passwordResetIssuedAt: null } : {}) }, { transaction });
+    if (sensitive) { await revokeAllSessions(u.id, transaction); transaction.afterCommit(() => disconnectAdminUser(u.id)); }
+    await audit({ actor: actorOf(req), action: "user.update", entityType: "admin_user", entityId: u.id, metadata: { ...rest, partnerId, passwordChanged: !!password }, transaction });
+    return u;
+    });
     res.json(await present(u));
   },
 );

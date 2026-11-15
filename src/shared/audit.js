@@ -1,13 +1,15 @@
+import { AppError } from "./errors.js";
 import { AuditLog } from "../db/models/index.js";
 import { maskDeep } from "./mask.js";
 
 export const actorOf = (req) => ({
-  type: req.user ? (req.user.role === "partner" ? "partner" : "admin") : "anonymous",
-  id: req.user?.id ?? null,
+  type: req.impersonator ? "admin" : req.user ? (req.user.role === "partner" ? "partner" : "admin") : "anonymous",
+  id: req.impersonator?.id ?? req.user?.id ?? null,
   role: req.user?.role ?? null,
   ip: req.ip,
   // Quem exatamente fez (pessoa e revendedor): vai para o metadata da auditoria, para responder "quem alterou esta TV?".
-  name: req.user?.name ?? null,
+  name: req.impersonator?.name ?? req.user?.name ?? null,
+  impersonatedUserId: req.impersonator ? req.user.id : null,
   partnerId: req.user?.partnerId ?? null,
   partnerName: req.reseller?.partner?.name ?? null,
 });
@@ -24,6 +26,7 @@ export async function audit({ actor, action, entityType, entityId, result = "suc
     ip: actor?.ip ?? null,
     metadata: maskDeep({
       ...metadata,
+      ...(actor?.impersonatedUserId ? { impersonatedUserId: actor.impersonatedUserId } : {}),
       ...(actor?.name ? { actorName: actor.name } : {}),
       ...(actor?.partnerId ? { actorPartnerId: actor.partnerId } : {}),
       ...(actor?.partnerName ? { actorPartnerName: actor.partnerName } : {}),
@@ -33,6 +36,7 @@ export async function audit({ actor, action, entityType, entityId, result = "suc
   try {
     return await AuditLog.create(row);
   } catch (e) {
-    console.error("Falha ao gravar auditoria:", e.message);
+    console.error("Falha ao gravar auditoria:", e.name);
+    throw new AppError(503, "AUDIT_UNAVAILABLE", "Não foi possível registrar a auditoria. Consulte o histórico antes de repetir a operação.");
   }
 }

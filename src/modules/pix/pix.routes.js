@@ -10,7 +10,7 @@ import { requirePermission } from "../../middleware/authenticate.js";
 import { pixCreateLimiter, pixReadLimiter, webhookLimiter } from "../../middleware/security.js";
 import { loadReseller, assertReseller } from "../devices/reseller-devices.service.js";
 import { STOCK_KINDS } from "../stock/stock-ledger.js";
-import { getProvider } from "./providers/index.js";
+import { getProvider, runtimePixConfig } from "./providers/index.js";
 import * as svc from "./pix.service.js";
 import * as prices from "./pix.pricing.js";
 
@@ -36,7 +36,7 @@ const loadPartner = async (req, _res, next) => {
 
 // Quais durações o parceiro pode comprar e a seu preço (para a tela montar o formulário). Pix desligado => enabled=false.
 partnerRouter.get("/config", loadPartner, async (req, res) => {
-  const enabled = svc.pixEnabled();
+  const enabled = await svc.pixEnabled();
   const canBuyStock = STOCK_KINDS.includes(req.pixPartner.kind) && !req.pixPartner.parentPartnerId;
   res.json({
     enabled, canBuyStock, maxQuantity: svc.MAX_STOCK_QUANTITY,
@@ -78,8 +78,8 @@ partnerRouter.get("/charges/:id", pixReadLimiter, validate({ params: id }), asyn
 /* ================= Painel admin (/api/v1/admin/pix) ================= */
 export const adminRouter = Router();
 
-adminRouter.get("/config", requirePermission("billing:read"), (_req, res) =>
-  res.json({ enabled: svc.pixEnabled(), provider: env.pixProvider || null, webhookUrl: svc.webhookUrl() ?? null, expirationMinutes: env.pixExpirationMinutes }));
+adminRouter.get("/config", requirePermission("billing:read"), async (_req, res) =>
+  res.json({ enabled: await svc.pixEnabled(), provider: (await runtimePixConfig()).provider || null, webhookUrl: await svc.webhookUrl() ?? null, expirationMinutes: env.pixExpirationMinutes }));
 
 adminRouter.get(
   "/charges", requirePermission("billing:read"),
@@ -125,8 +125,8 @@ export const webhookRouter = Router();
 
 // Mercado Pago: POST ...?data.id=123&type=payment (corpo {action, type, data:{id}}). A resposta 200 encerra as reentregas.
 webhookRouter.post("/mercadopago", webhookLimiter, async (req, res) => {
-  if (env.pixProvider !== "mercadopago") throw new AppError(404, "NOT_FOUND", "Rota não encontrada.");
-  const provider = getProvider();
+  if ((await runtimePixConfig()).provider !== "mercadopago") throw new AppError(404, "NOT_FOUND", "Rota não encontrada.");
+  const provider = await getProvider();
   if (!provider.verifyWebhook(req)) throw new AppError(401, "INVALID_SIGNATURE", "Assinatura inválida.");
   const paymentId = provider.paymentIdFromWebhook(req);
   if (!paymentId) return res.json({ ok: true, ignored: true }); // outro tipo de evento (merchant_order, etc.)

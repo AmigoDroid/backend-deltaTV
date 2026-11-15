@@ -64,7 +64,7 @@ router.post("/plans", requirePermission("licenses:write"), validate({ body: z.ob
 
 router.get(
   "/", requirePermission("licenses:read"),
-  validate({ query: z.object({ ...pageQuery, q: z.string().max(100).optional(), status: z.enum(["pending", "active", "expired", "suspended", "blocked", "cancelled"]).optional(), planId: z.string().uuid().optional(), expiringInDays: z.coerce.number().int().min(1).max(365).optional() }) }),
+  validate({ query: z.object({ ...pageQuery, q: z.string().max(100).optional(), status: z.enum(["pending", "active", "expired", "suspended", "blocked", "cancelled"]).optional(), planId: z.string().uuid().optional(), isTrial: z.enum(["true","false"]).optional(), sortBy: z.enum(["createdAt","expiresAt","codeLast4","status"]).default("createdAt"), sortDir: z.enum(["ASC","DESC"]).default("DESC"), expiringInDays: z.coerce.number().int().min(1).max(365).optional() }) }),
   async (req, res) => res.json(await svc.listLicenses(req.valid.query)),
 );
 
@@ -90,7 +90,7 @@ router.post(
 
 for (const action of ["suspend", "block", "reactivate", "cancel"]) {
   router.post(`/:id/${action}`, requirePermission("licenses:write"), validate({ params: id, body: reason }), async (req, res) => {
-    await svc.changeLicenseStatus(req.valid.params.id, action, { ...req.valid.body, force: can(req.user.role, "override") }, actorOf(req));
+    await svc.changeLicenseStatus(req.valid.params.id, action, { ...req.valid.body, force: can(req.user, "override") }, actorOf(req));
     res.json(await svc.getLicense(req.valid.params.id));
   });
 }

@@ -1,7 +1,8 @@
+import {PERMISSIONS} from "../../middleware/authenticate.js";
 import { disconnectAdminUser } from "../../realtime/socket.js";
 import { recordLogin } from "./login-history.service.js";
 import { Op } from "sequelize";
-import { sequelize, AdminUser, AuthSession, Partner } from "../../db/models/index.js";
+import { sequelize, AdminUser, AuthSession, Partner, PermissionRole } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
@@ -11,7 +12,10 @@ const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
 let dummyHash;
 
-const publicUser = (u) => ({ id: u.id, name: u.name, email: u.email, role: u.role, partnerId: u.partnerId });
+const publicUser = async (u) => {
+ const custom=u.permissionRoleId?await PermissionRole.findByPk(u.permissionRoleId):null;
+ return {id:u.id,name:u.name,email:u.email,role:u.role,partnerId:u.partnerId,permissionRoleId:u.permissionRoleId,permissions:u.permissionRoleId?(custom?.baseRole===u.role?custom.permissions:[]):PERMISSIONS[u.role]||[]};
+};
 
 async function issue(user, meta, transaction) {
   const refreshToken = randomToken(48);
@@ -29,7 +33,7 @@ async function issue(user, meta, transaction) {
     accessToken: signJwt({ typ: "admin", sub: user.id, tv: user.tokenVersion, sid: session.id }, env.adminAccessTtl),
     refreshToken,
     expiresIn: env.adminAccessTtl,
-    user: publicUser(user),
+    user: await publicUser(user),
   };
 }
 
@@ -39,7 +43,7 @@ export async function login({ email, password, audience }, meta) {
   });
   const actor = { type: "anonymous", id: user?.id ?? null, ip: meta.ip };
 
-  if (!user || user.status !== "active") {
+  if (!user || user.status !== "active" || user.deletedAt) {
     dummyHash ??= await hashPassword("dummy-password-for-timing");
     await verifyPassword(password, dummyHash); // iguala o tempo de resposta
     await audit({ actor, action: "auth.login", entityType: "admin_user", result: "failure", metadata: { reason: "unknown_or_disabled" } });
@@ -89,7 +93,7 @@ export async function refresh(refreshToken, meta) {
     });
     if (!session) throw new AppError(401, "INVALID_TOKEN", "Sessão inválida ou expirada.");
     const user = await AdminUser.findByPk(session.adminUserId, { transaction: t });
-    if (!user || user.status !== "active") throw new AppError(401, "INVALID_TOKEN", "Sessão inválida ou expirada.");
+    if (!user || user.status !== "active" || user.deletedAt) throw new AppError(401, "INVALID_TOKEN", "Sessão inválida ou expirada.");
     await session.update({ revokedAt: new Date() }, { transaction: t });
     return issue(user, meta, t);
   });

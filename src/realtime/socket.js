@@ -1,3 +1,4 @@
+import {resolveAdminClaims} from "../middleware/authenticate.js";
 import { createDeviceWebSocketServer, currentDeviceChannelStats } from "./device-channel.js";
 import { WebSocketServer, WebSocket } from "ws";
 import { readHostMetrics } from "../modules/system/metrics.js";
@@ -15,12 +16,12 @@ import { canReceiveChange, sameSessionClaims } from "./routing-policy.js";
 const allowed = (peer, partnerId) => canReceiveChange(peer.user, partnerId);
 // Sessões HTTP revogadas são encerradas também no canal em tempo real.
 export function disconnectAdminUser(userId) {
-  for (const peer of [...peers]) if (String(peer.user.id) === String(userId)) peer.socket.close(1008, "Session revoked");
+  for (const peer of [...peers]) if ((String(peer.user.id) === String(userId) || String(peer.impersonator?.id) === String(userId))) peer.socket.close(1008, "Session revoked");
 }
 // Desconecta apenas o WebSocket ligado à sessão encerrada.
 export function disconnectAdminSession(userId, sessionId, { except = false } = {}) {
   for (const peer of [...peers]) {
-    if (String(peer.user.id) !== String(userId)) continue;
+    if (String(peer.user.id) !== String(userId) && String(peer.impersonator?.id) !== String(userId)) continue;
     if (except ? String(peer.sessionId) !== String(sessionId) : String(peer.sessionId) === String(sessionId))
       peer.socket.close(1008, "Session revoked");
   }
@@ -28,6 +29,7 @@ export function disconnectAdminSession(userId, sessionId, { except = false } = {
 // Revalidação agrupada, sem uma consulta ao banco por cliente ou por evento.
 async function verifyActivePeers() {
   const active = [...peers].filter(p => p.socket.readyState === WebSocket.OPEN);
+  for(const p of active.filter(x=>x.claims?.imp)){try{await resolveAdminClaims(p.claims)}catch{p.socket.close(1008,"Impersonation revoked")}}
   const ids = [...new Set(active.map(p => p.user.id))];
   // Para sessões novas, também revalida o sid (revogação seletiva).
   const sessionIds = [...new Set(active.map(p => p.sessionId).filter(Boolean))];
@@ -173,14 +175,10 @@ export function attachRealtime(server) {
         authenticating = true;
         try {
           const claims = verifyJwt(packet.token, "admin");
-          const user = await AdminUser.findByPk(claims.sub);
-          if (!user || user.status !== "active" || user.tokenVersion !== claims.tv || !["partner", "admin", "superadmin", "support"].includes(user.role) || (user.role === "partner" && !user.partnerId)) throw Error("Invalid account");
-          if (claims.sid) {
-            const session = await AuthSession.findOne({ where: { id: claims.sid, adminUserId: user.id, revokedAt: null, expiresAt: { [Op.gt]: new Date() } }, attributes: ["id"] });
-            if (!session) throw Error("Revoked session");
-          }
+          const resolved=await resolveAdminClaims(claims);
+          const user=resolved.user;
           if (socket.readyState !== WebSocket.OPEN) return;
-          peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, tokenVersion: user.tokenVersion, sessionId: claims.sid || null, exp: claims.exp, alive: true, systemMetricsSubscribed: false };
+          peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, claims, impersonator:resolved.impersonator, tokenVersion: resolved.tokenVersion, sessionId: claims.sid || null, exp: claims.exp, alive: true, systemMetricsSubscribed: false };
           peers.add(peer); clearTimeout(timeout);
           emit(socket, { type: "ready", role: user.role, ...(user.role !== "partner" ? { onlinePartnerIds: livePartnerIds(), onlinePartnerCount: onlinePartnerCount() } : {}) });
           if (user.role === "partner") { lastTouch = now(); void touch(peer.user); broadcastPresence(user.partnerId); }

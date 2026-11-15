@@ -63,18 +63,17 @@ export async function applyPendingPlaylist(activation, transaction) {
   return true;
 }
 
-export async function addListByUrl({ mac: macInput, name, url, ip }) {
+export async function addListByUrl({ mac: macInput, name, url, ip, authorizedDeviceId }) {
+  if (!authorizedDeviceId) throw new AppError(401,"DEVICE_KEY_REQUIRED","Entre com a chave temporária da TV antes de alterar a lista.");
   const mac = normalizeMac(macInput);
   if (!mac) throw new AppError(400, "INVALID_MAC", "MAC inválido. Use os 12 caracteres que aparecem na tela do DeltaTV.");
   const listName = String(name ?? "").trim();
   if (!listName || listName.length > 160) throw new AppError(400, "INVALID_NAME", "Informe um nome de até 160 caracteres.");
 
-  const cred = parseListUrl(url);
-  await assertPublicUrl(cred.baseUrl); // anti-SSRF: só servidores públicos
   const device = await Device.findOne({ where: { mac }, attributes: ["id"] });
-  if (!device) {
-    throw new AppError(404, "DEVICE_NOT_FOUND", "Não encontramos esta TV. Abra o DeltaTV nela e confira o MAC na tela inicial.");
-  }
+  if (!device || device.id !== authorizedDeviceId) throw new AppError(403,"DEVICE_SCOPE_MISMATCH","A sessão não pertence a esta TV. Gere uma nova chave no aparelho correto.");
+  const cred = parseListUrl(url);
+  await assertPublicUrl(cred.baseUrl);
 
   // Confere no provedor se a conta existe. Só a recusa DEFINITIVA bloqueia; rede/WAF não provam nada (a TV alcança o painel).
   const probe = await probeAccount(cred);
