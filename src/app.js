@@ -1,3 +1,4 @@
+import { panelMessages, clientMessages } from "./modules/tv-messages/routes.js";
 import { broadcastDeviceHint } from "./realtime/device-channel.js";
 import { classifyDeviceChange } from "./realtime/change-routing.js";
 import express from "express";
@@ -86,6 +87,9 @@ export function createApp() {
   app.use("/pair", pairingRoutes);
 
   app.use("/api/v1/auth", authRoutes);
+  // Mensagens para TVs (esquema legado sender_id, criado por 20261212000001-tv-messages). Antes de /client para não cair em 404.
+  app.use("/api/v1/tv-messages", panelMessages);
+  app.use("/api/v1/client/messages", clientMessages);
   app.use("/api/v1/content-partner", contentPartnerRoutes);
   app.use("/api/v1/admin", adminRoutes);
   app.use("/api/v1/partner", portalRoutes);
