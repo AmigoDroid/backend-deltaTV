@@ -3,12 +3,20 @@ import {sequelize} from '../../db/models/index.js';
 import {AppError,notFound} from '../../shared/errors.js';
 import {audit} from '../../shared/audit.js';
 import {reclaimCommercialSellerInvites} from './invitations.service.js';
+import {postgresMigrationError,verifiedAmountMatches} from './checkout.rules.js';
 import {addMonthsUtc,isContentPartner,resaleAllowed,safeTotal,allowedChildRole,forecastMonthlyCost} from './sales.rules.js';
 
 const fail=(status,code,message)=>{throw new AppError(status,code,message)};
 const adminActor=actor=>{if(actor?.role!=='superadmin')fail(403,'SUPERADMIN_ONLY','Somente o Superadmin pode realizar esta operação.');};
 const sellerActor=(actor,sellerPartnerId)=>{if(actor?.type!=='partner'||actor?.role!=='partner'||actor?.partnerId!==sellerPartnerId)fail(403,'SELLER_ACTOR_MISMATCH','Vendedor inválido.');};
-const read=async(sql,replacements={},transaction)=>sequelize.query(sql,{replacements,type:QueryTypes.SELECT,transaction});
+const read=async(sql,replacements={},transaction)=>{
+  try{return await sequelize.query(sql,{replacements,type:QueryTypes.SELECT,transaction});}
+  catch(e){
+    if(postgresMigrationError(e))fail(503,'PORTAL_SALES_MIGRATION_REQUIRED',
+      'Tabelas ou colunas comerciais ausentes. Faça backup e execute npm run db:migrate no backend.');
+    throw e;
+  }
+};
 const run=async(sql,replacements={},transaction)=>sequelize.query(sql,{replacements,transaction});
 const one=async(sql,replacements={},transaction)=>(await read(sql,replacements,transaction))[0]||null;
 // Serializa mutações financeiras/contratuais enquanto o módulo ainda está no VPS pequeno.
@@ -76,7 +84,7 @@ export async function adminOverview() {
       count(*) FILTER (WHERE status='accepted')::int AS accepted
       FROM partner_portal_sales_invitations`),
   ]);
-  return {plans,sellers,orders,contracts,forecast,invitationSummary,finance:{...finance,estimatedCashAfterForecastCostsCents:Number(finance?.received_this_month_cents||0)-forecast.monthlyFixedCents-forecast.forecastProxyCents},caveat:'Receitas de revenda são declaradas, não liquidadas automaticamente. Pagamentos de estoque são atestados manualmente pelo Superadmin até a integração Pix.'};
+  return {plans,sellers,orders,contracts,forecast,invitationSummary,finance:{...finance,estimatedCashAfterForecastCostsCents:Number(finance?.received_this_month_cents||0)-forecast.monthlyFixedCents-forecast.forecastProxyCents},caveat:'Receitas de revenda e mensalidades adicionais são declaradas, não cobradas automaticamente. Pedidos de estoque usam verificação via gateway quando configurada ou conferência manual do Superadmin.'};
 }
 export async function sellerOverview(id) {
   await reclaimCommercialSellerInvites(id);
@@ -86,7 +94,9 @@ export async function sellerOverview(id) {
     read(`SELECT s.partner_id,s.parent_partner_id,s.role,s.active,p.name FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id WHERE s.parent_partner_id=:id ORDER BY p.name LIMIT 200`,{id}),
     read(`SELECT * FROM partner_portal_transfers WHERE seller_partner_id=:id OR buyer_partner_id=:id ORDER BY created_at DESC LIMIT 60`,{id}),
     read(`SELECT c.*,p.name AS customer_name FROM partner_portal_access_contracts c JOIN partners p ON p.id=c.customer_partner_id WHERE c.seller_partner_id=:id ORDER BY c.updated_at DESC LIMIT 100`,{id}),
-    read(`SELECT id,plan_code,quantity_months,total_cents,status,created_at,settled_at FROM partner_portal_stock_orders WHERE seller_partner_id=:id ORDER BY created_at DESC LIMIT 60`,{id}),
+    read(`SELECT id,plan_code,quantity_months,total_cents,status,payment_gateway,checkout_url,pix_copy_paste,
+      payment_expires_at,created_at,settled_at FROM partner_portal_stock_orders
+      WHERE seller_partner_id=:id ORDER BY created_at DESC LIMIT 60`,{id}),
   ]);
   return {seller:{partnerId:seller.partner_id,name:seller.name,role:seller.role,active:seller.active,canSell:seller.can_sell},stock,children,transfers,contracts,orders,
     caveat:'Meses são acessos ao painel de parceiros, não licenças de TV. Valores declarados de repasses não são pagamentos confirmados.'};
@@ -137,9 +147,11 @@ export async function createStockOrder({sellerPartnerId,planCode,quantityMonths}
     if(seller.parent_partner_id)fail(403,'BUY_FROM_PARENT','Submasters recebem estoque do Master responsável; compras diretas da plataforma são reservadas aos Masters raiz.');
     const plan=await planRow(planCode,t,{active:true});
     const unit=Number(plan.wholesale_cents),total=safeTotal(unit,quantityMonths);
-    const row=await one(`INSERT INTO partner_portal_stock_orders(seller_partner_id,plan_code,quantity_months,unit_price_cents,total_cents)
-      VALUES (:sellerPartnerId,:planCode,:quantityMonths,:unit,:total) RETURNING *`,
-      {sellerPartnerId,planCode,quantityMonths,unit,total},t);
+    const config=await one('SELECT default_gateway FROM partner_portal_payment_settings WHERE singleton_id=1',{},t);
+    const gateway=config?.default_gateway||'manual';
+    const row=await one(`INSERT INTO partner_portal_stock_orders(seller_partner_id,plan_code,quantity_months,unit_price_cents,total_cents,payment_gateway)
+      VALUES (:sellerPartnerId,:planCode,:quantityMonths,:unit,:total,:gateway) RETURNING *`,
+      {sellerPartnerId,planCode,quantityMonths,unit,total,gateway},t);
     await audit({actor,action:'portal.sales.stock.order',entityType:'portal_stock_order',entityId:row.id,metadata:{sellerPartnerId,planCode,quantityMonths,total,paid:false},transaction:t});
     return row;
   });
@@ -155,6 +167,7 @@ export async function settleStockOrder(orderId,{settlementRef,method},actor) {
       fail(409,'ORDER_ALREADY_SETTLED','Pedido já liquidado com outra referência.');
     }
     if(row.status!=='pending')fail(409,'ORDER_CLOSED','Pedido não pode ser liquidado.');
+    if(row.payment_gateway!=='manual')fail(409,'GATEWAY_VERIFICATION_REQUIRED','Pedido criado com gateway automático: aguarde confirmação pela API do provedor. Não libere estoque por confirmação manual.');
     // Uma referência de pagamento bancário nunca financia dois pedidos (UNIQUE no banco).
     await activeSeller(row.seller_partner_id,t,{locked:true});
     const updated=await one(`UPDATE partner_portal_stock_orders SET status='paid',settlement_ref=:settlementRef,
@@ -165,6 +178,36 @@ export async function settleStockOrder(orderId,{settlementRef,method},actor) {
     return updated;
   });
 }
+/** Somente conferência API comprovada por checkout.service pode chamar este método.
+ * Recheca identidade, valor e status sob o mesmo lock financeiro usado na confirmação manual.
+ */
+export async function settleVerifiedPortalOrder(orderId,{gateway,transactionNsu,slug=null,amountCents}) {
+  if(!['infinitepay','mercadopago'].includes(gateway)||!transactionNsu||!slug&&gateway==='infinitepay')
+    fail(422,'UNVERIFIED_PAYMENT','Identificação incompleta do pagamento.');
+  return tx(async t=>{
+    const order=await one('SELECT * FROM partner_portal_stock_orders WHERE id=:orderId FOR UPDATE',{orderId},t);
+    if(!order)throw notFound('Pedido de acesso ao Painel do Parceiro');
+    if(order.payment_gateway!==gateway)fail(409,'GATEWAY_MISMATCH','Pagamento recebido por outro meio.');
+    if(!verifiedAmountMatches(order,amountCents))
+      fail(409,'PAYMENT_AMOUNT_MISMATCH','O pagamento informado não coincide com o valor total do pedido. Conferência manual necessária.');
+    if(order.status==='paid')return {...order,idempotent:true};
+    if(order.status!=='pending')fail(409,'ORDER_CLOSED','Pagamento de pedido encerrado exige conferência manual, sem liberar estoque.');
+    // Pedido foi criado quando o vendedor era ativo. Se ele for suspenso antes do pagamento,
+    // não reter dinheiro sem reconhecimento: creditar meses ao estoque BLOQUEADO; activeSeller
+    // continua impedindo seu uso até a reativação do vendedor.
+    await sellerRow(order.seller_partner_id,t,{locked:true});
+    const settlementRef=`${gateway}:${transactionNsu}`.slice(0,120);
+    const updated=await one(`UPDATE partner_portal_stock_orders SET status='paid',settlement_ref=:settlementRef,
+      settlement_method=:gateway,settled_at=now(),payment_verified_at=now(),
+      payment_transaction_nsu=:transactionNsu,payment_slug=:slug
+      WHERE id=:orderId RETURNING *`,{orderId,settlementRef,gateway,transactionNsu,slug},t);
+    await receiveStock(order.seller_partner_id,order.plan_code,order.quantity_months,t);
+    await audit({actor:{type:'system',role:'system'},action:'portal.sales.stock.payment_api_verified',
+      entityType:'portal_stock_order',entityId:orderId,metadata:{gateway,orderId,amountCents,transactionNsu,verifiedByProvider:true,quantityMonths:order.quantity_months},transaction:t});
+    return updated;
+  });
+}
+
 export async function grantException({sellerPartnerId,planCode,quantityMonths,reason},actor) {
   adminActor(actor);
   return tx(async t=>{
@@ -267,13 +310,24 @@ export async function contentPortalAccessGuard(partnerId) {
  * Nunca exposta aos vendedores: evita descoberta de parceiros de outras redes.
  */
 export async function adminCandidates(query='') {
-  return read(`SELECT p.id,p.name,p.slug,p.kind,p.status,
-    s.role AS seller_role,c.seller_partner_id AS contract_seller_id
-    FROM partners p LEFT JOIN partner_portal_sellers s ON s.partner_id=p.id
-    LEFT JOIN partner_portal_access_contracts c ON c.customer_partner_id=p.id
-    WHERE p.kind IN ('content','both') AND p.status <> 'deleted'
-      AND (:q='' OR p.name ILIKE :pattern OR p.slug ILIKE :pattern)
-    ORDER BY p.name LIMIT 50`,{q:query,pattern:`%${query.replace(/[\\%_]/g,c=>'\\'+c)}%`});
+  // Limita a busca na tabela de parceiros ANTES de consultar as tabelas comerciais;
+  // erro por migração faltante é 503 acionável, não 500 genérico.
+  const pattern=`%${String(query).replace(/[\\%_]/g,c=>'\\'+c)}%`;
+  try {
+    return await read(`WITH candidates AS (
+       SELECT id,name,slug,kind,status FROM partners
+       WHERE kind IN ('content','both') AND status <> 'deleted'
+         AND (:q = '' OR name ILIKE :pattern OR slug ILIKE :pattern)
+       ORDER BY name,id LIMIT 50
+     ) SELECT p.*,s.role AS seller_role,c.seller_partner_id AS contract_seller_id
+       FROM candidates p LEFT JOIN partner_portal_sellers s ON s.partner_id=p.id
+       LEFT JOIN partner_portal_access_contracts c ON c.customer_partner_id=p.id
+       ORDER BY p.name,p.id`,{q:query,pattern});
+  } catch(e) {
+    if(postgresMigrationError(e))fail(503,'PORTAL_SALES_MIGRATION_REQUIRED',
+      'Banco desatualizado na venda do Painel do Parceiro. Faça backup e execute npm run db:migrate no backend.');
+    throw e;
+  }
 }
 
 export async function costForecast() {

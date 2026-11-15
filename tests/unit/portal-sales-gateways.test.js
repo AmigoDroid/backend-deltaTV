@@ -1,0 +1,57 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {providerAvailable,isCheckoutDomain,verifiedAmountMatches,postgresMigrationError} from '../../src/modules/partner-portal-sales/checkout.rules.js';
+import {createInfinitePay} from '../../src/modules/distribution/gateways/infinitepay.js';
+const source=path=>readFileSync(new URL(path,import.meta.url),'utf8');
+test('gateway manual sempre funciona; gateway automático exige credenciais server-side',()=>{
+ assert.equal(providerAvailable('manual',{}),true);
+ assert.equal(providerAvailable('infinitepay',{infinitepayHandle:'deltatv'}),false);
+ assert.equal(providerAvailable('infinitepay',{infinitepayHandle:'deltatv',infinitepayApiKey:'inchk_key'}),true);
+ assert.equal(providerAvailable('mercadopago',{mpAccessToken:'tok'}),false);
+ assert.equal(providerAvailable('mercadopago',{mpAccessToken:'tok',mpWebhookSecret:'secret'}),true);
+});
+test('comparação financeira rejeita pagamentos com valor diferente',()=>{
+ assert.equal(verifiedAmountMatches({total_cents:'1000'},1000),true);
+ assert.equal(verifiedAmountMatches({total_cents:'1000'},999),false);
+ assert.equal(verifiedAmountMatches({total_cents:'1000'},null),false);
+});
+test('links somente sob host seguro do provedor',()=>{
+ assert.equal(isCheckoutDomain('https://link.infinitepay.io/test'),true);
+ assert.equal(isCheckoutDomain('https://infinitepay.io.evil.site/'),false);
+ assert.equal(isCheckoutDomain('http://infinitepay.io/'),false);
+});
+test('erro de migração PostgreSQL não deve vazar query nem credenciais',()=>{
+ assert.equal(postgresMigrationError({parent:{code:'42P01'}}),true);
+ assert.equal(postgresMigrationError({original:{code:'42703'}}),true);
+ assert.equal(postgresMigrationError({parent:{code:'23505'}}),false);
+});
+test('InfinitePay cria checkout com single_payment e valida resultado exclusivamente via payment_check',async()=>{
+ const requests=[];
+ const fakeFetch=async (url,opts)=>{
+  requests.push({url,headers:opts.headers,body:JSON.parse(opts.body)});
+  return {ok:true,status:200,json:async()=>url.endsWith('/links')?{url:'https://link.infinitepay.io/pay/123'}:
+    {success:true,paid:true,amount:1500,paid_amount:1520,capture_method:'pix'}};
+ };
+ const adapter=createInfinitePay({handle:'deltatv',apiKey:'inchk_FAKE',fetchImpl:fakeFetch});
+ const expires=new Date(Date.now()+3_600_000);
+ const link=await adapter.createLink({orderNsu:'ord1',amountCents:1500,description:'Plano',validUntil:expires,
+  singlePayment:true,redirectUrl:'https://parceiro.deltatv.com.br/',webhookUrl:'https://api.deltatv.com.br/webhook'});
+ assert.match(link.url,/^https:/);
+ assert.equal(requests[0].body.options.single_payment,true);
+ assert.equal(requests[0].headers['X-Api-Key'],'inchk_FAKE');
+ const verified=await adapter.paymentCheck({orderNsu:'ord1',transactionNsu:'tx1',slug:'slug1'});
+ assert.equal(verified.paid,true);assert.equal(verified.amountCents,1500);
+ assert.equal(requests[1].url,'https://api.checkout.infinitepay.io/payment_check');
+});
+test('migração e rotas preservam compras antigas e isolam o estoque do Painel do Parceiro',()=>{
+ const migration=source('../../src/db/migrations/20261224000001-partner-portal-payment-checkout.cjs');
+ const routes=source('../../src/modules/partner-portal-sales/sales.routes.js');
+ const service=source('../../src/modules/partner-portal-sales/sales.service.js');
+ assert.match(migration,/DEFAULT 'manual'/);
+ assert.doesNotMatch(migration,/DROP TABLE|TRUNCATE|UPDATE\s+licenses|UPDATE\s+activations/i);
+ assert.match(routes,/portalSalesWebhook/);
+ assert.match(service,/GATEWAY_VERIFICATION_REQUIRED/);
+ assert.match(service,/payment_verified_at=now\(\)/);
+ assert.match(service,/PORTAL_SALES_MIGRATION_REQUIRED/);
+});

@@ -1,3 +1,4 @@
+import {trackPortalResponse} from "../partner-portal-usage/meter.js";
 import { connectionObserver } from '../connection-audit/service.js';
 import { webHlsTarget } from "../web/web-https.js";
 import crypto from "node:crypto";
@@ -90,6 +91,7 @@ export function rewriteAuthJson(buf, ctx) {
 
 /** GET /player_api.php — API do painel (auth, categorias, listas, detalhes). */
 export async function playerApi(ctx, req, res, query = {}) {
+  trackPortalResponse(res,{partnerId:ctx.contentPartnerId,deviceId:ctx.deviceId,sessionId:ctx.sessionId,kind:"api"});
   const qs = new URLSearchParams({
     username: ctx.cred.username,
     password: ctx.cred.password,
@@ -114,6 +116,7 @@ export async function playerApi(ctx, req, res, query = {}) {
 
 /** GET /get.php — playlist M3U do painel, com as URLs de mídia apontando para o espelho. */
 export async function getPhp(ctx, req, res, query = {}) {
+  trackPortalResponse(res,{partnerId:ctx.contentPartnerId,deviceId:ctx.deviceId,sessionId:ctx.sessionId,kind:"api"});
   const qs = new URLSearchParams({
     username: ctx.cred.username,
     password: ctx.cred.password,
@@ -140,6 +143,7 @@ export async function getPhp(ctx, req, res, query = {}) {
 
 /** GET /xmltv.php — guia de programação (EPG). */
 export async function xmltv(ctx, req, res) {
+  trackPortalResponse(res,{partnerId:ctx.contentPartnerId,deviceId:ctx.deviceId,sessionId:ctx.sessionId,kind:"epg"});
   const qs = new URLSearchParams({
     username: ctx.cred.username,
     password: ctx.cred.password,
@@ -152,6 +156,7 @@ export async function xmltv(ctx, req, res) {
 
 /** GET /live|movie|series/:u/:p/:id.ext  (e /:u/:p/:id para canais ao vivo). */
 export async function mediaStream(ctx, req, res, kind, file) {
+  trackPortalResponse(res,{partnerId:ctx.contentPartnerId,deviceId:ctx.deviceId,sessionId:ctx.sessionId,kind});
   const m = String(file).match(/^(\d{1,12})(?:\.([A-Za-z0-9]{2,5}))?$/);
   if (!m || !["live", "movie", "series"].includes(kind))
     throw new AppError(404, "NOT_FOUND", "Item não encontrado.");
@@ -183,6 +188,7 @@ export async function mediaStream(ctx, req, res, kind, file) {
 
 /** GET /hls/:token/:blob — segmentos e sub-playlists HLS (o alvo vem cifrado na URL gerada por nós, nunca do cliente). */
 export async function hlsPart(ctx, req, res, blob) {
+  trackPortalResponse(res,{partnerId:ctx.contentPartnerId,deviceId:ctx.deviceId,sessionId:ctx.sessionId,kind:"hls"});
   let target;
   try {
     target = webHlsTarget(decryptSecret(blob), ctx.cred);

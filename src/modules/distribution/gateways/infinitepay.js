@@ -36,11 +36,11 @@ export function createInfinitePay({ handle, apiKey = null, fetchImpl = globalThi
     return { res, data };
   }
   return {
-    async createLink({ orderNsu, amountCents, description, redirectUrl, webhookUrl, validUntil }) {
+    async createLink({ orderNsu, amountCents, description, redirectUrl, webhookUrl, validUntil, singlePayment = false }) {
       const body = {
         handle, order_nsu: orderNsu, redirect_url: redirectUrl, webhook_url: webhookUrl,
         items: [{ quantity: 1, price: amountCents, description: String(description).slice(0, 120) }],
-        ...(apiKey && validUntil ? { options: { valid_until: toMpDate(validUntil) } } : {}),
+        ...(apiKey && (validUntil || singlePayment) ? { options: { ...(validUntil ? { valid_until: toMpDate(validUntil) } : {}), ...(singlePayment ? { single_payment: true } : {}) } } : {}),
       };
       const { res, data } = await post('/links', body);
       if (!res.ok) {

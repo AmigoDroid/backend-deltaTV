@@ -1,0 +1,22 @@
+import {Router} from 'express';
+import {z} from 'zod';
+import {validate} from '../../shared/validate.js';
+import {AppError} from '../../shared/errors.js';
+import {actorOf} from '../../shared/audit.js';
+import {usageReport,dailyUsage,topDevices,updateUsageSettings} from './usage.service.js';
+const monthQuery=z.object({month:z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional()}).strict();
+const noStore=(_req,res,next)=>{res.set('Cache-Control','no-store');next();};
+const settings=z.object({monthlyNodeGbBudget:z.number().int().min(0).max(10000000),masterMonthlyNodeGbBudget:z.number().int().min(0).max(10000000),
+  cpuPercent:z.number().int().min(1).max(100),memoryPercent:z.number().int().min(1).max(100),storagePercent:z.number().int().min(1).max(100),retentionDays:z.number().int().min(7).max(365)}).strict();
+export const adminPortalUsage=Router();
+adminPortalUsage.use((req,_res,next)=>{if(req.user?.role!=='superadmin'||req.impersonator)throw new AppError(403,'SUPERADMIN_ONLY','Somente o Superadmin visualiza os custos de todas as redes.');next();},noStore);
+adminPortalUsage.get('/',validate({query:monthQuery}),async(req,res)=>res.json(await usageReport(req.valid.query)));
+adminPortalUsage.get('/daily',validate({query:monthQuery}),async(req,res)=>res.json({items:await dailyUsage(req.valid.query)}));
+adminPortalUsage.get('/devices',validate({query:monthQuery}),async(req,res)=>res.json({items:await topDevices(req.valid.query)}));
+adminPortalUsage.put('/settings',validate({body:settings}),async(req,res)=>res.json(await updateUsageSettings(req.valid.body,actorOf(req))));
+export const partnerPortalUsage=Router();
+partnerPortalUsage.use(noStore);
+const scope=(req)=>{const partnerId=req.user?.partnerId;if(!partnerId)throw new AppError(403,'INVALID_PARTNER','Conta sem escopo comercial.');return partnerId;};
+partnerPortalUsage.get('/',validate({query:monthQuery}),async(req,res)=>res.json(await usageReport({...req.valid.query,sellerPartnerId:scope(req)})));
+partnerPortalUsage.get('/daily',validate({query:monthQuery}),async(req,res)=>res.json({items:await dailyUsage({...req.valid.query,sellerPartnerId:scope(req)})}));
+partnerPortalUsage.get('/devices',validate({query:monthQuery}),async(req,res)=>res.json({items:await topDevices({...req.valid.query,sellerPartnerId:scope(req)})}));

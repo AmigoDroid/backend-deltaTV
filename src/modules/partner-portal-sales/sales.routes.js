@@ -5,6 +5,10 @@ import {actorOf} from '../../shared/audit.js';
 import {AppError} from '../../shared/errors.js';
 import * as svc from './sales.service.js';
 import * as invitations from './invitations.service.js';
+import * as checkout from './checkout.service.js';
+import {PORTAL_PAYMENT_GATEWAYS} from './checkout.rules.js';
+import {webhookLimiter,pixCreateLimiter} from '../../middleware/security.js';
+import {adminPortalUsage,partnerPortalUsage} from '../partner-portal-usage/usage.routes.js';
 import {stockWriteLimiter,loginLimiter,signupLimiter} from '../../middleware/security.js';
 
 const noStore=(_req,res,next)=>{res.set('Cache-Control','no-store');next();};
@@ -19,11 +23,23 @@ const adminOnly=(req,_res,next)=>{if(req.user?.role!=='superadmin'||req.imperson
 
 export const adminPortalSales=Router();
 adminPortalSales.use(adminOnly,noStore);
+adminPortalSales.use('/usage',adminPortalUsage);
 adminPortalSales.get('/',async(_req,res)=>res.json(await svc.adminOverview()));
 adminPortalSales.put('/costs',validate({body:z.object({vpsMonthlyCents:cents,domainAnnualCents:cents,otherMonthlyCents:cents,proxyCostPerGbCents:cents,forecastProxyGbPerPartner:z.number().int().min(0).max(1000000),targetMarginBp:z.number().int().min(0).max(8000),taxBp:z.number().int().min(0).max(2500),reserveBp:z.number().int().min(0).max(6000)}).strict().refine(x=>x.targetMarginBp+x.taxBp<9000)}),async(req,res)=>res.json(await svc.updateCosts(req.valid.body,actorOf(req))));
 adminPortalSales.get('/tree',async(req,res)=>res.json({items:await svc.portalSalesTree({actor:actorOf(req)})}));
 adminPortalSales.get('/invitations',async(req,res)=>res.json({items:await invitations.adminInvitations(actorOf(req))}));
 adminPortalSales.post('/invitations/:id/revoke',validate({params:actionId}),async(req,res)=>res.json(await invitations.adminRevokeInvitation(req.valid.params.id,actorOf(req))));
+// Credenciais exclusivamente no .env do backend. A escolha do padrão fica no banco.
+adminPortalSales.get('/payment-settings',async(_req,res)=>res.json(await checkout.paymentSettings()));
+adminPortalSales.put('/payment-settings',validate({body:z.object({defaultGateway:z.enum(PORTAL_PAYMENT_GATEWAYS)}).strict()}),
+  async(req,res)=>res.json(await checkout.setDefaultGateway(req.valid.body.defaultGateway,actorOf(req))));
+adminPortalSales.post('/orders/:id/checkout',pixCreateLimiter,validate({params:actionId}),
+  async(req,res)=>res.json(await checkout.createCheckout(req.valid.params.id,{actor:actorOf(req)})));
+adminPortalSales.post('/orders/:id/infinitepay/verify',pixCreateLimiter,validate({params:actionId,
+ body:z.object({transactionNsu:z.string().trim().min(8).max(160),slug:z.string().trim().min(2).max(160)}).strict()}),
+ async(req,res)=>res.json(await checkout.verifyInfinitePayAdmin(req.valid.params.id,req.valid.body,actorOf(req))));
+adminPortalSales.post('/orders/:id/recheck',pixCreateLimiter,validate({params:actionId}),
+  async(req,res)=>res.json(await checkout.checkOrder(req.valid.params.id,actorOf(req))));
 adminPortalSales.get('/candidates',validate({query:z.object({q:z.string().trim().max(80).default('')})}),async(req,res)=>res.json(await svc.adminCandidates(req.valid.query.q)));
 adminPortalSales.post('/sellers',validate({body:z.object({partnerId:uuid,parentPartnerId:uuid.nullable().optional()}).strict()}),async(req,res)=>res.status(201).json(await svc.registerSeller(req.valid.body,actorOf(req))));
 adminPortalSales.patch('/sellers/:id',validate({params:actionId,body:z.object({active:z.boolean().optional(),canSell:z.boolean().optional()}).strict().refine(x=>Object.keys(x).length>0)}),async(req,res)=>res.json(await svc.setSellerState(req.valid.params.id,req.valid.body,actorOf(req))));
@@ -35,7 +51,15 @@ adminPortalSales.post('/contracts',validate({body:assignment}),async(req,res)=>r
 
 export const partnerPortalSales=Router();
 partnerPortalSales.use(noStore);
+partnerPortalSales.use('/usage',partnerPortalUsage);
 partnerPortalSales.get('/',async(req,res)=>res.json(await svc.sellerOverview(req.user.partnerId)));
+partnerPortalSales.get('/orders/:id',validate({params:actionId}),async(req,res)=>
+ res.json(await checkout.orderFor(req.valid.params.id,{sellerId:req.user.partnerId})));
+partnerPortalSales.post('/orders/:id/checkout',pixCreateLimiter,validate({params:actionId}),async(req,res)=>
+ res.json(await checkout.createCheckout(req.valid.params.id,{sellerId:req.user.partnerId,actor:actorOf(req)})));
+partnerPortalSales.post('/orders/:id/confirm-return',pixCreateLimiter,validate({params:actionId,
+ body:z.object({transactionNsu:z.string().trim().min(8).max(160),slug:z.string().trim().min(2).max(160)}).strict()}),async(req,res)=>
+ res.json(await checkout.confirmReturn(req.valid.params.id,req.user.partnerId,req.valid.body)));
 partnerPortalSales.post('/transfers',validate({body:transfer}),async(req,res)=>res.status(201).json(await svc.transfer({...req.valid.body,sellerPartnerId:req.user.partnerId},actorOf(req))));
 partnerPortalSales.post('/renewals',validate({body:assignment.omit({sellerPartnerId:true})}),async(req,res)=>res.status(201).json(await svc.assignAccess({...req.valid.body,sellerPartnerId:req.user.partnerId},actorOf(req))));
 
@@ -61,3 +85,11 @@ publicPortalSalesInvitations.post('/verify',loginLimiter,validate({body:z.object
 publicPortalSalesInvitations.post('/complete',signupLimiter,validate({body:z.object({
   token:invitationToken,companyName:z.string().trim().min(2).max(160),password:z.string().min(12).max(128),
 }).strict()}),async(req,res)=>res.status(201).json(await invitations.completeInvitation(req.valid.body)));
+
+// Webhook de cobrança do PAINEL DO PARCEIRO: rotas públicas, separadas da rede de TV.
+export const portalSalesWebhook=Router();
+portalSalesWebhook.use(noStore);
+portalSalesWebhook.post('/infinitepay',webhookLimiter,async(req,res)=>
+  res.json(await checkout.handleInfinitePayWebhook(req.body)));
+portalSalesWebhook.post('/mercadopago',webhookLimiter,async(req,res)=>
+  res.json(await checkout.handleMercadoPagoWebhook(req)));

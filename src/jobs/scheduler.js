@@ -2,6 +2,7 @@ import { reconcile as reconcilePix } from "../modules/pix/pix.service.js";
 import { reconcilePending as reconcileMasterPix } from "../modules/distribution/master-pix.service.js";
 import { generateForAll, sweepDelinquency, lastClosedCompetence, recoverMissedInvoices } from "../modules/billing/billing.service.js";
 import { startMailWorker } from "../modules/mail/mail.worker.js";
+import {cleanupUsage} from "../modules/partner-portal-usage/usage.service.js";
 import {sweepExpiredCommercialInvites} from "../modules/partner-portal-sales/invitations.service.js";
 
 // Rotina horária e idempotente: gera a cobrança do mês e aplica a política de inadimplência.
@@ -52,5 +53,9 @@ export function startScheduler() {
   };
   setTimeout(()=>void commercialSweep(),25_000).unref();
   setInterval(()=>void commercialSweep(),5*60*1000).unref();
+  // Limpa apenas os agregados antigos: não altera contratos ou ativações.
+  const usageCleanup=()=>cleanupUsage().catch(e=>console.warn('[portal-usage] retenção:',e.message));
+  setTimeout(usageCleanup,50_000).unref();
+  setInterval(usageCleanup,24*60*60*1000).unref();
   startMailWorker(); // fila de e-mails (só age se SMTP_HOST/MAIL_FROM estiverem definidos)
 }

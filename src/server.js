@@ -13,6 +13,7 @@ import { pruneRemoteCommands } from './realtime/remote-control.service.js';
 import { cleanupDeviceFailover } from './modules/provider-monitor/device-failover.service.js';
 import { assessCollectiveQuality } from './modules/provider-monitor/quality.service.js';
 import { startAudit, stopAudit } from "./modules/connection-audit/service.js";
+import {startPortalUsageMeter,stopPortalUsageMeter} from "./modules/partner-portal-usage/meter.js";
 import { startProviderMonitor,stopProviderMonitor } from "./modules/provider-monitor/monitor.service.js";
 dotenv.config();
 
@@ -31,6 +32,7 @@ server.requestTimeout = (Number.parseInt(process.env.DOWNLOAD_UPLOAD_TIMEOUT_MIN
 // O flush da presença roda em TODA instância (não depende do scheduler): cada processo grava os sinais que recebeu.
 startPresence();
 startAudit();
+startPortalUsageMeter();
 // Publica somente mudanças de contagem. O prazo de expiração dos heartbeats também
 // é observado, mesmo quando nenhum aparelho faz nova requisição.
 let previousOnline = null;
@@ -71,6 +73,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     stopRealtime();
     server.close(async () => {
       await stopDeviceChangeBus();
+      try { await stopPortalUsageMeter(); } catch(e) { console.error('[portal-usage] flush final falhou:',e.message); }
       await stopAudit(); // descarrega a fila de auditoria antes de fechar o PostgreSQL
       await stopPresence(); // grava os últimos sinais antes de fechar o banco
       await sequelize.close();

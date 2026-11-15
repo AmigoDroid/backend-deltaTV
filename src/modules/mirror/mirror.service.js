@@ -1,4 +1,4 @@
-import { DeviceSession } from "../../db/models/index.js";
+import { DeviceSession, WebAccess, Partner } from "../../db/models/index.js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../shared/errors.js";
 import { verifyJwt } from "../../shared/crypto.js";
@@ -19,11 +19,22 @@ async function loadAuth(token) {
   const { activation, decision } = await checkActivation(payload.aid);
   if (!decision.allowed) throw denialError(decision);
 
+  // Atribuição exclusiva de tráfego do PlayerWeb. Emissão da TV Roku não deve
+  // ser faturada como sessão Web. Contas antigas sem vínculo WebAccess ficam sem
+  // atribuição, em vez de associar cegamente a uma Revenda.
+  const webAccess = await WebAccess.findOne({where:{deviceId:activation.deviceId,status:'active'},
+    attributes:['contentOwnerPartnerId','partnerId'],order:[['createdAt','DESC']]});
+  let contentPartnerId = webAccess?.contentOwnerPartnerId || null;
+  if (!contentPartnerId && webAccess?.partnerId) {
+    const owner=await Partner.findByPk(webAccess.partnerId,{attributes:['kind']});
+    if(owner&&['content','both'].includes(owner.kind))contentPartnerId=webAccess.partnerId;
+  }
   return {
     activationId: payload.aid,
     value: {
       token,
       activationId: payload.aid, sessionId: payload.sid,
+      contentPartnerId, // pode ser nulo para Roku/PlayerWeb legado sem associação válida
       deviceId: activation.deviceId, // presença: cada request autorizado conta como sinal de vida
       mode: deliveryModeOf(activation),
       modes: deliveryModesOf(activation), // por tipo: api, live, movie, series

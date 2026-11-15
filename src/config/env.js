@@ -90,6 +90,10 @@ export const env = Object.freeze({
   pixProvider,
   mpAccessToken: e.MP_ACCESS_TOKEN || "",
   mpWebhookSecret: e.MP_WEBHOOK_SECRET || "",
+  // Credenciais da plataforma: só o servidor lê estas variáveis, nunca o Vite.
+  infinitepayHandle: (e.INFINITEPAY_HANDLE || '').trim().replace(/^\$/, ''),
+  infinitepayApiKey: e.INFINITEPAY_API_KEY || '',
+
   // Validade do QR Code (o Mercado Pago aceita de 30 min a 30 dias).
   pixExpirationMinutes: Math.min(Math.max(int("PIX_EXPIRATION_MINUTES", 60), 30), 43200),
   nodeEnv,

@@ -24,6 +24,9 @@ export async function verifyRequiredSchema(sequelize) {
     partner_portal_sellers: ["partner_id","parent_partner_id","active","can_sell"],
     partner_portal_stock: ["seller_partner_id","plan_code","available_months"],
     partner_portal_access_contracts: ["customer_partner_id","seller_partner_id","expires_at"],
+    partner_portal_usage_hourly: ["bucket_at","partner_id","device_id","transport","bytes_out","request_count"],
+    partner_portal_usage_flushes: ["batch_id"],
+    partner_portal_usage_alert_settings: ["singleton_id","monthly_node_gb_budget","cpu_percent"],
     partner_portal_sales_invitations: ["id","seller_partner_id","token_hash","status","expires_at","months","accepted_partner_id"],
   };
   for (const [table, columns] of Object.entries(required)) {
