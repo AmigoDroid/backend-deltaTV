@@ -28,15 +28,15 @@ test('convites comerciais novos não exigem nem consomem estoque e preservam his
  const routes=src('modules/partner-portal-sales/sales.routes.js');
  for(const endpoint of ['/orders','/contracts','/transfers','/renewals'])assert.match(routes,new RegExp(`(?:adminPortalSales|partnerPortalSales)\\.post\\('${endpoint}'.*LEGACY_PORTAL_STOCK_DISABLED`));
 });
-test('a interface de Master usa pacote sem estoque e editores legados ficam fora do fluxo principal',()=>{
- const ui=partner('PortalSales.jsx');
- assert.match(ui,/packages\.map/);
- assert.match(ui,/const \[packages, setPackages\] = useState\(\[\]\)/);
- assert.match(ui,/setPackages\(results\[5\]\.value\.items/);
- assert.doesNotMatch(ui,/Distribuir estoque|Meses pré-pagos disponíveis|Reservar meses e emitir convite/);
- const adminSales=admin('pages/PortalSales.jsx');
- assert.doesNotMatch(adminSales,/Meses para estoque|Criar cobrança para Master/);
- assert.match(adminSales,/service-packages/);
+test('cadastro de parceiro DeltaTV é o único fluxo visível de contrato e limites',()=>{
+ const shell=partner('App.jsx');
+ const page=admin('pages/Partners.jsx');
+ assert.doesNotMatch(shell,/PortalSales|MyServicePackage|commercialPermissions/);
+ assert.match(page,/Novo parceiro/);
+ assert.match(page,/serviceContract:\{activationLimit:max,dnsLimit:dns,licensePolicy:f\.licensePolicy\}/);
+ assert.match(page,/Mensalidade negociada/);
+ assert.match(page,/Ativações ilimitadas/);
+ assert.match(page,/Limite de DNS por código/);
  const settings=admin('pages/GlobalSettings.jsx');
  for(const text of ['Pagamentos e webhooks','Teste grátis','Player Web','Custos e margem'])assert.ok(settings.includes(text));
 });

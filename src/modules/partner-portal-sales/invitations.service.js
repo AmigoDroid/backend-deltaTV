@@ -87,24 +87,30 @@ export async function createInvitation({sellerPartnerId,invitedName,invitedEmail
   const expiresAt=new Date(Date.now()+PORTAL_INVITE_TTL_MS);
   const row=await tx(async t=>{
     await activeSeller(sellerPartnerId,t);
-    if(inviteType==='submaster'){
-      const state=await ownPermissions(sellerPartnerId);
-      if(!state.enabled||!state.permissions?.canCreateSubmasters)
-        error(403,'SUBMASTER_CREATION_FORBIDDEN','Sua rede não possui permissão para cadastrar Submasters.');
-    }
+    const sellerPermission=await ownPermissions(sellerPartnerId,t);
+    if(!sellerPermission.enabled||!sellerPermission.permissions?.canSell)
+      error(403,'PANEL_RESALE_FORBIDDEN','Seu plano não permite revender o painel.');
     await reclaimExpired(sellerPartnerId,t);
     await reclaimExpiredEmail(email,t);
     await assertEmailAvailable(email,t);
     const pending=await one(`SELECT id FROM partner_portal_sales_invitations
       WHERE lower(invited_email)=:email AND status='pending'`,{email},t);
     if(pending)error(409,'PORTAL_INVITE_PENDING','Já existe convite comercial pendente para este e-mail.');
+    const catalog=await one(`SELECT * FROM service_plan_catalogs
+      WHERE key=:planCode AND active=true AND audience IN ('content','both')`,{planCode},t);
+    if(!catalog)error(409,'PLAN_INACTIVE','Este plano não está disponível para parceiros.');
+    // A sale of a plan with resale rights adds a descendant to the hierarchy.
+    if((catalog.can_resell_panel||inviteType==='submaster')&&!sellerPermission.permissions?.canCreateSubmasters)
+      error(403,'SUBMASTER_CREATION_FORBIDDEN','Você não pode criar novos revendedores de painel.');
+    if(inviteType==='submaster'&&!catalog.can_resell_panel)
+      error(422,'PLAN_NO_RESALE','Escolha um plano que autorize a revenda do painel.');
     const plan=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:planCode',{planCode},t);
-    if(!plan||!plan.active)error(409,'PORTAL_PLAN_INACTIVE','Plano comercial não está ativo.');
+    if(!plan||!plan.active)error(409,'PLAN_ADAPTER_MISSING','O plano original ainda não foi sincronizado. Execute a migração e salve o plano.');
     try{verifyPortalInviteInput({months,unitResaleCents,inviteType},plan);}catch{error(422,'PORTAL_INVITE_PRICE','Plano, duração ou preço inválido.');}
     if(!resaleAllowed(unitResaleCents,plan))error(422,'PORTAL_INVITE_PRICE','Preço abaixo do piso de revenda.');
     safeTotal(unitResaleCents,months);
     const snapshot=packageSnapshot(plan);
-    if(!snapshot)error(409,'PACKAGE_NOT_CONFIGURED','Este plano antigo precisa ser convertido em Pacote de Serviço pela DeltaTV antes de gerar novos convites. Convites antigos seguem válidos.');
+    if(!snapshot)error(409,'PACKAGE_NOT_CONFIGURED','Este plano ainda não foi sincronizado com o cadastro comercial. Solicite atualização do plano à DeltaTV.');
     let paymentGateway='manual';
     if(paymentMode==='gateway'){
       const seller=await one(`SELECT default_gateway,can_manage_gateways FROM partner_portal_sellers WHERE partner_id=:id`,{id:sellerPartnerId},t);
@@ -179,6 +185,9 @@ export async function completeInvitation({token,companyName,password}){
     const row=await one(`SELECT * FROM partner_portal_sales_invitations WHERE token_hash=:hash FOR UPDATE`,{hash:hashToken(token)},t);
     if(!row||row.status!=='pending'||new Date(row.expires_at).getTime()<=Date.now())throw publicInvalid();
     await activeSeller(row.seller_partner_id,t);
+    const permissions=await ownPermissions(row.seller_partner_id,t);
+    if(!permissions.enabled||!permissions.permissions?.canSell)
+      error(403,'PANEL_RESALE_REVOKED','O vendedor não possui mais permissão para concluir este convite.');
     if(!isPaidInviteReady(row))error(402,'PORTAL_PAYMENT_REQUIRED','O recebimento precisa ser confirmado antes da conclusão do cadastro.');
     await assertEmailAvailable(row.invited_email,t);
     const plan=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:code',{code:row.plan_code},t);
@@ -196,13 +205,23 @@ export async function completeInvitation({token,companyName,password}){
     // Older invitations with no snapshot remain legacy and do NOT change behavior.
     const snapshot=row.package_snapshot;
     if(snapshot){
-      await applyServicePackageToPartner(partner.id,snapshot,t,{recordAssignment:true});
+      await applyServicePackageToPartner(partner.id,snapshot,t,{recordAssignment:false});
     }
-    if(row.invite_type==='submaster'){
+    // The ORIGINAL plan determines resale rights. The child's delegated rights
+    // cannot exceed its selling parent's effective permissions.
+    const childPlan=snapshot?.tier?await one(`SELECT can_resell_panel,can_create_submasters,
+      can_view_finance,can_manage_gateways FROM service_plan_catalogs WHERE key=:tier`,
+      {tier:snapshot.tier},t):null;
+    // Existing, previously-issued invitations without a snapshot retain the
+    // invitation role for backward compatibility; new invitations use plan rights.
+    if(childPlan?.can_resell_panel||(!snapshot&&row.invite_type==='submaster')){
       await run(`INSERT INTO partner_portal_sellers(partner_id,parent_partner_id,role,can_sell,active,
         can_create_submasters,can_view_finance,can_manage_gateways)
-        VALUES (:partnerId,:sellerPartnerId,'submaster',true,true,false,false,false)`,
-        {partnerId:partner.id,sellerPartnerId:row.seller_partner_id},t);
+        VALUES (:partnerId,:sellerPartnerId,'submaster',true,true,:canCreate,:canFinance,:canGateway)`,
+        {partnerId:partner.id,sellerPartnerId:row.seller_partner_id,
+          canCreate:!!(childPlan?.can_create_submasters&&permissions.permissions.canCreateSubmasters),
+          canFinance:!!(childPlan?.can_view_finance&&permissions.permissions.canViewFinance),
+          canGateway:!!(childPlan?.can_manage_gateways&&permissions.permissions.canManageGateways)},t);
     }
     const contract=await one(`INSERT INTO partner_portal_access_contracts
       (customer_partner_id,seller_partner_id,plan_code,start_at,expires_at,months_paid,declared_resale_cents,monthly_fee_cents,package_snapshot)

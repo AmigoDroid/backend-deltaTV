@@ -16,6 +16,8 @@ const fields=z.object({
   maxServers:z.number().int().min(1).max(2147483647).nullable(),
   autoFailover:z.boolean(),autoPriority:z.boolean(),
   emailAlerts:z.boolean(),detailedHistory:z.boolean(),
+  canResellPanel:z.boolean().default(false),canCreateSubmasters:z.boolean().default(false),
+  canViewFinance:z.boolean().default(false),canManageGateways:z.boolean().default(false),
   sortOrder:z.number().int().min(0).max(9999),
 }).strict();
 // Zod v3: refine() retorna ZodEffects, que não suporta extend().

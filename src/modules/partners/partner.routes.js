@@ -54,9 +54,17 @@ const commercial = z.object({
   kind: z.enum(["content", "reseller", "both"]).optional(),
   notes: z.string().max(2000).nullable().optional(),
 });
+// Contrato operacional do parceiro de conteúdo. O cadastro único usa a tabela
+// existente content_partner_terms; não cria planos, Masters nem estoque comercial.
+const serviceContractInput = z.object({
+  activationLimit: z.number().int().min(0).max(10000000).nullable(),
+  dnsLimit: z.number().int().min(0).max(2147483647).nullable(), // null = herdar padrão; 0 = DNS ilimitados
+  licensePolicy: z.enum(["standard", "partner_only"]).default("partner_only"),
+}).strict();
 const createBody = commercial.extend({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$/, "Use letras minúsculas, números e hífens"),
   startsAt: z.coerce.date(), endsAt: z.coerce.date(),
+  serviceContract: serviceContractInput.optional(),
   portalUser: z.object({ name: z.string().min(2).max(160), email: z.string().email().max(200), password: z.string().min(12).max(128) }).optional(),
 }).refine((v) => v.endsAt > v.startsAt, { message: "O término deve ser posterior ao início", path: ["endsAt"] });
 const reason = z.object({ reason: z.string().trim().min(3).max(500).optional() });
@@ -86,6 +94,8 @@ router.get("/contract-overview", requirePermission("override"), validate({ query
   ...pageQuery, q: z.string().max(100).optional(), kind: z.enum(["content", "reseller"]).optional(),
 }) }), async (req, res) => res.set("Cache-Control", "no-store").json(await contractOverview(req.valid.query)));
 router.post("/", requirePermission("partners:write"), validate({ body: createBody }), async (req, res) => {
+  if (req.valid.body.serviceContract && (req.user?.role !== "superadmin" || req.impersonator))
+    throw new AppError(403, "DELTATV_ONLY", "Somente a DeltaTV define o contrato de serviço.");
   const p = await svc.createPartner(req.valid.body, actorOf(req));
   res.status(201).json(await svc.getPartner(p.id));
 });
@@ -161,8 +171,16 @@ const identity = z.object({
   slug: z.string().regex(/^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$/, "Use letras minúsculas, números e hífens").optional(),
   startsAt: z.coerce.date().optional(), endsAt: z.coerce.date().optional(),
 });
-router.patch("/:id", requirePermission("partners:write"), validate({ params: id, body: commercial.partial().merge(identity).refine((v) => !v.startsAt || !v.endsAt || v.endsAt > v.startsAt, { message: "O término deve ser posterior ao início", path: ["endsAt"] }) }), async (req, res) => {
+router.patch("/:id", requirePermission("partners:write"), validate({ params: id, body: commercial.partial().merge(identity).extend({serviceContract: serviceContractInput.optional()}).refine((v) => !v.startsAt || !v.endsAt || v.endsAt > v.startsAt, { message: "O término deve ser posterior ao início", path: ["endsAt"] }) }), async (req, res) => {
+  if (req.valid.body.serviceContract && (req.user?.role !== "superadmin" || req.impersonator))
+    throw new AppError(403, "DELTATV_ONLY", "Somente a DeltaTV define o contrato de serviço.");
   await svc.updatePartner(req.valid.params.id, req.valid.body, actorOf(req));
+  res.json(await svc.getPartner(req.valid.params.id));
+});
+// The simple +1 month action is reserved for DeltaTV; regular renewals keep
+// their existing route for legacy administrative workflows.
+router.post("/:id/renew-month", requirePermission("override"), validate({params:id}), async (req,res)=>{
+  await svc.renewPartnerOneMonth(req.valid.params.id,actorOf(req));
   res.json(await svc.getPartner(req.valid.params.id));
 });
 router.post("/:id/renew", requirePermission("partners:write"), validate({ params: id, body: z.object({ endsAt: z.coerce.date() }) }), async (req, res) => {

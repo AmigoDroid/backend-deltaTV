@@ -144,6 +144,10 @@ export const ServicePlanCatalog = sequelize.define("ServicePlanCatalog", {
   autoPriority:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   emailAlerts:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   detailedHistory:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  canResellPanel:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  canCreateSubmasters:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  canViewFinance:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  canManageGateways:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   active:{type:T.BOOLEAN,allowNull:false,defaultValue:true},
   system:{type:T.BOOLEAN,allowNull:false,defaultValue:false},sortOrder:int(100),
 },{tableName:"service_plan_catalogs"});

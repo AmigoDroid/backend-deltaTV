@@ -2,7 +2,7 @@ import { markPartnerConfigured } from "./partner-onboarding.service.js";
 import { findAvatarOwners, avatarVersion } from "./partner-avatar.service.js";
 import { isPartnerConnected } from "../../realtime/socket.js";
 import { Op, UniqueConstraintError } from "sequelize";
-import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, Invoice, AdminUser, ContentPartnerTerms } from "../../db/models/index.js";
+import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, Invoice, AdminUser, ContentPartnerTerms, PartnerServicePlan } from "../../db/models/index.js";
 import { clearContractAccessCache } from "../access/access.service.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
@@ -13,6 +13,10 @@ import { effectivePartnerStatus } from "../access/access.policy.js";
 import { normalizeTiers } from "../billing/billing.calc.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
 import { SIGNUP_PENDING_REASON } from "./reseller-signup.service.js";
+import { defaultTier } from "../service-plans/plan.rules.js";
+import { invalidatePlan } from "../service-plans/plan.service.js";
+import { invalidateServerPools } from "../provider-monitor/code-pool.service.js";
+import { clearResolutionCache } from "../provider-monitor/resolve.service.js";
 import { STOCK_KINDS, balancesOf, quantityOf } from "../stock/stock-ledger.js";
 
 export const AUTO_SUSPEND_REASON = "Suspensão automática por inadimplência";
@@ -64,7 +68,7 @@ export async function getPartner(id) {
   if (!p) throw notFound("Parceiro");
   const [codes, stock, invoices, providers] = await Promise.all([
     findCodes(id),
-    stockMap(id),
+    p.kind === 'content' ? Promise.resolve(new Map()) : stockMap(id),
     Invoice.findAll({ where: { partnerId: id }, order: [["competence", "DESC"]], limit: 24 }),
     PartnerProvider.findAll({ where: { partnerId: id, deletedAt: null }, order: [["priority", "ASC"], ["createdAt", "ASC"]] }),
   ]);
@@ -80,11 +84,61 @@ function checkCommercial(input) {
   }
 }
 
+// Aplica contrato e DNS negociados sem outro fluxo de cadastro. Deve executar
+// na MESMA transação que cria ou edita a conta para evitar benefícios parciais.
+async function applyServiceContract(t, partner, contract, feeCents, actor) {
+  if (!['content', 'both'].includes(partner.kind))
+    throw new AppError(422, 'CONTENT_PARTNER_REQUIRED', 'O contrato de conteúdo exige conta de parceiro.');
+  const limit = contract.activationLimit;
+  if (limit !== null) {
+    const inUse = await Activation.count({where:{partnerId:partner.id,status:{[Op.ne]:'revoked'}},transaction:t});
+    if (inUse > limit) throw new AppError(409,'LIMIT_BELOW_USAGE',`Existem ${inUse} ativações vinculadas. Não é possível reduzir o limite para ${limit}.`);
+  }
+  if (contract.dnsLimit !== null && contract.dnsLimit > 0) {
+    const [over] = await sequelize.query(`SELECT c.code, count(pool.id)::integer AS count
+      FROM partner_codes c JOIN code_server_pools pool ON pool.code_id=c.id
+      WHERE c.partner_id=:partnerId AND c.status='active'
+      GROUP BY c.id,c.code HAVING count(pool.id) > :maxDns LIMIT 1`,
+      {replacements:{partnerId:partner.id,maxDns:contract.dnsLimit},transaction:t});
+    if(over.length)throw new AppError(409,'DNS_LIMIT_BELOW_USAGE',`O código ${over[0].code} já utiliza ${over[0].count} DNS.`);
+  }
+  const mode = limit === null ? 'fixed_unlimited' : 'fixed_limited';
+  const existing = await ContentPartnerTerms.findByPk(partner.id, {transaction:t,lock:t.LOCK.UPDATE});
+  if(existing?.mode==='credits') throw new AppError(409,'LEGACY_CREDITS_REQUIRE_RECONCILIATION',
+    'O parceiro usa créditos. Concilie o saldo antes de migrar para o contrato mensal.');
+  const terms = {
+    mode, fixedFeeCents: feeCents, activationLimit: limit,
+    licensePolicy: contract.licensePolicy, autoPriority:existing?.autoPriority ?? true,
+    creditsPerActivation: existing?.creditsPerActivation ?? 1,
+    allowWebIssuance: existing?.allowWebIssuance ?? false,
+  };
+  if (existing) await existing.update(terms,{transaction:t});
+  else await ContentPartnerTerms.create({partnerId:partner.id,...terms},{transaction:t});
+  if (contract.dnsLimit !== null) {
+    const current = await PartnerServicePlan.findByPk(partner.id,{transaction:t,lock:t.LOCK.UPDATE});
+    if (current) await current.update({maxServersOverride:contract.dnsLimit},{transaction:t});
+    else await PartnerServicePlan.create({partnerId:partner.id,tier:defaultTier(partner.kind),maxServersOverride:contract.dnsLimit},{transaction:t});
+  } else {
+    const current = await PartnerServicePlan.findByPk(partner.id,{transaction:t,lock:t.LOCK.UPDATE});
+    if (current) await current.update({maxServersOverride:null},{transaction:t});
+  }
+  await audit({actor,action:'partner.service_contract.saved',entityType:'partner',entityId:partner.id,
+    metadata:{mode,fixedFeeCents:feeCents,activationLimit:limit,dnsLimit:contract.dnsLimit,licensePolicy:contract.licensePolicy},transaction:t});
+}
+
 export async function createPartner(input, actor) {
+  if (input.serviceContract && actor?.role !== 'superadmin')
+    throw new AppError(403, 'DELTATV_ONLY', 'Somente a DeltaTV define o contrato de serviço.');
   checkCommercial(input);
-  return sequelize.transaction(async (t) => {
-    const { portalUser, ...data } = input;
+  const result = await sequelize.transaction(async (t) => {
+    const { portalUser, serviceContract, ...data } = input;
+    if (serviceContract) {
+      data.billingModel = 'fixed';
+      data.monthlyFeeCents = data.monthlyFeeCents ?? 0;
+      data.deviceLimit = serviceContract.activationLimit;
+    }
     const partner = await Partner.create(data, { transaction: t });
+    if (serviceContract) await applyServiceContract(t,partner,serviceContract,data.monthlyFeeCents,actor);
     if (portalUser) {
       await AdminUser.create(
         { name: portalUser.name, email: portalUser.email, passwordHash: await hashPassword(portalUser.password), role: "partner", partnerId: partner.id },
@@ -94,12 +148,25 @@ export async function createPartner(input, actor) {
     await audit({ actor, action: "partner.create", entityType: "partner", entityId: partner.id, metadata: { slug: partner.slug }, transaction: t });
     return partner;
   });
+  if (input.serviceContract) { invalidatePlan(result.id); invalidateServerPools(); clearResolutionCache(); }
+  return result;
 }
 
 export async function updatePartner(id, input, actor) {
   const updated = await sequelize.transaction(async (t) => {
     const p = await Partner.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
     if (!p) throw notFound("Parceiro");
+    const {serviceContract, ...updates} = input;
+    input = updates;
+    if(serviceContract){
+      if(actor?.role!=='superadmin') throw new AppError(403,'DELTATV_ONLY','Apenas a DeltaTV altera o contrato.');
+      const price = input.monthlyFeeCents ?? p.monthlyFeeCents ?? 0;
+      input.billingModel = 'fixed';
+      input.monthlyFeeCents = price;
+      input.deviceLimit = serviceContract.activationLimit;
+      // Editar contrato e parceiro na mesma transação.
+      await applyServiceContract(t,p,serviceContract,price,actor);
+    }
     const contract=await ContentPartnerTerms.findByPk(id,{transaction:t});
     if(contract?.mode && contract.mode!=="legacy"){
       const expected=contract.mode.startsWith("fixed_")?"fixed":"none";
@@ -126,6 +193,12 @@ export async function updatePartner(id, input, actor) {
     return p;
   });
   clearMirrorAuth();
+  if (updated && updated.kind !== 'reseller') {
+    invalidatePlan(id);
+    invalidateServerPools();
+    clearResolutionCache();
+    clearContractAccessCache();
+  }
   return updated;
 }
 
@@ -154,6 +227,31 @@ export async function changePartnerStatus(id, action, { reason, force = false },
   });
   clearMirrorAuth(); // afeta todos os dispositivos da parceria: o espelho não pode seguir autorizando pelo cache
   return changed;
+}
+
+/** Manual renewal by DeltaTV using the existing partner account and contract.
+ * No payment is fabricated; this is an audited administrative concession. */
+export async function renewPartnerOneMonth(id, actor) {
+  const renewed = await sequelize.transaction(async t => {
+    const p=await Partner.findByPk(id,{transaction:t,lock:t.LOCK.UPDATE});
+    if(!p)throw notFound("Parceiro");
+    const oldEnd=p.endsAt;
+    const base=new Date(Math.max(Date.now(),oldEnd?new Date(oldEnd).getTime():0));
+    // UTC calendar month, clamped: Jan 31 -> Feb 28/29 (not March 2/3).
+    const day=base.getUTCDate();
+    const next=new Date(base);
+    next.setUTCDate(1);
+    next.setUTCMonth(next.getUTCMonth()+1);
+    const lastDay=new Date(Date.UTC(next.getUTCFullYear(),next.getUTCMonth()+1,0)).getUTCDate();
+    next.setUTCDate(Math.min(day,lastDay));
+    await p.update({endsAt:next},{transaction:t});
+    await audit({actor,action:"partner.renew.one_month_manual",entityType:"partner",entityId:id,
+      metadata:{previousEnd:oldEnd,newEnd:next,mode:"administrative_manual_grant",paymentConfirmed:false},transaction:t});
+    return p;
+  });
+  clearMirrorAuth();
+  clearContractAccessCache?.();
+  return renewed;
 }
 
 export async function renewPartner(id, { endsAt }, actor) {

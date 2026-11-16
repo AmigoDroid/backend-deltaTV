@@ -1,3 +1,5 @@
+import { sequelize } from "../../db/models/index.js";
+import { QueryTypes } from "sequelize";
 import {Router} from 'express';
 import {z} from 'zod';
 import {validate} from '../../shared/validate.js';
@@ -46,13 +48,13 @@ adminPortalSales.use('/usage',adminPortalUsage);
 // The new storefront uses a single Service Package for contract + technical benefits.
 // Historical /plans and /orders routes remain mounted for reconciliations and old bookmarks.
 adminPortalSales.get('/packages',async(_req,res)=>res.json({items:await v2.packages()}));
-adminPortalSales.put('/packages',validate({body:packageBody}),async(req,res)=>res.json(await v2.saveServicePackage(req.valid.body,actorOf(req))));
+adminPortalSales.put('/packages',(_req,_res)=>{throw new AppError(410,'ORIGINAL_PLAN_CATALOG_ONLY','Edite o plano existente em Planos do parceiro.');});
 adminPortalSales.get('/receivables',async(_req,res)=>res.json({items:await v2.adminReceivables()}));
 adminPortalSales.get('/negotiated-prices',async(_req,res)=>res.json({items:await v2.agreedMasterPrices()}));
 adminPortalSales.post('/masters/onboard',stockWriteLimiter,validate({body:z.object({partnerId:uuid,planCode:packageCode,
   quantityMonths:z.number().int().min(1).max(100000),agreedPriceCents:cents.min(1),monthlyFeeCents:cents.default(0),
   paymentMode:z.enum(['default','manual']).default('default')}).strict()}),
- async(req,res)=>res.status(201).json(await v2.onboardRootMaster(req.valid.body,actorOf(req))));
+ (_req,_res)=>{throw new AppError(410,'USE_PARTNER_PROFILE','Cadastre o parceiro e selecione um plano com revenda autorizada no perfil.');});
 // Cadastro compacto. Conta + pacote + limite + permissões, com cobrança opcional.
 const masterAccount=z.discriminatedUnion('mode',[
  z.object({mode:z.literal('existing'),partnerId:uuid}).strict(),
@@ -64,7 +66,7 @@ adminPortalSales.post('/masters/quick',stockWriteLimiter,validate({body:z.object
  permissions:z.object(Object.fromEntries(PERMISSION_KEYS.map(k=>[k,z.boolean()]))).strict(),
  free:z.boolean(),quantityMonths:z.number().int().min(1).max(120).default(12),
  agreedPriceCents:cents.optional(),paymentMode:z.enum(['default','manual']).default('default')
-}).strict()}),async(req,res)=>res.status(201).json(await v2.onboardMasterSimple(req.valid.body,actorOf(req))));
+}).strict()}),(_req,_res)=>{throw new AppError(410,'USE_PARTNER_PROFILE','Cadastre o parceiro e selecione um plano com revenda autorizada no perfil.');});
 adminPortalSales.put('/negotiated-prices',validate({body:z.object({sellerId:uuid,planCode:packageCode,unitPriceCents:cents.min(1),reason:z.string().trim().min(8).max(500)}).strict()}),async(req,res)=>res.json(await v2.setAgreedMasterPrice(req.valid.body,actorOf(req))));
 adminPortalSales.get('/reparent-requests',async(_req,res)=>res.json({items:await v2.reparentRequests(null,{isAdmin:true})}));
 adminPortalSales.patch('/sellers/:id/permissions',validate({params:actionId,body:permissionsBody}),async(req,res)=>
@@ -93,27 +95,40 @@ adminPortalSales.post('/orders/:id/infinitepay/verify',pixCreateLimiter,validate
 adminPortalSales.post('/orders/:id/recheck',pixCreateLimiter,validate({params:actionId}),
   async(req,res)=>res.json(await checkout.checkOrder(req.valid.params.id,actorOf(req))));
 adminPortalSales.get('/candidates',validate({query:z.object({q:z.string().trim().max(80).default('')})}),async(req,res)=>res.json(await svc.adminCandidates(req.valid.query.q)));
-adminPortalSales.post('/sellers',validate({body:z.object({partnerId:uuid,parentPartnerId:uuid.nullable().optional()}).strict()}),async(req,res)=>res.status(201).json(await svc.registerSeller(req.valid.body,actorOf(req))));
+adminPortalSales.post('/sellers',(_req,_res)=>{throw new AppError(410,'USE_PARTNER_PROFILE','Ative a revenda atribuindo um plano autorizado ao parceiro existente.');});
 adminPortalSales.patch('/sellers/:id',validate({params:actionId,body:z.object({active:z.boolean().optional(),canSell:z.boolean().optional()}).strict().refine(x=>Object.keys(x).length>0)}),async(req,res)=>res.json(await svc.setSellerState(req.valid.params.id,req.valid.body,actorOf(req))));
-adminPortalSales.put('/plans',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Crie e edite os Pacotes de Serviço na central da DeltaTV.');});
-adminPortalSales.post('/orders',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Novas vendas de acesso não usam estoque. Cadastre o Master com um Pacote de Serviço.');});
+adminPortalSales.put('/plans',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Edite o plano existente em Planos do parceiro.');});
+adminPortalSales.post('/orders',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Novas vendas não usam estoque. Ative revenda no plano do parceiro.');});
 adminPortalSales.post('/orders/:id/settle',validate({params:actionId,body:z.object({settlementRef:z.string().trim().min(6).max(120),method:z.enum(['pix_manual_confirmed','bank_manual_confirmed','cash_manual_confirmed'])}).strict()}),async(req,res)=>res.json(await svc.settleStockOrder(req.valid.params.id,req.valid.body,actorOf(req))));
 adminPortalSales.post('/exceptions',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Concessões gratuitas de acesso são cadastradas diretamente pela DeltaTV.');});
-adminPortalSales.post('/contracts',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Atribua o Pacote de Serviço ao parceiro pela central. Não existe estoque de acessos.');});
+adminPortalSales.post('/contracts',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Atribua um plano original no perfil do parceiro. Não existe estoque de acessos.');});
 
 export const partnerPortalSales=Router();
 partnerPortalSales.use(noStore);
+// O comércio do Painel do Parceiro foi retirado. Preserva consultas,
+// pagamentos e conclusão de convites históricos, mas impede novas vendas.
+partnerPortalSales.use((req,_res,next)=>{
+ const method=req.method.toUpperCase(),path=req.path;
+ const disabled=(method==='POST' && [
+   '/invitations','/reparent-code','/reparent-requests','/reparent-requests/code'
+ ].includes(path)) ||
+ (method==='PATCH' && /^\/submasters\/[^/]+\/permissions$/.test(path)) ||
+ (method==='PUT' && ['/gateways','/gateways/default'].includes(path));
+ if(disabled)throw new AppError(410,'PARTNER_RESALE_DISABLED','A revenda do Painel do Parceiro foi encerrada. Cadastros e contratos são administrados pela DeltaTV.');
+ next();
+});
 partnerPortalSales.use('/usage',partnerPortalUsage);
 partnerPortalSales.get('/my-package',async(req,res)=>res.json(await v2.myPackage(req.user.partnerId)));
 partnerPortalSales.get('/packages',async(req,res)=>{
  const state=await v2.ownPermissions(req.user.partnerId);
- if(!state.enabled||!state.permissions?.canSell)throw new AppError(403,'PACKAGE_SALES_FORBIDDEN','Sua rede não tem permissão para vender pacotes.');
- const rows=await v2.packages();
- res.json({items:rows.filter(p=>p.active&&p.service_tier).map(p=>({
-  code:p.code,name:p.name,maxDns:p.max_dns,activationLimit:p.activation_limit,
-  autoFailover:p.auto_failover,autoPriority:p.auto_priority,emailAlerts:p.email_alerts,detailedHistory:p.detailed_history,
-  minResaleCents:Number(p.min_resale_cents)
- }))});
+ if(!state.enabled||!state.permissions?.canSell)throw new AppError(403,'PLAN_SALES_FORBIDDEN','Sua conta não pode revender o painel.');
+ const rows=await sequelize.query(`SELECT key AS code,name,max_servers AS "maxDns",NULL::integer AS "activationLimit",
+   auto_failover AS "autoFailover",auto_priority AS "autoPriority",email_alerts AS "emailAlerts",
+   detailed_history AS "detailedHistory",can_resell_panel AS "canResellPanel",
+   1::bigint AS "minResaleCents"
+   FROM service_plan_catalogs WHERE active=true AND audience IN ('content','both')
+   ORDER BY sort_order,name`,{type:QueryTypes.SELECT});
+ res.json({items:rows});
 });
 partnerPortalSales.get('/permissions',async(req,res)=>res.json(await v2.ownPermissions(req.user.partnerId)));
 partnerPortalSales.patch('/submasters/:id/permissions',validate({params:actionId,body:permissionsBody}),async(req,res)=>

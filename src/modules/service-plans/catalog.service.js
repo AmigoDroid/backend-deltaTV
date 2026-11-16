@@ -4,6 +4,25 @@ import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { invalidatePlan } from "./plan.service.js";
 
+// Backward-compatible link to pre-existing invitation FKs. This is NOT a product
+// catalogue and has NO independent price or permission authority.
+async function syncLegacyInvitationPlan(plan, t) {
+ if(!['content','both'].includes(plan.audience))return;
+ await sequelize.query(`INSERT INTO partner_portal_sales_plans
+   (code,name,wholesale_cents,min_resale_cents,active,service_tier,max_dns,activation_limit,
+    auto_failover,auto_priority,email_alerts,detailed_history)
+   VALUES (:key,:name,1,1,:active,:key,:maxServers,NULL,:autoFailover,:autoPriority,:emailAlerts,:detailedHistory)
+   ON CONFLICT(code) DO UPDATE SET name=excluded.name,wholesale_cents=1,min_resale_cents=1,active=excluded.active,
+    service_tier=excluded.service_tier,max_dns=excluded.max_dns,
+    auto_failover=excluded.auto_failover,auto_priority=excluded.auto_priority,
+    email_alerts=excluded.email_alerts,detailed_history=excluded.detailed_history,
+    updated_at=now()`,{
+     replacements:{key:plan.key,name:plan.name,active:plan.active,maxServers:plan.maxServers,
+      autoFailover:plan.autoFailover,autoPriority:plan.autoPriority,
+      emailAlerts:plan.emailAlerts,detailedHistory:plan.detailedHistory}, transaction:t
+   });
+}
+
 async function clearCaches(){
   invalidatePlan();
   const [{ invalidateServerPools }, { clearResolutionCache }] = await Promise.all([
@@ -49,6 +68,7 @@ export async function createCatalogPlan(input, actor) {
   let record;
   await sequelize.transaction(async t => {
     record = await ServicePlanCatalog.create({ ...input, active: true, system: false }, { transaction:t });
+    await syncLegacyInvitationPlan(record.toJSON(),t);
     await audit({ actor, action:"service_plan.created", entityType:"service_plan", entityId:record.key,
       metadata:{name:record.name,audience:record.audience}, transaction:t });
   });
@@ -63,6 +83,7 @@ export async function updateCatalogPlan(key, input, actor) {
     await validatePlanChanges(key, input, t);
     const before = record.toJSON();
     await record.update(input, {transaction:t});
+    await syncLegacyInvitationPlan(record.toJSON(),t);
     await audit({ actor, action:"service_plan.updated", entityType:"service_plan", entityId:key,
       metadata:{before,after:record.toJSON()}, transaction:t });
   });

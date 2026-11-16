@@ -49,12 +49,13 @@ export async function saveServicePackage(p,actor){admin(actor);
 export async function myPackage(id){
  const [partner,contract,masterPackage,technical,terms,assigned]=await Promise.all([
    one('SELECT name,public_partner_number,ends_at FROM partners WHERE id=:id',{id}),
-   one(`SELECT c.*,p.name AS package_name,p.service_tier FROM partner_portal_access_contracts c
-       JOIN partner_portal_sales_plans p ON p.code=c.plan_code WHERE c.customer_partner_id=:id`,{id}),
+   one(`SELECT c.*,p.name AS package_name,p.service_tier, seller.name AS seller_name
+       FROM partner_portal_access_contracts c JOIN partner_portal_sales_plans p ON p.code=c.plan_code
+       JOIN partners seller ON seller.id=c.seller_partner_id WHERE c.customer_partner_id=:id`,{id}),
    one(`SELECT mp.package_snapshot,mp.status,mp.monthly_fee_cents,sp.name AS package_name FROM partner_portal_master_packages mp
       JOIN partner_portal_sales_plans sp ON sp.code=mp.plan_code WHERE mp.partner_id=:id`,{id}),
    getServicePlan(id),
-   one('SELECT mode,activation_limit FROM content_partner_terms WHERE partner_id=:id',{id}),
+   one('SELECT mode,activation_limit,fixed_fee_cents FROM content_partner_terms WHERE partner_id=:id',{id}),
    one(`SELECT a.package_snapshot,p.name FROM partner_service_package_assignments a
      JOIN partner_portal_sales_plans p ON p.code=a.package_code WHERE a.partner_id=:id`,{id})
  ]);
@@ -64,30 +65,49 @@ export async function myPackage(id){
   WHERE mp.partner_id=:id`,{id}):null;
  return {publicId:partner?.public_partner_number?String(partner.public_partner_number):null,
    name:partner?.name,package:assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.package_snapshot||null,
-   packageName:assigned?.name||contract?.package_name||(masterPackage?.package_name||technical?.planName||'Pacote anterior'),
-   expiresAt:contract?.expires_at||(masterPackage?.status==='active'?partner?.ends_at:null),pendingPayment:pendingOrder?{orderId:pendingOrder.id,status:pendingOrder.status,gateway:pendingOrder.payment_gateway,totalCents:Number(pendingOrder.total_cents),checkoutUrl:pendingOrder.checkout_url}:null,legacy:!(assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.package_snapshot),
-   masterPackageStatus:masterPackage?.status||null,monthlyFeeCents:masterPackage?.monthly_fee_cents||null,
+   packageName:technical?.planName||'Plano de serviço',
+   expiresAt:partner?.ends_at,pendingPayment:pendingOrder?{orderId:pendingOrder.id,status:pendingOrder.status,gateway:pendingOrder.payment_gateway,totalCents:Number(pendingOrder.total_cents),checkoutUrl:pendingOrder.checkout_url}:null,legacy:!(assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.package_snapshot),
+   masterPackageStatus:masterPackage?.status||null,
+   monthlyFeeCents:contract ? Math.round(Number(contract.declared_resale_cents||0)/Math.max(1,Number(contract.months_paid||1))) : Number(terms?.fixed_fee_cents||0),
+   feeRecipient:contract?.seller_name||'DeltaTV',
    dns:{limit:technical?.features?.maxServers??null,perCode:true},
    activations:{limit:terms?.mode==='fixed_limited'?Number(terms.activation_limit):null,used:Number(usage?.used||0)},
    features:technical?.features||null,
-   note:assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.status==='active'?'Benefícios da contratação registrados.':masterPackage?.status==='pending'?'Pacote selecionado. Os benefícios serão ativados após o primeiro pagamento.':'Contrato legado: benefícios operacionais atuais preservados.'};
+   note:masterPackage?.status==='pending'?'Aguardando confirmação da cobrança anterior.':'Recursos atuais do plano e contrato existentes.'};
 }
 async function effectiveNetworkState(id,t){
- const row=await one(`SELECT s.*,p.status,mp.status AS package_status
+ const row=await one(`SELECT s.*,p.status,p.ends_at,mp.status AS package_status
   FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id
   LEFT JOIN partner_portal_master_packages mp ON mp.partner_id=s.partner_id
   WHERE s.partner_id=:id`,{id},t);
  if(!row)return {registered:false,role:null,enabled:false,permissions:{}};
- const ancestors=await one(`WITH RECURSIVE hierarchy AS(
-   SELECT s.partner_id,s.parent_partner_id,s.active,s.can_sell,s.can_create_submasters,
-    s.can_transfer_stock,s.can_view_finance,s.can_manage_gateways,p.status,
-    ARRAY[s.partner_id] AS path
-   FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id WHERE s.partner_id=:id
+ const ancestors=await one(`WITH RECURSIVE hierarchy AS (
+   SELECT s.partner_id,s.parent_partner_id,s.active,
+    (s.can_sell AND COALESCE(pc.can_resell_panel,false)) AS can_sell,
+    (s.can_create_submasters AND COALESCE(pc.can_create_submasters,false)) AS can_create_submasters,
+    s.can_transfer_stock,
+    (s.can_view_finance AND COALESCE(pc.can_view_finance,false)) AS can_view_finance,
+    (s.can_manage_gateways AND COALESCE(pc.can_manage_gateways,false)) AS can_manage_gateways,
+    p.status,ARRAY[s.partner_id] AS path
+   FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id
+   LEFT JOIN partner_service_plans sp ON sp.partner_id=s.partner_id
+   LEFT JOIN service_plan_catalogs pc ON pc.key=COALESCE(sp.tier,
+     CASE WHEN p.kind='reseller' THEN 'reseller_basic' ELSE 'partner_professional' END)
+   WHERE s.partner_id=:id
    UNION ALL
-   SELECT s.partner_id,s.parent_partner_id,s.active,s.can_sell,s.can_create_submasters,
-    s.can_transfer_stock,s.can_view_finance,s.can_manage_gateways,p.status,h.path||s.partner_id
+   SELECT s.partner_id,s.parent_partner_id,s.active,
+    (s.can_sell AND COALESCE(pc.can_resell_panel,false)),
+    (s.can_create_submasters AND COALESCE(pc.can_create_submasters,false)),
+    s.can_transfer_stock,
+    (s.can_view_finance AND COALESCE(pc.can_view_finance,false)),
+    (s.can_manage_gateways AND COALESCE(pc.can_manage_gateways,false)),
+    p.status,h.path||s.partner_id
    FROM hierarchy h JOIN partner_portal_sellers s ON s.partner_id=h.parent_partner_id
-   JOIN partners p ON p.id=s.partner_id WHERE NOT s.partner_id=ANY(h.path)
+   JOIN partners p ON p.id=s.partner_id
+   LEFT JOIN partner_service_plans sp ON sp.partner_id=s.partner_id
+   LEFT JOIN service_plan_catalogs pc ON pc.key=COALESCE(sp.tier,
+     CASE WHEN p.kind='reseller' THEN 'reseller_basic' ELSE 'partner_professional' END)
+   WHERE NOT s.partner_id=ANY(h.path)
  ) SELECT bool_and(active AND can_sell AND status='active') AS healthy,
    count(*) FILTER(WHERE parent_partner_id IS NULL)::int AS roots,
    bool_and(can_create_submasters) AS can_create_submasters,
@@ -95,7 +115,7 @@ async function effectiveNetworkState(id,t){
    bool_and(can_view_finance) AS can_view_finance,
    bool_and(can_manage_gateways) AS can_manage_gateways
    FROM hierarchy`,{id},t);
- const enabled=Boolean(ancestors?.healthy)&&ancestors.roots===1&&row.status==='active'&&row.package_status!=='pending';
+ const enabled=Boolean(ancestors?.healthy)&&ancestors.roots===1&&row.status==='active'&&new Date(row.ends_at).getTime()>Date.now()&&row.package_status!=='pending';
  const permissions=enabled?{
   canSell:true,canCreateSubmasters:!!ancestors.can_create_submasters,
   canTransferStock:!!ancestors.can_transfer_stock,canViewFinance:!!ancestors.can_view_finance,
@@ -103,7 +123,7 @@ async function effectiveNetworkState(id,t){
  }:Object.fromEntries(PERMISSION_KEYS.map(key=>[key,false]));
  return {registered:true,role:row.role,enabled,permissions};
 }
-export async function ownPermissions(id){return effectiveNetworkState(id);}
+export async function ownPermissions(id,t){return effectiveNetworkState(id,t);}
 export async function updateChildPermissions({parentId,childId,input,actor,isAdmin=false}){
  if(isAdmin)admin(actor);else own(actor,parentId);
  return tx(async t=>{
@@ -131,7 +151,7 @@ export async function requestReparent({subjectId,destinationId,actor}){
   const subject=await one('SELECT * FROM partner_portal_sellers WHERE partner_id=:id FOR UPDATE',{id:subjectId},t);
   if(!subject||subject.role!=='submaster')fail(422,'ONLY_SUBMASTERS','A transferência automática aceita apenas Submasters.');
   const destination=await active(destinationId,t);
-  if(!destination.can_create_submasters)fail(403,'DESTINATION_PERMISSION','O destino não pode receber novos Submasters.');
+  if(!(await effectiveNetworkState(destinationId,t)).permissions?.canCreateSubmasters)fail(403,'DESTINATION_PERMISSION','O destino não pode receber novos Submasters.');
   const descendants=await read(`WITH RECURSIVE d AS(
    SELECT partner_id,ARRAY[partner_id] AS path FROM partner_portal_sellers WHERE parent_partner_id=:id
    UNION ALL SELECT s.partner_id,d.path||s.partner_id FROM d JOIN partner_portal_sellers s ON s.parent_partner_id=d.partner_id
@@ -163,7 +183,7 @@ export async function decideReparent(requestId,accepted,actor){
   if(accepted){
    const subject=await one('SELECT * FROM partner_portal_sellers WHERE partner_id=:id FOR UPDATE',{id:request.subject_partner_id},t);
    const destination=await active(request.destination_partner_id,t);
-   if(subject?.role!=='submaster'||!destination.can_create_submasters)fail(409,'MOVE_NOT_ALLOWED','Submaster ou destino não autorizado.');
+   if(subject?.role!=='submaster'||!(await effectiveNetworkState(destination.partner_id,t)).permissions?.canCreateSubmasters)fail(409,'MOVE_NOT_ALLOWED','Submaster ou destino não autorizado.');
    const descendants=await read(`WITH RECURSIVE d AS(
     SELECT partner_id,ARRAY[partner_id] AS path FROM partner_portal_sellers WHERE parent_partner_id=:id
     UNION ALL SELECT s.partner_id,d.path||s.partner_id FROM d JOIN partner_portal_sellers s ON s.parent_partner_id=d.partner_id
@@ -218,7 +238,7 @@ export async function saveSellerGateway(id,{provider,accessToken,handle,webhookS
  if(provider==='infinitepay'&&!/^[A-Za-z0-9._-]{2,120}$/.test(handle||''))fail(422,'INVALID_HANDLE','Informe sua InfiniteTag válida.');
  return tx(async t=>{
   const seller=await active(id,t);
-  if(!seller.can_manage_gateways)fail(403,'GATEWAY_NOT_ALLOWED','Gateway não autorizado.');
+  if(!(await effectiveNetworkState(id,t)).permissions?.canManageGateways)fail(403,'GATEWAY_NOT_ALLOWED','Gateway não autorizado.');
   await exec(`INSERT INTO partner_portal_seller_gateways(partner_id,provider,credentials_enc,account_ref,active)
     VALUES (:id,:provider,:secret,:account,true)
     ON CONFLICT(partner_id,provider) DO UPDATE SET credentials_enc=excluded.credentials_enc,
@@ -231,7 +251,7 @@ export async function saveSellerGateway(id,{provider,accessToken,handle,webhookS
 }
 export async function setSellerDefaultGateway(id,provider,actor){own(actor,id);
  return tx(async t=>{
-  const seller=await active(id,t);if(!seller.can_manage_gateways)fail(403,'GATEWAY_NOT_ALLOWED','Gateway não autorizado.');
+  const seller=await active(id,t);const effective=await effectiveNetworkState(id,t);if(!effective.permissions?.canManageGateways)fail(403,'GATEWAY_NOT_ALLOWED','Gateway não autorizado.');
   const found=await one(`SELECT 1 FROM partner_portal_seller_gateways WHERE partner_id=:id AND provider=:provider AND active=true`,{id,provider},t);
   if(!found)fail(409,'GATEWAY_NOT_CONFIGURED','Configure o gateway antes de selecioná-lo.');
   await exec(`UPDATE partner_portal_sellers SET default_gateway=:provider,updated_at=now() WHERE partner_id=:id`,{id,provider},t);
@@ -279,7 +299,7 @@ export async function requestReparentByCode(code,actor){
  if(actor?.type!=='partner')fail(403,'PARTNER_REQUIRED','Acesso negado.');
  return tx(async t=>{
   const destination=await active(actor.partnerId,t);
-  if(!destination.can_create_submasters)fail(403,'DESTINATION_PERMISSION','Sua conta não pode receber Submasters.');
+  if(!(await effectiveNetworkState(actor.partnerId,t)).permissions?.canCreateSubmasters)fail(403,'DESTINATION_PERMISSION','Sua conta não pode receber Submasters.');
   const entry=await one(`SELECT * FROM partner_portal_reparent_codes WHERE token_hash=:hash
    AND used_at IS NULL AND expires_at>now() FOR UPDATE`,{hash:codeHash(code)},t);
   if(!entry)fail(400,'TRANSFER_CODE_INVALID','Código inválido, usado ou vencido.');
