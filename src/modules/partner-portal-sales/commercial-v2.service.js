@@ -5,6 +5,7 @@ import {AppError} from '../../shared/errors.js';
 import {audit} from '../../shared/audit.js';
 import {encryptSecret,verifyPassword,hashPassword} from '../../shared/crypto.js';
 import {getServicePlan} from '../service-plans/plan.service.js';
+import {applyServicePackageToPartner} from '../service-packages/package.apply.js';
 import {env} from '../../config/env.js';
 import {packageSnapshot,personalizedPackage,PERMISSION_KEYS,permissionColumns,permissionsFromRow,canMoveUnder} from './commercial-v2.rules.js';
 
@@ -46,52 +47,73 @@ export async function saveServicePackage(p,actor){admin(actor);
  });
 }
 export async function myPackage(id){
- const [partner,contract,masterPackage,technical,terms]=await Promise.all([
+ const [partner,contract,masterPackage,technical,terms,assigned]=await Promise.all([
    one('SELECT name,public_partner_number,ends_at FROM partners WHERE id=:id',{id}),
    one(`SELECT c.*,p.name AS package_name,p.service_tier FROM partner_portal_access_contracts c
        JOIN partner_portal_sales_plans p ON p.code=c.plan_code WHERE c.customer_partner_id=:id`,{id}),
    one(`SELECT mp.package_snapshot,mp.status,mp.monthly_fee_cents,sp.name AS package_name FROM partner_portal_master_packages mp
       JOIN partner_portal_sales_plans sp ON sp.code=mp.plan_code WHERE mp.partner_id=:id`,{id}),
    getServicePlan(id),
-   one('SELECT mode,activation_limit FROM content_partner_terms WHERE partner_id=:id',{id})
+   one('SELECT mode,activation_limit FROM content_partner_terms WHERE partner_id=:id',{id}),
+   one(`SELECT a.package_snapshot,p.name FROM partner_service_package_assignments a
+     JOIN partner_portal_sales_plans p ON p.code=a.package_code WHERE a.partner_id=:id`,{id})
  ]);
  const usage=await one(`SELECT count(*)::int AS used FROM activations WHERE partner_id=:id AND status<>'revoked'`,{id});
  const pendingOrder=masterPackage?.status==='pending'?await one(`SELECT o.id,o.status,o.payment_gateway,o.total_cents,o.checkout_url
   FROM partner_portal_master_packages mp JOIN partner_portal_stock_orders o ON o.id=mp.first_order_id
   WHERE mp.partner_id=:id`,{id}):null;
  return {publicId:partner?.public_partner_number?String(partner.public_partner_number):null,
-   name:partner?.name,package:contract?.package_snapshot||masterPackage?.package_snapshot||null,
-   packageName:contract?.package_name||(masterPackage?.package_name||technical?.planName||'Pacote anterior'),
-   expiresAt:contract?.expires_at||(masterPackage?.status==='active'?partner?.ends_at:null),pendingPayment:pendingOrder?{orderId:pendingOrder.id,status:pendingOrder.status,gateway:pendingOrder.payment_gateway,totalCents:Number(pendingOrder.total_cents),checkoutUrl:pendingOrder.checkout_url}:null,legacy:!(contract?.package_snapshot||masterPackage?.package_snapshot),
+   name:partner?.name,package:assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.package_snapshot||null,
+   packageName:assigned?.name||contract?.package_name||(masterPackage?.package_name||technical?.planName||'Pacote anterior'),
+   expiresAt:contract?.expires_at||(masterPackage?.status==='active'?partner?.ends_at:null),pendingPayment:pendingOrder?{orderId:pendingOrder.id,status:pendingOrder.status,gateway:pendingOrder.payment_gateway,totalCents:Number(pendingOrder.total_cents),checkoutUrl:pendingOrder.checkout_url}:null,legacy:!(assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.package_snapshot),
    masterPackageStatus:masterPackage?.status||null,monthlyFeeCents:masterPackage?.monthly_fee_cents||null,
    dns:{limit:technical?.features?.maxServers??null,perCode:true},
    activations:{limit:terms?.mode==='fixed_limited'?Number(terms.activation_limit):null,used:Number(usage?.used||0)},
    features:technical?.features||null,
-   note:contract?.package_snapshot||masterPackage?.status==='active'?'Benefícios da contratação registrados.':masterPackage?.status==='pending'?'Pacote selecionado. Os benefícios serão ativados após o primeiro pagamento.':'Contrato legado: benefícios operacionais atuais preservados.'};
+   note:assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.status==='active'?'Benefícios da contratação registrados.':masterPackage?.status==='pending'?'Pacote selecionado. Os benefícios serão ativados após o primeiro pagamento.':'Contrato legado: benefícios operacionais atuais preservados.'};
 }
-export async function ownPermissions(id){
- const row=await one(`SELECT s.*,p.status,mp.status AS package_status FROM partner_portal_sellers s
-  JOIN partners p ON p.id=s.partner_id LEFT JOIN partner_portal_master_packages mp ON mp.partner_id=s.partner_id
-  WHERE s.partner_id=:id`,{id});
- if(!row)return {registered:false,permissions:{},role:null};
- // Revocation up the chain applies to every descendant. Individual permissions are not delegated implicitly.
- const ancestors=await one(`WITH RECURSIVE hierarchy AS (
- SELECT s.partner_id,s.parent_partner_id,s.active,s.can_sell,ARRAY[s.partner_id] AS path FROM partner_portal_sellers s WHERE s.partner_id=:id
- UNION ALL SELECT s.partner_id,s.parent_partner_id,s.active,s.can_sell,hierarchy.path||s.partner_id
- FROM hierarchy JOIN partner_portal_sellers s ON s.partner_id=hierarchy.parent_partner_id WHERE NOT s.partner_id=ANY(hierarchy.path)
- ) SELECT bool_and(active AND can_sell) AS healthy,count(*) FILTER(WHERE parent_partner_id IS NULL)::int AS roots FROM hierarchy`,{id});
- const permitted=Boolean(ancestors?.healthy)&&ancestors.roots===1&&row.status==='active'&&row.package_status!=='pending';
- return {registered:true,role:row.role,enabled:permitted,permissions:permitted?permissionsFromRow(row):Object.fromEntries(PERMISSION_KEYS.map(k=>[k,false]))};
+async function effectiveNetworkState(id,t){
+ const row=await one(`SELECT s.*,p.status,mp.status AS package_status
+  FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id
+  LEFT JOIN partner_portal_master_packages mp ON mp.partner_id=s.partner_id
+  WHERE s.partner_id=:id`,{id},t);
+ if(!row)return {registered:false,role:null,enabled:false,permissions:{}};
+ const ancestors=await one(`WITH RECURSIVE hierarchy AS(
+   SELECT s.partner_id,s.parent_partner_id,s.active,s.can_sell,s.can_create_submasters,
+    s.can_transfer_stock,s.can_view_finance,s.can_manage_gateways,p.status,
+    ARRAY[s.partner_id] AS path
+   FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id WHERE s.partner_id=:id
+   UNION ALL
+   SELECT s.partner_id,s.parent_partner_id,s.active,s.can_sell,s.can_create_submasters,
+    s.can_transfer_stock,s.can_view_finance,s.can_manage_gateways,p.status,h.path||s.partner_id
+   FROM hierarchy h JOIN partner_portal_sellers s ON s.partner_id=h.parent_partner_id
+   JOIN partners p ON p.id=s.partner_id WHERE NOT s.partner_id=ANY(h.path)
+ ) SELECT bool_and(active AND can_sell AND status='active') AS healthy,
+   count(*) FILTER(WHERE parent_partner_id IS NULL)::int AS roots,
+   bool_and(can_create_submasters) AS can_create_submasters,
+   bool_and(can_transfer_stock) AS can_transfer_stock,
+   bool_and(can_view_finance) AS can_view_finance,
+   bool_and(can_manage_gateways) AS can_manage_gateways
+   FROM hierarchy`,{id},t);
+ const enabled=Boolean(ancestors?.healthy)&&ancestors.roots===1&&row.status==='active'&&row.package_status!=='pending';
+ const permissions=enabled?{
+  canSell:true,canCreateSubmasters:!!ancestors.can_create_submasters,
+  canTransferStock:!!ancestors.can_transfer_stock,canViewFinance:!!ancestors.can_view_finance,
+  canManageGateways:!!ancestors.can_manage_gateways
+ }:Object.fromEntries(PERMISSION_KEYS.map(key=>[key,false]));
+ return {registered:true,role:row.role,enabled,permissions};
 }
+export async function ownPermissions(id){return effectiveNetworkState(id);}
 export async function updateChildPermissions({parentId,childId,input,actor,isAdmin=false}){
  if(isAdmin)admin(actor);else own(actor,parentId);
  return tx(async t=>{
   const parent=isAdmin?null:await active(parentId,t);
+  const effectiveParent=isAdmin?null:await effectiveNetworkState(parentId,t);
   const child=await one('SELECT * FROM partner_portal_sellers WHERE partner_id=:childId FOR UPDATE',{childId},t);
   if(!child)fail(404,'SUBMASTER_MISSING','Submaster não encontrado.');
   if(!isAdmin&&child.parent_partner_id!==parentId)fail(403,'NOT_DIRECT_SUBMASTER','Somente seu Submaster direto pode receber permissões.');
   if(!isAdmin)for(const [name,value] of Object.entries(input)){
-    if(value&&!parent[permissionColumns[name]])fail(403,'PERMISSION_CANNOT_DELEGATE','Você não pode conceder uma permissão que não possui.');
+    if(value&&!effectiveParent?.permissions?.[name])fail(403,'PERMISSION_CANNOT_DELEGATE','Você não pode conceder uma permissão que não possui.');
   }
   const keys=Object.keys(input);if(!keys.length)fail(422,'NO_PERMISSION_CHANGE','Selecione uma permissão.');
   const patches=keys.map((key,i)=>`${permissionColumns[key]}=:value${i}`);
@@ -283,19 +305,7 @@ export async function requestReparentByCode(code,actor){
  * Não emite estoque nem afeta licenças de TV. Executado somente em transações autorizadas.
  */
 async function applyMasterBenefits(partnerId,snapshot,fee,t){
- await exec(`INSERT INTO partner_service_plans(partner_id,tier,max_servers_override,auto_failover_override,
-   auto_priority_override,email_alerts_override,detailed_history_override)
-   VALUES(:id,:tier,:dns,:failover,:priority,:alerts,:history)
-   ON CONFLICT(partner_id) DO UPDATE SET tier=excluded.tier,max_servers_override=excluded.max_servers_override,
-   auto_failover_override=excluded.auto_failover_override,auto_priority_override=excluded.auto_priority_override,
-   email_alerts_override=excluded.email_alerts_override,detailed_history_override=excluded.detailed_history_override,
-   updated_at=now()`,{id:partnerId,tier:snapshot.tier,dns:snapshot.maxDns===null?0:snapshot.maxDns,
-   failover:snapshot.autoFailover,priority:snapshot.autoPriority,alerts:snapshot.emailAlerts,history:snapshot.detailedHistory},t);
- await exec(`INSERT INTO content_partner_terms(partner_id,mode,activation_limit,fixed_fee_cents)
-   VALUES(:id,:mode,:cap,:fee)
-   ON CONFLICT(partner_id) DO UPDATE SET mode=excluded.mode,activation_limit=excluded.activation_limit,
-   fixed_fee_cents=excluded.fixed_fee_cents,updated_at=now()`,{id:partnerId,
-   mode:snapshot.activationLimit===null?'fixed_unlimited':'fixed_limited',cap:snapshot.activationLimit,fee},t);
+ await applyServicePackageToPartner(partnerId,snapshot,t,{recordAssignment:true,monthlyFeeCents:fee});
  const {invalidatePlan}=await import('../service-plans/plan.service.js');invalidatePlan(partnerId);
 }
 
@@ -355,8 +365,8 @@ export async function onboardMasterSimple({account,planCode,activationLimit,perm
    await exec(`INSERT INTO partner_portal_seller_prices(seller_partner_id,plan_code,unit_price_cents,agreed_by)
      VALUES(:id,:planCode,:agreedPriceCents,:actorId)`,{id:partnerId,planCode,agreedPriceCents,actorId:actor.id},t);
    order=await one(`INSERT INTO partner_portal_stock_orders
-     (seller_partner_id,plan_code,quantity_months,unit_price_cents,total_cents,payment_gateway)
-     VALUES(:id,:planCode,:quantityMonths,:agreedPriceCents,:total,:gateway) RETURNING *`,
+     (seller_partner_id,plan_code,quantity_months,unit_price_cents,total_cents,payment_gateway,service_access_only)
+     VALUES(:id,:planCode,:quantityMonths,:agreedPriceCents,:total,:gateway,true) RETURNING *`,
      {id:partnerId,planCode,quantityMonths,agreedPriceCents,total,gateway},t);
   }
   await exec(`INSERT INTO partner_portal_master_packages
@@ -406,8 +416,8 @@ export async function onboardRootMaster({partnerId,planCode,quantityMonths,agree
   const settings=await one('SELECT default_gateway FROM partner_portal_payment_settings WHERE singleton_id=1',{},t);
   const gateway=paymentMode==='manual'?'manual':settings?.default_gateway||'manual';
   const order=await one(`INSERT INTO partner_portal_stock_orders
-    (seller_partner_id,plan_code,quantity_months,unit_price_cents,total_cents,payment_gateway)
-    VALUES (:partnerId,:planCode,:quantityMonths,:agreedPriceCents,:total,:gateway) RETURNING *`,
+    (seller_partner_id,plan_code,quantity_months,unit_price_cents,total_cents,payment_gateway,service_access_only)
+    VALUES (:partnerId,:planCode,:quantityMonths,:agreedPriceCents,:total,:gateway,true) RETURNING *`,
     {partnerId,planCode,quantityMonths,agreedPriceCents,total,gateway},t);
   await exec(`INSERT INTO partner_portal_master_packages
     (partner_id,plan_code,package_snapshot,first_order_id,monthly_fee_cents,status)
@@ -433,12 +443,16 @@ export async function activateMasterPackageForPaidOrder(orderId,t){
  WHERE partner_id=:partnerId`,{partnerId:row.partner_id},t);return;}
  }
  await applyMasterBenefits(row.partner_id,snapshot,row.monthly_fee_cents,t);
+ const duration=await one('SELECT quantity_months FROM partner_portal_stock_orders WHERE id=:orderId',{orderId},t);
  if(row.created_user_id){
-  const duration=await one('SELECT quantity_months FROM partner_portal_stock_orders WHERE id=:orderId',{orderId},t);
   await exec(`UPDATE partners SET starts_at=now(),ends_at=now() + make_interval(months => :months),
     status='active',status_reason=NULL
     WHERE id=:id AND status='suspended' AND status_reason='PENDING_PORTAL_MASTER_PAYMENT'`,
     {id:row.partner_id,months:duration.quantity_months},t);
+ }else{
+  // Existing account: extend the paid period once on activation, rather than leaving its old expiry.
+  await exec(`UPDATE partners SET ends_at=GREATEST(ends_at,now()) + make_interval(months => :months)
+     WHERE id=:id AND status='active'`,{id:row.partner_id,months:duration.quantity_months},t);
  }
  await exec(`UPDATE partner_portal_master_packages SET status='active',activated_at=now(),updated_at=now()
  WHERE partner_id=:id`,{id:row.partner_id},t);

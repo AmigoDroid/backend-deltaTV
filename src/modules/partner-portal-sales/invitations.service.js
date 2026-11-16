@@ -9,6 +9,8 @@ import {env} from '../../config/env.js';
 import {addMonthsUtc,safeTotal,resaleAllowed} from './sales.rules.js';
 import {packageSnapshot,isPaidInviteReady} from './commercial-v2.rules.js';
 import {invalidatePlan} from '../service-plans/plan.service.js';
+import {applyServicePackageToPartner} from '../service-packages/package.apply.js';
+import {ownPermissions} from './commercial-v2.service.js';
 import {PORTAL_INVITE_TTL_MS,normalizePortalInviteEmail,verifyPortalInviteInput,portalInviteUrl} from './invitations.rules.js';
 
 const error=(status,code,message)=>{throw new AppError(status,code,message);};
@@ -46,11 +48,11 @@ async function returnReservation(row,t,status){
   const released=await one(`UPDATE partner_portal_sales_invitations SET status=:status,updated_at=now()
     WHERE id=:id AND status='pending' AND payment_status<>'paid' RETURNING *`,{id:row.id,status},t);
   if(!released)return false;
-  await run(`UPDATE partner_portal_stock SET available_months=available_months+:months,updated_at=now()
+  if(released.stock_reserved)await run(`UPDATE partner_portal_stock SET available_months=available_months+:months,updated_at=now()
     WHERE seller_partner_id=:seller AND plan_code=:plan`,{months:released.months,seller:released.seller_partner_id,plan:released.plan_code},t);
   if(status==='expired')await audit({actor:{type:'system',id:null},action:'portal.sales.invitation.expired',
     entityType:'partner_portal_sales_invitation',entityId:row.id,metadata:{sellerId:row.seller_partner_id,
-      monthsReturned:row.months,planCode:row.plan_code},transaction:t});
+      monthsReturned:row.stock_reserved?row.months:0,planCode:row.plan_code},transaction:t});
   return true;
 }
 /** Recolhe reservas expiradas do vendedor sem cron e sem apagar histórico. */
@@ -86,8 +88,9 @@ export async function createInvitation({sellerPartnerId,invitedName,invitedEmail
   const row=await tx(async t=>{
     await activeSeller(sellerPartnerId,t);
     if(inviteType==='submaster'){
-      const gate=await one('SELECT can_create_submasters FROM partner_portal_sellers WHERE partner_id=:sellerPartnerId',{sellerPartnerId},t);
-      if(!gate?.can_create_submasters)error(403,'SUBMASTER_CREATION_FORBIDDEN','Sua conta não possui permissão para cadastrar Submasters.');
+      const state=await ownPermissions(sellerPartnerId);
+      if(!state.enabled||!state.permissions?.canCreateSubmasters)
+        error(403,'SUBMASTER_CREATION_FORBIDDEN','Sua rede não possui permissão para cadastrar Submasters.');
     }
     await reclaimExpired(sellerPartnerId,t);
     await reclaimExpiredEmail(email,t);
@@ -110,19 +113,16 @@ export async function createInvitation({sellerPartnerId,invitedName,invitedEmail
       if(!seller?.can_manage_gateways||!configured)error(409,'SELLER_GATEWAY_UNAVAILABLE','Configure seu gateway de pagamento antes de gerar checkout.');
       paymentGateway=seller.default_gateway;
     }
-    // O UPDATE condicional reserva meses em uma única operação atômica.
-    const debited=await one(`UPDATE partner_portal_stock SET available_months=available_months-:months,updated_at=now()
-      WHERE seller_partner_id=:sellerPartnerId AND plan_code=:planCode AND available_months >= :months RETURNING available_months`,
-      {sellerPartnerId,planCode,months},t);
-    if(!debited)error(409,'INSUFFICIENT_PORTAL_STOCK','Estoque pré-pago insuficiente para reservar este convite.');
+    // Uma venda do PAINEL DO PARCEIRO não consome saldo de licenças ou meses.
+    // Contratos antigos com stock_reserved=true continuam reconciliáveis.
     const invite=await one(`INSERT INTO partner_portal_sales_invitations
       (seller_partner_id,token_hash,invited_name,invited_email,invite_type,plan_code,months,
-       unit_resale_cents,monthly_fee_cents,created_by,expires_at,package_snapshot,payment_gateway,payment_total_cents)
+       unit_resale_cents,monthly_fee_cents,created_by,expires_at,package_snapshot,payment_gateway,payment_total_cents,stock_reserved)
       VALUES (:sellerPartnerId,:tokenHash,:invitedName,:email,:inviteType,:planCode,:months,
-        :unitResaleCents,:monthlyFeeCents,:actorId,:expiresAt,CAST(:snapshot AS jsonb),:paymentGateway,:paymentTotal) RETURNING *`,
+        :unitResaleCents,:monthlyFeeCents,:actorId,:expiresAt,CAST(:snapshot AS jsonb),:paymentGateway,:paymentTotal,false) RETURNING *`,
       {sellerPartnerId,tokenHash,invitedName:invitedName.trim(),email,inviteType,planCode,months,unitResaleCents,monthlyFeeCents,expiresAt,actorId:actor.id,snapshot:JSON.stringify(snapshot),paymentGateway,paymentTotal:safeTotal(unitResaleCents,months)},t);
     await audit({actor,action:'portal.sales.invitation.created',entityType:'partner_portal_sales_invitation',entityId:invite.id,
-      metadata:{sellerPartnerId,email,inviteType,months,planCode,stockReserved:true,priceVerified:false},transaction:t});
+      metadata:{sellerPartnerId,email,inviteType,months,planCode,stockReserved:false,priceVerified:false},transaction:t});
     return invite;
   });
   let emailSent=false;
@@ -144,7 +144,7 @@ export async function createInvitation({sellerPartnerId,invitedName,invitedEmail
       text:`Olá, ${invitedName}!\n\nVocê recebeu um convite para acessar o Painel do Parceiro DeltaTV, com ${months} mês(es) de acesso contratado.\n\nConclua seu cadastro por este link (72 horas):\n${link}\n${checkoutUrl?'\nPagamento seguro: '+checkoutUrl+'\n':''}\nSe não solicitou, ignore.`,
       html:`<div style="font:16px Arial,sans-serif"><h2>Delta TV — Painel do Parceiro</h2><p>Olá, ${escapeMailHtml(invitedName)}!</p><p>Você recebeu um convite comercial para ${months} mês(es) de acesso.</p><p><a href="${escapeMailHtml(link)}">Concluir cadastro no Painel do Parceiro</a></p>${checkoutUrl?`<p><a href="${escapeMailHtml(checkoutUrl)}">Pagar acesso</a></p>`:''}<p>O convite expira em 72 horas.</p></div>`});
     emailSent=true;
-  }catch(e){warning=[warning,'Convite reservado, mas o e-mail não foi enviado. Copie o link e encaminhe ao cliente com segurança.'].filter(Boolean).join(' ');}
+  }catch(e){warning=[warning,'Convite criado, mas o e-mail não foi enviado. Copie o link e encaminhe ao cliente com segurança.'].filter(Boolean).join(' ');}
   // O link não fica salvo em texto puro: só é retornado nesta primeira resposta ao vendedor.
   return {id:row.id,invitedEmail:email,inviteType,planCode,months,expiresAt:row.expires_at,link,emailSent,warning,checkoutUrl,pixCode,paymentGateway:row.payment_gateway};
 }
@@ -159,7 +159,7 @@ export async function revokeInvitation(sellerId,invitationId,actor){
     const released=await returnReservation(row,t,'revoked');
     await audit({actor,action:'portal.sales.invitation.revoked',entityType:'partner_portal_sales_invitation',entityId:row.id,
       metadata:{sellerId,monthsReturned:released?row.months:0,planCode:row.plan_code},transaction:t});
-    return {ok:true,stockRestored:released};
+    return {ok:true,stockRestored:released&&!!row.stock_reserved};
   });
 }
 export async function verifyInvitation(token){
@@ -196,16 +196,7 @@ export async function completeInvitation({token,companyName,password}){
     // Older invitations with no snapshot remain legacy and do NOT change behavior.
     const snapshot=row.package_snapshot;
     if(snapshot){
-      await run(`INSERT INTO partner_service_plans(partner_id,tier,max_servers_override,auto_failover_override,
-        auto_priority_override,email_alerts_override,detailed_history_override)
-        VALUES(:partnerId,:tier,:dns,:failover,:priority,:alerts,:history)`,
-        {partnerId:partner.id,tier:snapshot.tier,dns:snapshot.maxDns===null?0:snapshot.maxDns,
-         failover:snapshot.autoFailover,priority:snapshot.autoPriority,alerts:snapshot.emailAlerts,
-         history:snapshot.detailedHistory},t);
-      await run(`INSERT INTO content_partner_terms(partner_id,mode,activation_limit,fixed_fee_cents)
-        VALUES(:partnerId,:mode,:limit,0)`,{
-         partnerId:partner.id,mode:snapshot.activationLimit===null?'fixed_unlimited':'fixed_limited',
-         limit:snapshot.activationLimit},t);
+      await applyServicePackageToPartner(partner.id,snapshot,t,{recordAssignment:true});
     }
     if(row.invite_type==='submaster'){
       await run(`INSERT INTO partner_portal_sellers(partner_id,parent_partner_id,role,can_sell,active,
@@ -228,7 +219,7 @@ export async function completeInvitation({token,companyName,password}){
       {id:row.id,consumedHash:hashToken(`consumed:${row.id}:${crypto.randomBytes(12).toString('hex')}`),partnerId:partner.id},t);
     await audit({actor:{type:'anonymous',id:null},action:'portal.sales.invitation.accepted',entityType:'partner',entityId:partner.id,
       metadata:{invitationId:row.id,sellerId:row.seller_partner_id,contractId:contract.id,
-        planCode:row.plan_code,months:row.months,inviteType:row.invite_type,createdUserId:user.id,stockAlreadyReserved:true},transaction:t});
+        planCode:row.plan_code,months:row.months,inviteType:row.invite_type,createdUserId:user.id,stockAlreadyReserved:!!row.stock_reserved},transaction:t});
     if(snapshot)invalidatePlan(partner.id);
     return {ok:true,message:'Cadastro concluído. Entre no Painel do Parceiro com seu e-mail e senha.',partnerId:partner.id};
   });
@@ -252,7 +243,7 @@ export async function adminRevokeInvitation(invitationId,actor){
     const released=await returnReservation(row,t,'revoked');
     await audit({actor,action:'portal.sales.invitation.admin_revoked',entityType:'partner_portal_sales_invitation',entityId:row.id,
       metadata:{sellerId:row.seller_partner_id,monthsReturned:released?row.months:0,planCode:row.plan_code},transaction:t});
-    return {ok:true,stockRestored:released};
+    return {ok:true,stockRestored:released&&!!row.stock_reserved};
   });
 }
 

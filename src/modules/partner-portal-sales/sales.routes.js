@@ -95,16 +95,26 @@ adminPortalSales.post('/orders/:id/recheck',pixCreateLimiter,validate({params:ac
 adminPortalSales.get('/candidates',validate({query:z.object({q:z.string().trim().max(80).default('')})}),async(req,res)=>res.json(await svc.adminCandidates(req.valid.query.q)));
 adminPortalSales.post('/sellers',validate({body:z.object({partnerId:uuid,parentPartnerId:uuid.nullable().optional()}).strict()}),async(req,res)=>res.status(201).json(await svc.registerSeller(req.valid.body,actorOf(req))));
 adminPortalSales.patch('/sellers/:id',validate({params:actionId,body:z.object({active:z.boolean().optional(),canSell:z.boolean().optional()}).strict().refine(x=>Object.keys(x).length>0)}),async(req,res)=>res.json(await svc.setSellerState(req.valid.params.id,req.valid.body,actorOf(req))));
-adminPortalSales.put('/plans',validate({body:z.object({code:z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/),name:z.string().trim().min(2).max(120),wholesaleCents:cents.min(1),minResaleCents:cents.min(1),active:z.boolean().default(true)}).strict()}),async(req,res)=>res.json(await svc.savePlan(req.valid.body,actorOf(req))));
-adminPortalSales.post('/orders',validate({body:stockOrder}),async(req,res)=>res.status(201).json(await svc.createStockOrder(req.valid.body,actorOf(req))));
+adminPortalSales.put('/plans',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Crie e edite os Pacotes de Serviço na central da DeltaTV.');});
+adminPortalSales.post('/orders',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Novas vendas de acesso não usam estoque. Cadastre o Master com um Pacote de Serviço.');});
 adminPortalSales.post('/orders/:id/settle',validate({params:actionId,body:z.object({settlementRef:z.string().trim().min(6).max(120),method:z.enum(['pix_manual_confirmed','bank_manual_confirmed','cash_manual_confirmed'])}).strict()}),async(req,res)=>res.json(await svc.settleStockOrder(req.valid.params.id,req.valid.body,actorOf(req))));
-adminPortalSales.post('/exceptions',validate({body:z.object({sellerPartnerId:uuid,planCode:z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/),quantityMonths:qty,reason:z.string().trim().min(10).max(500)}).strict()}),async(req,res)=>res.status(201).json(await svc.grantException(req.valid.body,actorOf(req))));
-adminPortalSales.post('/contracts',validate({body:assignment}),async(req,res)=>res.status(201).json(await svc.assignAccess(req.valid.body,actorOf(req),{admin:true})));
+adminPortalSales.post('/exceptions',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Concessões gratuitas de acesso são cadastradas diretamente pela DeltaTV.');});
+adminPortalSales.post('/contracts',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Atribua o Pacote de Serviço ao parceiro pela central. Não existe estoque de acessos.');});
 
 export const partnerPortalSales=Router();
 partnerPortalSales.use(noStore);
 partnerPortalSales.use('/usage',partnerPortalUsage);
 partnerPortalSales.get('/my-package',async(req,res)=>res.json(await v2.myPackage(req.user.partnerId)));
+partnerPortalSales.get('/packages',async(req,res)=>{
+ const state=await v2.ownPermissions(req.user.partnerId);
+ if(!state.enabled||!state.permissions?.canSell)throw new AppError(403,'PACKAGE_SALES_FORBIDDEN','Sua rede não tem permissão para vender pacotes.');
+ const rows=await v2.packages();
+ res.json({items:rows.filter(p=>p.active&&p.service_tier).map(p=>({
+  code:p.code,name:p.name,maxDns:p.max_dns,activationLimit:p.activation_limit,
+  autoFailover:p.auto_failover,autoPriority:p.auto_priority,emailAlerts:p.email_alerts,detailedHistory:p.detailed_history,
+  minResaleCents:Number(p.min_resale_cents)
+ }))});
+});
 partnerPortalSales.get('/permissions',async(req,res)=>res.json(await v2.ownPermissions(req.user.partnerId)));
 partnerPortalSales.patch('/submasters/:id/permissions',validate({params:actionId,body:permissionsBody}),async(req,res)=>
  res.json(await v2.updateChildPermissions({parentId:req.user.partnerId,childId:req.valid.params.id,input:req.valid.body,actor:actorOf(req)})));
@@ -144,8 +154,8 @@ partnerPortalSales.post('/orders/:id/confirm-return',allowFinancialActions,pixCr
  res.json(await checkout.confirmReturn(req.valid.params.id,req.user.partnerId,req.valid.body)));
 partnerPortalSales.post('/orders/:id/payment-method',allowFinancialActions,validate({params:actionId,body:z.object({mode:z.enum(['manual','default'])}).strict()}),async(req,res)=>
  res.json(await checkout.chooseStockOrderPaymentMethod(req.valid.params.id,req.user.partnerId,req.valid.body.mode,actorOf(req))));
-partnerPortalSales.post('/transfers',validate({body:transfer}),async(req,res)=>res.status(201).json(await svc.transfer({...req.valid.body,sellerPartnerId:req.user.partnerId},actorOf(req))));
-partnerPortalSales.post('/renewals',validate({body:assignment.omit({sellerPartnerId:true})}),async(req,res)=>res.status(201).json(await svc.assignAccess({...req.valid.body,sellerPartnerId:req.user.partnerId},actorOf(req))));
+partnerPortalSales.post('/transfers',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','O Painel do Parceiro não possui estoque de revenda. Convide um Submaster diretamente.');});
+partnerPortalSales.post('/renewals',(_req,_res)=>{throw new AppError(410,'LEGACY_PORTAL_STOCK_DISABLED','Renovação do contrato deve usar cobrança de serviço, não estoque.');});
 
 // Convites comerciais pagam o PAINEL DO PARCEIRO; nunca criam licenças de TV.
 const inviteBody=z.object({

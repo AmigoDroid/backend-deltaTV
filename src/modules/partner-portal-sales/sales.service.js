@@ -216,7 +216,7 @@ export async function settleStockOrder(orderId,{settlementRef,method},actor) {
     const updated=await one(`UPDATE partner_portal_stock_orders SET status='paid',settlement_ref=:settlementRef,
       settlement_method=:method,approved_by=:actorId,settled_at=now() WHERE id=:orderId RETURNING *`,
       {orderId,settlementRef,method,actorId:actor.id},t);
-    await receiveStock(row.seller_partner_id,row.plan_code,row.quantity_months,t);
+    if(!row.service_access_only)await receiveStock(row.seller_partner_id,row.plan_code,row.quantity_months,t);
     await activateMasterPackageForPaidOrder(orderId,t);
     await audit({actor,action:'portal.sales.stock.paid',entityType:'portal_stock_order',entityId:orderId,metadata:{sellerPartnerId:row.seller_partner_id,planCode:row.plan_code,quantityMonths:row.quantity_months,totalCents:Number(row.total_cents),settlementRef,method,verifiedManually:true},transaction:t});
     return updated;
@@ -245,7 +245,7 @@ export async function settleVerifiedPortalOrder(orderId,{gateway,transactionNsu,
       settlement_method=:gateway,settled_at=now(),payment_verified_at=now(),
       payment_transaction_nsu=:transactionNsu,payment_slug=:slug
       WHERE id=:orderId RETURNING *`,{orderId,settlementRef,gateway,transactionNsu,slug},t);
-    await receiveStock(order.seller_partner_id,order.plan_code,order.quantity_months,t);
+    if(!order.service_access_only)await receiveStock(order.seller_partner_id,order.plan_code,order.quantity_months,t);
     await activateMasterPackageForPaidOrder(orderId,t);
     await audit({actor:{type:'system',role:'system'},action:'portal.sales.stock.payment_api_verified',
       entityType:'portal_stock_order',entityId:orderId,metadata:{gateway,orderId,amountCents,transactionNsu,verifiedByProvider:true,quantityMonths:order.quantity_months},transaction:t});

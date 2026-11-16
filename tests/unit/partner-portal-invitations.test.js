@@ -30,13 +30,15 @@ test('migração aditiva mantém licença de TV e contratos existentes intocados
  assert.match(migration,/WHERE status='pending'/);
  assert.doesNotMatch(migration,/DROP TABLE|TRUNCATE|DELETE FROM partner_portal_access_contracts|UPDATE licenses/i);
 });
-test('reservas são debitadas ao emitir, devolvidas quando revogadas ou expiradas e não debitadas novamente no aceite',()=>{
+test('convites novos de acesso ao painel não debitam estoque, mas preservam estornos legados',()=>{
  const service=source('modules/partner-portal-sales/invitations.service.js');
- assert.match(service,/UPDATE partner_portal_stock SET available_months=available_months-:months/);
+ assert.doesNotMatch(service,/UPDATE partner_portal_stock SET available_months=available_months-:months/);
+ assert.match(service,/stock_reserved\)\s*await run/);
+ assert.match(service,/paymentTotal,false\) RETURNING/);
  assert.match(service,/UPDATE partner_portal_stock SET available_months=available_months\+:months/);
- assert.match(service,/if\(row.status!==['"]pending['"]\)/);
+ assert.match(service,/if\(row.status!=='pending'\)/);
  assert.match(service,/status='accepted'/);
- assert.match(service,/stockAlreadyReserved:true/);
+ assert.match(service,/stockAlreadyReserved:!!row.stock_reserved/);
  assert.doesNotMatch(service,/\b(?:License|Activation|license_stock|reseller_network)\b/);
 });
 test('aceite cria parceiro de conteúdo e contrato na mesma transação; link só pode ser usado uma vez',()=>{
