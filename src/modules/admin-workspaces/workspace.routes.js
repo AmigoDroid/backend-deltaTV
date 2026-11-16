@@ -272,8 +272,13 @@ router.patch("/partners/:id",validate({params:ident,body:partnerChanges}),async(
       throw new AppError(403,"NETWORK_PERMISSION_DENIED","Sem permissão para editar esta conta.");
     if(b.endsAt && b.endsAt<=p.startsAt)throw new AppError(422,"INVALID_PERIOD","Vencimento inválido.");
     await verifyLimitsInUse(p.id,b,t);
-    if(b.planKey){const plan=await ownedPlan(root,b.planKey,p.kind,t);
-      const technical=await PartnerServicePlan.findByPk(p.id,{transaction:t});
+    // Mesmo um PATCH contendo apenas dnsLimit deve respeitar o plano já atribuído.
+    // Nunca confiar que o cliente repetirá planKey em toda edição.
+    if(b.planKey!==undefined || b.dnsLimit!==undefined){
+      const technical=await PartnerServicePlan.findByPk(p.id,{transaction:t,lock:t.LOCK.UPDATE});
+      const effectivePlanKey=b.planKey??technical?.tier;
+      if(!effectivePlanKey)throw new AppError(409,"PLAN_REQUIRED","A conta precisa de um plano vigente antes de alterar DNS.");
+      const plan=await ownedPlan(root,effectivePlanKey,p.kind,t);
       const effective=b.dnsLimit!==undefined ? b.dnsLimit : (technical?.maxServersOverride ?? plan.maxServers);
       if(plan.maxServers!==null && (effective===null||effective===0||effective>plan.maxServers))
         throw new AppError(422,"DNS_ABOVE_PLAN","O DNS excede o limite do plano.");
@@ -334,6 +339,10 @@ router.get("/partners/:id/codes",requireScope("network:resources:read"),validate
 });
 router.post("/partners/:id/codes",requireScope("network:resources:write"),validate({params:ident,body:codeInput}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);
+  // Códigos de Revenda dependem de uma licença de TV e do respectivo financeiro.
+  // Não fabricar uma licença passando licenseMonths:null para o serviço legado.
+  if(p.kind==="reseller")
+    throw new AppError(403,"RESELLER_LICENSE_DELEGATION_REQUIRED","Códigos de revenda exigem uma licença de TV previamente autorizada. Utilize o fluxo de licenças da DeltaTV.");
   const requested=req.valid.body.maxActivations;
   const cap=req.user.networkLimits?.maxActivationsPerPartner;
   if(requested !== undefined && (cap != null && (requested===null || requested>cap) ||
@@ -341,6 +350,26 @@ router.post("/partners/:id/codes",requireScope("network:resources:write"),valida
     throw new AppError(403,"CODE_ACTIVATION_QUOTA","Este código excede o limite de ativações autorizado para a conta.");
   // Nenhuma emissão de estoque/licença de TV é autorizada por essa permissão.
   res.status(201).json(await codesService.createCode(p.id,{...req.valid.body,licenseMonths:null},actorOf(req)));
+});
+// Edição e revogação delegadas somente após validar o titular da parceria.
+// Exclusão irreversível e movimentação de licenças de TV seguem exclusivas da DeltaTV.
+const ownedCodeParams=z.object({id:z.string().uuid(),codeId:z.string().uuid()});
+const codeEditInput=codeInput.omit({code:true}).partial().strict()
+  .refine(v=>Object.keys(v).length>0,{message:"Nenhuma alteração informada."});
+router.patch("/partners/:id/codes/:codeId",requireScope("network:resources:write"),
+  validate({params:ownedCodeParams,body:codeEditInput}),async(req,res)=>{
+  const p=await ownedPartner(tenant(req),req.valid.params.id);
+  const requested=req.valid.body.maxActivations,cap=req.user.networkLimits?.maxActivationsPerPartner;
+  if(requested!==undefined && (cap!=null&&(requested===null||requested>cap) ||
+       p.deviceLimit!=null&&(requested===null||requested>p.deviceLimit)))
+    throw new AppError(403,"CODE_ACTIVATION_QUOTA","O código excede o limite permitido.");
+  res.json(await codesService.updateCode(p.id,req.valid.params.codeId,req.valid.body,actorOf(req)));
+});
+router.post("/partners/:id/codes/:codeId/revoke",requireScope("network:resources:write"),
+  validate({params:ownedCodeParams}),async(req,res)=>{
+  const p=await ownedPartner(tenant(req),req.valid.params.id);
+  await codesService.revokeCode(p.id,req.valid.params.codeId,actorOf(req));
+  res.status(204).end();
 });
 router.get("/partners/:id/providers",requireScope("network:resources:read"),validate({params:ident}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);

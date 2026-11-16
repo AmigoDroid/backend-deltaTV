@@ -28,34 +28,39 @@ export async function runPixJobs() {
 }
 
 export function startScheduler() {
+  let stopped = false;
+  const timers = [];
+  const after = (fn,ms) => {const handle=setTimeout(()=>{if(!stopped)fn();},ms);handle.unref?.();timers.push(handle);};
+  const every = (fn,ms) => {const handle=setInterval(()=>{if(!stopped)fn();},ms);handle.unref?.();timers.push(handle);};
   let billingRunning = false;
   const safe = async (recovery = false) => {
-    if (billingRunning) return;
+    if (stopped || billingRunning) return;
     billingRunning = true;
     try { await runBillingJobs({ recovery }); }
     catch (e) { console.error("[jobs] falha:", e.message); }
     finally { billingRunning = false; }
   };
-  setTimeout(() => { void safe(true); }, 15_000).unref();
-  setInterval(() => { void safe(false); }, 60 * 60 * 1000).unref();
-  setInterval(() => { void safe(true); }, 24 * 60 * 60 * 1000).unref();
+  after(() => { void safe(true); }, 15_000);
+  every(() => { void safe(false); }, 60 * 60 * 1000);
+  every(() => { void safe(true); }, 24 * 60 * 60 * 1000);
   const safePix = () => runPixJobs().catch((e) => console.error("[jobs] pix falhou:", e.message));
-  setTimeout(safePix, 20_000).unref();
-  setInterval(safePix, 2 * 60 * 1000).unref();
+  after(safePix, 20_000);
+  every(safePix, 2 * 60 * 1000);
   // Expira reservas comerciais a cada 5 minutos. Nunca afeta licenças de TV.
   let commercialSweepRunning=false;
   const commercialSweep=async()=>{
-    if(commercialSweepRunning)return;
+    if(stopped || commercialSweepRunning)return;
     commercialSweepRunning=true;
     try{const result=await sweepExpiredCommercialInvites();if(result.expired)console.info(`[portal-sales] ${result.expired} convites vencidos: estoque devolvido`);}
     catch(e){console.warn('[portal-sales] expiração de convites falhou:',e.message)}
     finally{commercialSweepRunning=false;}
   };
-  setTimeout(()=>void commercialSweep(),25_000).unref();
-  setInterval(()=>void commercialSweep(),5*60*1000).unref();
+  after(()=>void commercialSweep(),25_000);
+  every(()=>void commercialSweep(),5*60*1000);
   // Limpa apenas os agregados antigos: não altera contratos ou ativações.
   const usageCleanup=()=>cleanupUsage().catch(e=>console.warn('[portal-usage] retenção:',e.message));
-  setTimeout(usageCleanup,50_000).unref();
-  setInterval(usageCleanup,24*60*60*1000).unref();
+  after(usageCleanup,50_000);
+  every(usageCleanup,24*60*60*1000);
   startMailWorker(); // fila de e-mails (só age se SMTP_HOST/MAIL_FROM estiverem definidos)
+  return () => {stopped=true;for(const handle of timers){clearInterval(handle);clearTimeout(handle);}};
 }

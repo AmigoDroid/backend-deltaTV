@@ -11,7 +11,18 @@ import { env } from "../config/env.js";
 const peers = new Set();
 let wss;
 const now = () => Date.now();
-const emit = (socket, data) => { if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data)); };
+// Controle de backpressure uniforme para eventos gerais e notificações.
+// Eventos de invalidação podem ser recuperados no próximo fetch; conexões
+// persistentemente lentas são encerradas para impedir crescimento ilimitado.
+const MAX_EVENT_BUFFER_BYTES = 128 * 1024;
+const emit = (socket, data) => {
+  if (socket.readyState !== WebSocket.OPEN) return false;
+  if (socket.bufferedAmount > MAX_EVENT_BUFFER_BYTES) {
+    try { socket.close(1013, "Atualize sua conexão"); } catch { socket.terminate?.(); }
+    return false;
+  }
+  try { socket.send(JSON.stringify(data)); return true; } catch { return false; }
+};
 import { canReceiveChange, sameSessionClaims } from "./routing-policy.js";
 const allowed = (peer, partnerId) => canReceiveChange(peer.user, partnerId);
 // Sessões HTTP revogadas são encerradas também no canal em tempo real.

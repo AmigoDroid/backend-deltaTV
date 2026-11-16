@@ -46,7 +46,12 @@ export function createApp() {
       allowedHeaders: ["Content-Type", "Authorization", "Range", "X-Webhook-Signature", "X-Webhook-Timestamp"],
     }),
   );
-  app.use('/api/v1/admin/control/data/import',authenticate,express.json({limit:'32mb'}));
+  // Importação de até 32 MB: validar papel ANTES de analisar payload grande.
+  app.use('/api/v1/admin/control/data/import', authenticate, (req,_res,next) => {
+    if(req.user?.role !== 'superadmin')
+      return next(new AppError(403,'DELTATV_ONLY','Importação de dados exclusiva da DeltaTV.'));
+    next();
+  }, express.json({limit:'32mb'}));
   // rawBody é necessário para validar a assinatura HMAC dos webhooks.
   app.use(express.json({ limit: "256kb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 

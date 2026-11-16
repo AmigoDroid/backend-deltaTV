@@ -58,8 +58,9 @@ const remotePruneTimer = setInterval(() => {
 }, 24*60*60*1000);
 remotePruneTimer.unref();
 let qualityTimer = null;
+let stopScheduler = () => {};
 if (env.enableScheduler) {
-  startScheduler(); startProviderMonitor();
+  stopScheduler = startScheduler(); startProviderMonitor();
   qualityTimer=setInterval(() => void assessCollectiveQuality().catch(err=>console.warn('[quality]',err.message)),60_000);
   qualityTimer.unref?.();
 }
@@ -69,6 +70,7 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     clearInterval(devicePresenceTimer);
     clearInterval(remotePruneTimer);
     if(qualityTimer)clearInterval(qualityTimer);
+    stopScheduler();
     stopProviderMonitor();
     stopRealtime();
     server.close(async () => {
