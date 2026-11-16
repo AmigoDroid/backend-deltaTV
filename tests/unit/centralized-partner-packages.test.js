@@ -30,7 +30,9 @@ test('convites comerciais novos não exigem nem consomem estoque e preservam his
 });
 test('a interface de Master usa pacote sem estoque e editores legados ficam fora do fluxo principal',()=>{
  const ui=partner('PortalSales.jsx');
- assert.match(ui,/availablePackages\.map/);
+ assert.match(ui,/packages\.map/);
+ assert.match(ui,/const \[packages, setPackages\] = useState\(\[\]\)/);
+ assert.match(ui,/setPackages\(results\[5\]\.value\.items/);
  assert.doesNotMatch(ui,/Distribuir estoque|Meses pré-pagos disponíveis|Reservar meses e emitir convite/);
  const adminSales=admin('pages/PortalSales.jsx');
  assert.doesNotMatch(adminSales,/Meses para estoque|Criar cobrança para Master/);
