@@ -26,7 +26,7 @@ const one=async(sql,replacements={},transaction)=>(await read(sql,replacements,t
 const tx=fn=>sequelize.transaction(async t=>{await run('SELECT pg_advisory_xact_lock(99111712)',{},t);return fn(t);});
 
 async function sellerRow(id,t,{locked=false,required=true}={}) {
-  const row=await one(`SELECT s.*,p.name,p.kind,p.status FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id
+  const row=await one(`SELECT s.*,p.name,p.kind,p.status,p.status_reason FROM partner_portal_sellers s JOIN partners p ON p.id=s.partner_id
     WHERE s.partner_id=:id ${locked?'FOR UPDATE OF s':''}`,{id},t);
   if(required && (!row||!isContentPartner(row.kind))) fail(403,'NOT_PORTAL_SELLER','Conta sem autorização para distribuir acessos ao Painel do Parceiro.');
   return row;
@@ -34,6 +34,8 @@ async function sellerRow(id,t,{locked=false,required=true}={}) {
 async function activeSeller(id,t,opts={}) {
   const row=await sellerRow(id,t,opts);
   if(!row.active||!row.can_sell||row.status!=='active')fail(403,'SELLER_INACTIVE','Distribuidor sem permissão ativa para vender.');
+  const mp=await one('SELECT status FROM partner_portal_master_packages WHERE partner_id=:id',{id},t);
+  if(mp?.status==='pending')fail(402,'MASTER_PAYMENT_PENDING','Confirme o pagamento para liberar as vendas.');
   // Permissão efetiva depende de TODOS os Masters da cadeia; sem limites de profundidade.
   const lineage=await one(`WITH RECURSIVE chain AS (
     SELECT s.partner_id,s.parent_partner_id,s.active,s.can_sell,p.status,ARRAY[s.partner_id] AS visited
@@ -103,6 +105,9 @@ export async function sellerEligibility(partnerId) {
     registered:false,enabled:false,role:null,
     reason:'Sua conta ainda não está habilitada como Master ou Submaster. Solicite a ativação à DeltaTV.'
   };
+  if(seller.status==='suspended'&&seller.status_reason==='PENDING_PORTAL_MASTER_PAYMENT')
+   return {registered:true,enabled:false,paymentPending:true,role:seller.role,
+    reason:'Aguardando confirmação da compra do Pacote de Serviço. Abra Meu Pacote para pagar.'};
   try {
     await activeSeller(partnerId);
     return {registered:true,enabled:true,role:seller.role,reason:null};
@@ -201,7 +206,13 @@ export async function settleStockOrder(orderId,{settlementRef,method},actor) {
     if(row.status!=='pending')fail(409,'ORDER_CLOSED','Pedido não pode ser liquidado.');
     if(row.payment_gateway!=='manual')fail(409,'GATEWAY_VERIFICATION_REQUIRED','Pedido criado com gateway automático: aguarde confirmação pela API do provedor. Não libere estoque por confirmação manual.');
     // Uma referência de pagamento bancário nunca financia dois pedidos (UNIQUE no banco).
-    await activeSeller(row.seller_partner_id,t,{locked:true});
+    const buyer=await sellerRow(row.seller_partner_id,t,{locked:true});
+    const newMasterPending=buyer.status==='suspended'&&
+      (await one(`SELECT 1 AS pending FROM partner_portal_master_packages mp JOIN partners p ON p.id=mp.partner_id
+       WHERE mp.partner_id=:id AND mp.first_order_id=:orderId AND mp.status='pending'
+       AND p.status_reason='PENDING_PORTAL_MASTER_PAYMENT'`,{id:row.seller_partner_id,orderId},t));
+    if(!buyer.active||buyer.status!=='active'&&!newMasterPending)
+      fail(403,'MASTER_DISABLED','Master bloqueado: revise a conta antes de confirmar a cobrança.');
     const updated=await one(`UPDATE partner_portal_stock_orders SET status='paid',settlement_ref=:settlementRef,
       settlement_method=:method,approved_by=:actorId,settled_at=now() WHERE id=:orderId RETURNING *`,
       {orderId,settlementRef,method,actorId:actor.id},t);

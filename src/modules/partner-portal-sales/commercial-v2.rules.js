@@ -25,3 +25,15 @@ export function canMoveUnder({subjectId,destinationId,descendants=[]}){
 export function isPaidInviteReady({package_snapshot:servicePackage,payment_gateway:gateway,payment_status:status}={}){
  return !(servicePackage||gateway!=='manual')||status==='paid';
 }
+
+/** Override opcional do limite por conta; não altera a definição nem os contratos de outros clientes. */
+export function personalizedPackage(record, activationLimit){
+ const snapshot=packageSnapshot(record);
+ if(!snapshot)throw new RangeError('Pacote de Serviço inválido');
+ if(activationLimit===undefined)return snapshot;
+ if(activationLimit!==null && (!Number.isSafeInteger(activationLimit)||activationLimit<0))
+  throw new RangeError('Limite de ativações inválido');
+ if(snapshot.activationLimit!==null && (activationLimit===null||activationLimit>snapshot.activationLimit))
+  throw new RangeError('Limite superior ao Pacote de Serviço: edite o pacote primeiro');
+ return {...snapshot,activationLimit};
+}

@@ -26,11 +26,22 @@ import { getServicePlan } from "../service-plans/plan.service.js";
 import { setCodeServers, invalidateServerPools } from "./code-pool.service.js";
 const r=Router();
 r.use(authenticate,requirePartnerRole,portalPermissionGate);
-r.use(async(req,_res,next)=>{const p=await Partner.findByPk(req.user.partnerId);if(!p|| !["content","both"].includes(p.kind)) throw new AppError(403,"FORBIDDEN","Portal exclusivo de parceiros de conteúdo.");next();});
+r.use(async(req,_res,next)=>{
+ const p=await Partner.findByPk(req.user.partnerId);
+ if(!p||!["content","both"].includes(p.kind))throw new AppError(403,"FORBIDDEN","Portal exclusivo de parceiros de conteúdo.");
+ if(p.status==='suspended'&&p.statusReason==='PENDING_PORTAL_MASTER_PAYMENT'){
+  const allowed=req.method==='GET'&&['/portal-sales/my-package','/portal-sales/permissions','/portal-sales/eligibility'].includes(req.path)
+   ||req.method==='POST'&&req.path==='/portal-sales/my-package/checkout';
+  if(!allowed)throw new AppError(402,'PORTAL_MASTER_PAYMENT_PENDING','Confirme o pagamento do Pacote de Serviço antes de utilizar o painel.');
+ }
+ next();
+});
 // Scope realtime invalidations to THIS content partnership; never broadcast to unrelated revendas.
 r.use(async(req,_res,next)=>{
   // Permite ao assinante vencido visualizar contrato/faturas e consultar distribuidor, sem liberar gestão operacional.
-  if(req.method!=="GET" || !/^\/(?:account|billing|portal-sales)(?:\/|$)/.test(req.path)) await contentPortalAccessGuard(req.user.partnerId);
+  if(!(req.method==='POST'&&req.path==='/portal-sales/my-package/checkout') &&
+   (req.method!=="GET" || !/^\/(?:account|billing|portal-sales)(?:\/|$)/.test(req.path)))
+   await contentPortalAccessGuard(req.user.partnerId);
   next();
 });
 r.use(networkResourceGuard);

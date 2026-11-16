@@ -53,6 +53,18 @@ adminPortalSales.post('/masters/onboard',stockWriteLimiter,validate({body:z.obje
   quantityMonths:z.number().int().min(1).max(100000),agreedPriceCents:cents.min(1),monthlyFeeCents:cents.default(0),
   paymentMode:z.enum(['default','manual']).default('default')}).strict()}),
  async(req,res)=>res.status(201).json(await v2.onboardRootMaster(req.valid.body,actorOf(req))));
+// Cadastro compacto. Conta + pacote + limite + permissões, com cobrança opcional.
+const masterAccount=z.discriminatedUnion('mode',[
+ z.object({mode:z.literal('existing'),partnerId:uuid}).strict(),
+ z.object({mode:z.literal('new'),companyName:z.string().trim().min(2).max(160),name:z.string().trim().min(2).max(160),
+  email:z.string().trim().email().max(200),password:z.string().min(10).max(128)}).strict()
+]);
+adminPortalSales.post('/masters/quick',stockWriteLimiter,validate({body:z.object({
+ account:masterAccount,planCode:packageCode,activationLimit:z.number().int().min(0).max(2_000_000_000).nullable(),
+ permissions:z.object(Object.fromEntries(PERMISSION_KEYS.map(k=>[k,z.boolean()]))).strict(),
+ free:z.boolean(),quantityMonths:z.number().int().min(1).max(120).default(12),
+ agreedPriceCents:cents.optional(),paymentMode:z.enum(['default','manual']).default('default')
+}).strict()}),async(req,res)=>res.status(201).json(await v2.onboardMasterSimple(req.valid.body,actorOf(req))));
 adminPortalSales.put('/negotiated-prices',validate({body:z.object({sellerId:uuid,planCode:packageCode,unitPriceCents:cents.min(1),reason:z.string().trim().min(8).max(500)}).strict()}),async(req,res)=>res.json(await v2.setAgreedMasterPrice(req.valid.body,actorOf(req))));
 adminPortalSales.get('/reparent-requests',async(_req,res)=>res.json({items:await v2.reparentRequests(null,{isAdmin:true})}));
 adminPortalSales.patch('/sellers/:id/permissions',validate({params:actionId,body:permissionsBody}),async(req,res)=>
@@ -114,6 +126,11 @@ partnerPortalSales.get('/support/tickets/:id',validate({params:actionId}),async(
 partnerPortalSales.post('/support/tickets/:id/reply',validate({params:actionId,body:supportReply}),async(req,res)=>
  res.json(await support.replyTicket(req.valid.params.id,req.valid.body,actorOf(req))));
 
+// O Master recém-cadastrado pode pagar o próprio acesso sem permissão de revenda.
+partnerPortalSales.post('/my-package/checkout',pixCreateLimiter,async(req,res)=>{
+ const id=await v2.pendingMasterOrderId(req.user.partnerId);
+ return res.json(await checkout.createCheckout(id,{sellerId:req.user.partnerId,actor:actorOf(req)}));
+});
 partnerPortalSales.get('/eligibility',async(req,res)=>res.json(await svc.sellerEligibility(req.user.partnerId)));
 partnerPortalSales.get('/',async(req,res)=>res.json(await svc.sellerOverview(req.user.partnerId)));
 const allowFinancialActions=async(req,_res,next)=>{const state=await v2.ownPermissions(req.user.partnerId);

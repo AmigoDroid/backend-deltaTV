@@ -39,3 +39,22 @@ test('convite novo manual exige baixa explícita; convite legado permanece compa
  assert.equal(isPaidInviteReady({package_snapshot:null,payment_gateway:'mercadopago',payment_status:'unpaid'}),false);
  assert.equal(isPaidInviteReady({package_snapshot:{code:'pro'},payment_gateway:'infinitepay',payment_status:'paid'}),true);
 });
+
+import {personalizedPackage} from '../../src/modules/partner-portal-sales/commercial-v2.rules.js';
+test('cadastro simples permite reduzir limite de ativações sem modificar pacote original',()=>{
+ const p={code:'comercial',name:'Comercial',service_tier:'partner_professional',activation_limit:500,max_dns:5};
+ assert.equal(personalizedPackage(p,100).activationLimit,100);
+ assert.equal(p.activation_limit,500);
+ assert.equal(personalizedPackage(p,undefined).activationLimit,500);
+});
+test('cadastro simples impede conceder ilimitado quando pacote tem teto',()=>{
+ const p={code:'comercial',name:'Comercial',service_tier:'partner_professional',activation_limit:500,max_dns:5};
+ assert.throws(()=>personalizedPackage(p,null),/superior/);
+ assert.throws(()=>personalizedPackage(p,501),/superior/);
+ assert.throws(()=>personalizedPackage(p,-1),/inválido/);
+});
+test('pacote sem teto aceita configuração individual ilimitada',()=>{
+ const p={code:'comercial',name:'Comercial',service_tier:'partner_professional',activation_limit:null,max_dns:5};
+ assert.equal(personalizedPackage(p,null).activationLimit,null);
+ assert.equal(personalizedPackage(p,20).activationLimit,20);
+});
