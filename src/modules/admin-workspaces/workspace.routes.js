@@ -210,22 +210,32 @@ router.put("/plans/:key",requireScope("network:plans:write"),validate({params:z.
   });
   invalidatePlan();invalidateServerPools();clearResolutionCache();res.json(plan);
 });
+// Consultas de recursos são sempre vinculadas a uma conta do mesmo titular.
+// Permitir a seleção de conta sem conceder leitura da ficha comercial inteira.
+const INDIRECT_ACCOUNT_READS=Object.freeze([
+  "network:resources:read","network:devices:read","network:billing:read","network:members:read",
+]);
+const hasIndirectAccountRead=req=>INDIRECT_ACCOUNT_READS.some(p=>adminHasNetworkPermission(req.user,p));
 router.get("/partners",validate({query:listQuery}),async(req,res)=>{
   const {page,pageSize,q,kind}=req.valid.query;
-  if(!adminHasNetworkPermission(req.user,"network:partners:read") && !adminHasNetworkPermission(req.user,"network:resellers:read"))
+  const indirect=hasIndirectAccountRead(req);
+  const directPartners=adminHasNetworkPermission(req.user,"network:partners:read"),
+    directResellers=adminHasNetworkPermission(req.user,"network:resellers:read");
+  if(!directPartners && !directResellers && !indirect)
     throw new AppError(403,"NETWORK_PERMISSION_DENIED","Consulta não autorizada.");
-  if(kind==="reseller"&&!adminHasNetworkPermission(req.user,"network:resellers:read") ||
-     kind==="content"&&!adminHasNetworkPermission(req.user,"network:partners:read"))
-     throw new AppError(403,"NETWORK_PERMISSION_DENIED","Consulta não autorizada.");
-  const mayPartner=adminHasNetworkPermission(req.user,"network:partners:read"),
-    mayReseller=adminHasNetworkPermission(req.user,"network:resellers:read");
+  if(kind==="reseller"&&!directResellers&&!indirect || kind==="content"&&!directPartners&&!indirect)
+    throw new AppError(403,"NETWORK_PERMISSION_DENIED","Consulta não autorizada.");
+  const mayPartner=directPartners||indirect, mayReseller=directResellers||indirect;
   const types=kind === "both"?(mayPartner&&mayReseller?["both"]:[]):
     kind?[kind,...(mayPartner&&mayReseller?["both"]:[])]:[
       ...(mayPartner?["content"]:[]),...(mayReseller?["reseller"]:[]),
       ...(mayPartner&&mayReseller?["both"]:[])];
   const where={ownerAdminId:tenant(req),kind:{[Op.in]:types},status:{[Op.ne]:"deleted"}};
   if(q){const search=`%${q.replace(/[%_\\]/g,"")}%`;where[Op.or]=[{name:{[Op.iLike]:search}},{contactEmail:{[Op.iLike]:search}},{slug:{[Op.iLike]:search}}]}
-  const {rows,count}=await Partner.findAndCountAll({where,attributes:["id","name","slug","kind","status","monthlyFeeCents","deviceLimit","endsAt","createdAt"],
+  const canSeeContract=directPartners||directResellers||adminHasNetworkPermission(req.user,"network:billing:read");
+  const attributes=canSeeContract?["id","name","slug","kind","status","monthlyFeeCents","deviceLimit","endsAt","createdAt"]:
+    ["id","name","kind","status","createdAt"];
+  const {rows,count}=await Partner.findAndCountAll({where,attributes,
     order:[["createdAt","DESC"]],offset:(page-1)*pageSize,limit:pageSize});
   res.json(mapPage(rows,count,{page,pageSize}));
 });
@@ -248,13 +258,20 @@ router.post('/partners',validate({body:partnerBody}),async(req,res)=>{
 });
 router.get("/partners/:id",validate({params:ident}),async(req,res)=>{
   const root=tenant(req),p=await ownedPartner(root,req.valid.params.id);
-  const perm=p.kind==="reseller"?"network:resellers:read":"network:partners:read";
-  if(!adminHasNetworkPermission(req.user,perm) || p.kind==="both"&&!adminHasNetworkPermission(req.user,"network:resellers:read"))
-    throw new AppError(403,"NETWORK_PERMISSION_DENIED","Sem acesso à conta.");
-  const [terms,plan,users]=await Promise.all([ContentPartnerTerms.findByPk(p.id),PartnerServicePlan.findByPk(p.id),
+  const directPartner=adminHasNetworkPermission(req.user,"network:partners:read"),
+    directReseller=adminHasNetworkPermission(req.user,"network:resellers:read"),
+    indirect=hasIndirectAccountRead(req);
+  const direct=p.kind==="reseller"?directReseller:p.kind==="both"?directPartner&&directReseller:directPartner;
+  if(!direct&&!indirect)throw new AppError(403,"NETWORK_PERMISSION_DENIED","Sem acesso à conta.");
+  const mayFinancial=direct||adminHasNetworkPermission(req.user,"network:billing:read");
+  const [terms,plan,users]=await Promise.all([
+    mayFinancial?ContentPartnerTerms.findByPk(p.id):Promise.resolve(null),
+    direct||adminHasNetworkPermission(req.user,"network:plans:read")?PartnerServicePlan.findByPk(p.id):Promise.resolve(null),
     adminHasNetworkPermission(req.user,"network:members:read")?
       AdminUser.findAll({where:{partnerId:p.id,role:"partner",deletedAt:null},attributes:["id","name","email","status","createdAt"]}):Promise.resolve([])]);
-  res.json({partner:p,contract:terms,plan,users});
+  // Selecionar uma conta para visualizar dispositivos não revela credenciais ou contrato.
+  const partner=direct?p:{id:p.id,name:p.name,kind:p.kind,status:p.status};
+  res.json({partner,contract:terms,plan,users});
 });
 router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(req,res)=>{
  const root=tenant(req),b=req.valid.body;
