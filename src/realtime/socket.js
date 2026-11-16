@@ -87,7 +87,7 @@ export function broadcastChange({ partnerId = null, topic = "data" } = {}) {
 // Contagem de aparelhos para os painéis administrativos, sem enviar dados de aparelhos.
 export function broadcastDevicePresence(online, windowSeconds) {
   for (const peer of peers) {
-    if (peer.user.role !== "partner") emit(peer.socket, { type: "device-presence", online, windowSeconds });
+    if (peer.user.role === "superadmin") emit(peer.socket, { type: "device-presence", online, windowSeconds });
   }
 }
 function broadcastPresence(partnerId) {
@@ -95,7 +95,7 @@ function broadcastPresence(partnerId) {
   const online = presence(partnerId);
   const lastDisconnectedAt = online ? null : new Date().toISOString();
   // O horário de desconexão viaja só como metadado, sem informações sensíveis.
-  for (const peer of peers) if (peer.user.role !== "partner") emit(peer.socket, {
+  for (const peer of peers) if (peer.user.role === "superadmin") emit(peer.socket, {
     type: "partner-presence", partnerId, online, onlineCount: onlinePartnerCount(), lastDisconnectedAt,
   });
 }
@@ -180,7 +180,7 @@ export function attachRealtime(server) {
           if (socket.readyState !== WebSocket.OPEN) return;
           peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, claims, impersonator:resolved.impersonator, tokenVersion: resolved.tokenVersion, sessionId: claims.sid || null, exp: claims.exp, alive: true, systemMetricsSubscribed: false };
           peers.add(peer); clearTimeout(timeout);
-          emit(socket, { type: "ready", role: user.role, ...(user.role !== "partner" ? { onlinePartnerIds: livePartnerIds(), onlinePartnerCount: onlinePartnerCount() } : {}) });
+          emit(socket, { type: "ready", role: user.role, ...(user.role === "superadmin" ? { onlinePartnerIds: livePartnerIds(), onlinePartnerCount: onlinePartnerCount() } : {}) });
           if (user.role === "partner") { lastTouch = now(); void touch(peer.user); broadcastPresence(user.partnerId); }
         } catch { socket.close(1008, "Unauthorized"); }
         return;

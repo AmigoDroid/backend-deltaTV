@@ -1,4 +1,6 @@
 import adminPaymentGateways from "./payment-gateways/admin.routes.js";
+import workspaces from "./admin-workspaces/workspace.routes.js";
+import { AppError } from "../shared/errors.js";
 import servicePackages from "./service-packages/package.routes.js";
 import globalConfig from "./platform-config/config.routes.js";
 import {adminPortalSales} from "./partner-portal-sales/sales.routes.js";
@@ -33,6 +35,15 @@ import { adminRouter as appDownloads } from "./downloads/download.routes.js";
 // Tudo em /api/v1/admin exige autenticação; cada rota exige a permissão correspondente.
 const router = Router();
 router.use(authenticate);
+// Limite fail-closed: APIs legadas usam queries globais. Um Admin de rede NUNCA
+// pode chamá-las, mesmo que tente digitar a URL ou forçar parâmetros no navegador.
+// Cada rota de /workspace aplica filtro de proprietário antes de ler/escrever.
+router.use((req, _res, next) => {
+  if (req.user?.role === "admin" && !/^\/workspace(?:\/|$)/.test(req.path))
+    throw new AppError(403, "ADMIN_WORKSPACE_ONLY", "Acesse os recursos da sua rede. As configurações DeltaTV são reservadas.");
+  next();
+});
+router.use("/workspace", workspaces);
 router.use("/payment-gateways",adminPaymentGateways);
 router.use("/service-packages",servicePackages);
 router.use("/global-config",globalConfig);

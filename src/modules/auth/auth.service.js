@@ -1,4 +1,5 @@
 import {PERMISSIONS} from "../../middleware/authenticate.js";
+import {normalizeNetworkPermissions, normalizeNetworkLimits} from "../admin-workspaces/permissions.js";
 import { disconnectAdminUser } from "../../realtime/socket.js";
 import { recordLogin } from "./login-history.service.js";
 import { Op } from "sequelize";
@@ -14,7 +15,8 @@ let dummyHash;
 
 const publicUser = async (u) => {
  const custom=u.permissionRoleId?await PermissionRole.findByPk(u.permissionRoleId):null;
- return {id:u.id,name:u.name,email:u.email,role:u.role,partnerId:u.partnerId,permissionRoleId:u.permissionRoleId,permissions:u.permissionRoleId?(custom?.baseRole===u.role?custom.permissions:[]):PERMISSIONS[u.role]||[]};
+ const permissions = u.role === "admin" ? normalizeNetworkPermissions(u.delegatedPermissions) : (u.permissionRoleId ? (custom?.baseRole===u.role?custom.permissions:[]) : PERMISSIONS[u.role]||[]);
+ return {id:u.id,name:u.name,email:u.email,role:u.role,partnerId:u.partnerId,permissionRoleId:u.permissionRoleId,permissions,delegatedPermissions:u.role==="admin"?permissions:[],networkLimits:u.role==="admin"?normalizeNetworkLimits(u.networkLimits):{}};
 };
 
 async function issue(user, meta, transaction) {

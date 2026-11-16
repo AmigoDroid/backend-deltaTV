@@ -1,4 +1,5 @@
 import {governanceAudit} from "../modules/superadmin/governance-audit.js";
+import {adminHasNetworkPermission, normalizeNetworkPermissions, normalizeNetworkLimits} from "../modules/admin-workspaces/permissions.js";
 import { Op } from "sequelize";
 import { AdminUser, AuthSession, PermissionRole, ImpersonationGrant, Partner } from "../db/models/index.js";
 import { verifyJwt } from "../shared/crypto.js";
@@ -6,13 +7,9 @@ import { AppError } from "../shared/errors.js";
 
 export const PERMISSIONS = {
   superadmin: ["*"], // white-label:manage permanece exclusivo da administração principal
-  admin: [
-    "licenses:read", "licenses:write", "partners:read", "partners:write", "billing:read", "billing:write",
-    "devices:read", "devices:write", "sources:read", "sources:write", "audit:read", "dashboard:read",
-    "clients:read", "clients:write", "partner-users:manage", // fichas de clientes das revendas e usuários do portal (role partner)
-    "web:read", "web:write", // acessos do Player Web (códigos AB123456) de todos os revendedores
-    "downloads:read", "downloads:write", // links de download dos apps que os revendedores consultam
-  ],
+  // Contas Admin usam permissões de rede explícitas, sempre isoladas.
+  // As antigas permissões globais não são herdadas automaticamente.
+  admin: [],
   support: [
     "licenses:read", "partners:read", "billing:read", "devices:read", "devices:write",
     "sources:read", "dashboard:read", "clients:read", "web:read", "downloads:read",
@@ -22,8 +19,11 @@ export const PERMISSIONS = {
 
 export const can = (user, perm) => {
  const role = typeof user === "string" ? user : user?.role;
+ if (role === "superadmin") return true;
+ // Impede que funções antigas de PermissionRole ampliem o acesso de Admins à DeltaTV.
+ if (role === "admin") return typeof user === "object" && adminHasNetworkPermission(user, perm);
  const list = typeof user === "object" && Array.isArray(user.permissions) ? user.permissions : PERMISSIONS[role] ?? [];
- return role === "superadmin" || list.includes(perm);
+ return list.includes(perm);
 };
 
 export async function resolveAdminClaims(payload) {
@@ -44,8 +44,9 @@ export async function resolveAdminClaims(payload) {
   if(!session)throw new AppError(401,"INVALID_TOKEN","Sessão encerrada. Entre novamente.");
  }
  const custom=user.permissionRoleId?await PermissionRole.findByPk(user.permissionRoleId):null;
- const permissions=user.permissionRoleId ? (custom?.baseRole===user.role ? custom.permissions : []) : PERMISSIONS[user.role] || [];
- return {user:{id:user.id,name:user.name,email:user.email,role:user.role,partnerId:user.partnerId,permissionRoleId:user.permissionRoleId,permissions},impersonator,tokenVersion:user.tokenVersion};
+ const delegatedPermissions = user.role === "admin" ? normalizeNetworkPermissions(user.delegatedPermissions) : [];
+ const permissions = user.role === "admin" ? delegatedPermissions : (user.permissionRoleId ? (custom?.baseRole===user.role ? custom.permissions : []) : PERMISSIONS[user.role] || []);
+ return {user:{id:user.id,name:user.name,email:user.email,role:user.role,partnerId:user.partnerId,permissionRoleId:user.permissionRoleId,permissions,delegatedPermissions,networkLimits:user.role==="admin"?normalizeNetworkLimits(user.networkLimits):{}},impersonator,tokenVersion:user.tokenVersion};
 }
 
 export async function authenticate(req, _res, next) {

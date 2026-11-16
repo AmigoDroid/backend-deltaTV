@@ -8,6 +8,7 @@ import { AppError, notFound } from "../../shared/errors.js";
 import { actorOf, audit } from "../../shared/audit.js";
 import { hashPassword } from "../../shared/crypto.js";
 import { can } from "../../middleware/authenticate.js";
+import { NETWORK_PERMISSIONS, normalizeNetworkPermissions, normalizeNetworkLimits } from "../admin-workspaces/permissions.js";
 import { revokeAllSessions } from "../auth/auth.service.js";
 import { disconnectAdminUser } from "../../realtime/socket.js";
 import { sendPasswordResetToUser } from "../auth/password-reset.service.js";
@@ -23,6 +24,14 @@ const router = Router();
 const id = z.object({ id: z.string().uuid() });
 const safe = (u, partner) => { const j = u.toJSON(); delete j.passwordHash; delete j.passwordResetHash; delete j.passwordResetExpiresAt; delete j.passwordResetIssuedAt; return { ...j, partnerName: partner?.name ?? null }; };
 const ROLES = ["superadmin", "admin", "support", "partner"];
+const delegatedInput = z.array(z.enum(NETWORK_PERMISSIONS)).max(NETWORK_PERMISSIONS.length);
+const networkLimitsInput = z.object({
+  maxPartners: z.number().int().nonnegative().nullable().optional(),
+  maxResellers: z.number().int().nonnegative().nullable().optional(),
+  maxPlans: z.number().int().nonnegative().nullable().optional(),
+  maxDnsPerCode: z.number().int().nonnegative().nullable().optional(),
+  maxActivationsPerPartner: z.number().int().nonnegative().nullable().optional(),
+}).strict();
 
 router.use((req, _res, next) => {
   if (can(req.user, "users:manage")) req.userScope = "all";
@@ -58,13 +67,15 @@ router.get("/", validate({ query: z.object({
 });
 
 router.post(
-  "/", validate({ body: z.object({ name: z.string().min(2).max(160), email: z.string().email().max(200), password: z.string().min(12).max(128), role: z.enum(ROLES), partnerId: z.string().uuid().optional() }) }),
+  "/", validate({ body: z.object({ name: z.string().min(2).max(160), email: z.string().email().max(200), password: z.string().min(12).max(128), role: z.enum(ROLES), partnerId: z.string().uuid().optional(), delegatedPermissions: delegatedInput.optional(), networkLimits: networkLimitsInput.optional() }) }),
   async (req, res) => {
     const b = req.valid.body;
     if (req.userScope === "partner" && b.role !== "partner") throw forbiddenRole();
+    if ((b.delegatedPermissions?.length || b.networkLimits) && b.role !== "admin") throw new AppError(422,"INVALID_DELEGATION","Permissões de rede exigem usuário Admin.");
     if ((b.role === "partner") !== !!b.partnerId) throw new AppError(422, "PARTNER_REQUIRED", "Usuários 'partner' exigem partnerId (e somente eles).");
     if (b.partnerId && !(await Partner.findOne({ where: { id: b.partnerId, status: { [Op.ne]: "deleted" } } }))) throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente ou excluído.");
-    const u = await AdminUser.create({ name: b.name, email: b.email, passwordHash: await hashPassword(b.password), role: b.role, partnerId: b.partnerId ?? null });
+    const u = await AdminUser.create({ name: b.name, email: b.email, passwordHash: await hashPassword(b.password), role: b.role, partnerId: b.partnerId ?? null, delegatedPermissions: b.role === "admin" ? normalizeNetworkPermissions(b.delegatedPermissions) : [],
+      networkLimits: b.role === "admin" ? normalizeNetworkLimits(b.networkLimits) : {} });
     await audit({ actor: actorOf(req), action: "user.create", entityType: "admin_user", entityId: u.id, metadata: { role: b.role, partnerId: b.partnerId ?? null } });
     res.status(201).json(await present(u));
   },
@@ -83,6 +94,7 @@ router.patch(
     name: z.string().min(2).max(160).optional(), email: z.string().email().max(200).optional(),
     status: z.enum(["active", "disabled"]).optional(), password: z.string().min(12).max(128).optional(),
     role: z.enum(ROLES).optional(), partnerId: z.string().uuid().nullable().optional(),
+    delegatedPermissions: delegatedInput.optional(), networkLimits: networkLimitsInput.optional(),
   }).refine((b) => Object.keys(b).length > 0, "Nada para alterar.") }),
   async (req, res) => {
     const u = await sequelize.transaction(async transaction => {
@@ -91,6 +103,8 @@ router.patch(
     const u = await AdminUser.findByPk(req.valid.params.id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!u || u.deletedAt) throw notFound("Usuário");
     if (req.userScope === "partner" && (u.role !== "partner" || (req.valid.body.role && req.valid.body.role !== "partner"))) throw forbiddenRole();
+    if ((req.valid.body.delegatedPermissions || req.valid.body.networkLimits) && (req.user.role !== "superadmin" || (req.valid.body.role ?? u.role) !== "admin"))
+      throw new AppError(403,"DELTATV_ONLY","Apenas a DeltaTV delega permissões de administração.");
     const { password, ...rest } = req.valid.body;
     const self = u.id === req.user.id;
     if (self && rest.status === "disabled") throw new AppError(409, "SELF_DISABLE", "Você não pode desativar a própria conta.");
@@ -101,7 +115,10 @@ router.patch(
     const partnerId = rest.partnerId !== undefined ? rest.partnerId : (role === "partner" ? u.partnerId : null);
     if ((role === "partner") !== !!partnerId) throw new AppError(422, "PARTNER_REQUIRED", "Usuários 'partner' exigem um parceiro (e somente eles).");
     if (partnerId && !(await Partner.findOne({ where: { id: partnerId, status: { [Op.ne]: "deleted" } } }))) throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente ou excluído.");
-    const changes = { ...rest, role, partnerId, ...(role !== u.role ? {permissionRoleId:null} : {}) };
+    const changes = { ...rest, role, partnerId,
+      delegatedPermissions: role === "admin" ? normalizeNetworkPermissions(rest.delegatedPermissions ?? u.delegatedPermissions) : [],
+      networkLimits: role === "admin" ? normalizeNetworkLimits(rest.networkLimits ?? u.networkLimits) : {},
+      ...(role !== u.role ? {permissionRoleId:null} : {}) };
 
     // Nunca deixar a plataforma sem superadmin ativo.
     const losesSuper = u.role === "superadmin" && u.status === "active" && (role !== "superadmin" || changes.status === "disabled");
@@ -109,7 +126,9 @@ router.patch(
       throw new AppError(409, "LAST_SUPERADMIN", "É preciso manter ao menos um superadmin ativo.");
     }
 
-    const sensitive = !!password || changes.status === "disabled" || role !== u.role || partnerId !== u.partnerId || (changes.email && changes.email !== u.email);
+    const permissionsChanged = JSON.stringify(changes.delegatedPermissions) !== JSON.stringify(normalizeNetworkPermissions(u.delegatedPermissions)) ||
+      JSON.stringify(changes.networkLimits) !== JSON.stringify(normalizeNetworkLimits(u.networkLimits));
+    const sensitive = !!password || permissionsChanged || changes.status === "disabled" || role !== u.role || partnerId !== u.partnerId || (changes.email && changes.email !== u.email);
     await u.update({ ...changes, ...(password ? { passwordHash: await hashPassword(password) } : {}),
       ...(sensitive ? { passwordResetHash: null, passwordResetExpiresAt: null, passwordResetIssuedAt: null } : {}) }, { transaction });
     if (sensitive) { await revokeAllSessions(u.id, transaction); transaction.afterCommit(() => disconnectAdminUser(u.id)); }

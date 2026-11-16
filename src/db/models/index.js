@@ -28,6 +28,8 @@ export const Partner = def("Partner", "partners", {
   kind: str(10, { allowNull: false, defaultValue: "content" }),
   distributionRole: str(12, { allowNull: false, defaultValue: "reseller" }),
   parentPartnerId: { type: T.UUID },
+  // Conta comercial dona desta rede. NULL identifica a rede original da DeltaTV.
+  ownerAdminId: { type: T.UUID },
 });
 
 export const AdminUser = def("AdminUser", "admin_users", {
@@ -35,6 +37,9 @@ export const AdminUser = def("AdminUser", "admin_users", {
   passwordHash: { type: T.TEXT, allowNull: false }, role: str(20, { allowNull: false }),
   partnerId: { type: T.UUID }, status: str(20, { allowNull: false, defaultValue: "active" }),
   permissionRoleId: { type: T.UUID }, deletedAt: ts(),
+  // Delegações da DeltaTV para administradores de rede; não reutilizar PermissionRole global.
+  delegatedPermissions: { type: T.JSONB, allowNull: false, defaultValue: [] },
+  networkLimits: { type: T.JSONB, allowNull: false, defaultValue: {} },
   failedLogins: int(0), lockedUntil: ts(), tokenVersion: int(0), lastLoginAt: ts(), lastActivityAt: ts(),
   passwordResetHash: str(64), passwordResetExpiresAt: ts(), passwordResetIssuedAt: ts(),
 });
@@ -150,6 +155,7 @@ export const ServicePlanCatalog = sequelize.define("ServicePlanCatalog", {
   canManageGateways:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   active:{type:T.BOOLEAN,allowNull:false,defaultValue:true},
   system:{type:T.BOOLEAN,allowNull:false,defaultValue:false},sortOrder:int(100),
+  ownerAdminId: { type: T.UUID },
 },{tableName:"service_plan_catalogs"});
 
 export const ContentPartnerTerms = sequelize.define("ContentPartnerTerms", {
