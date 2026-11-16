@@ -1,3 +1,4 @@
+import {sessionContext, roleForContext} from "../modules/auth/role-context.js";
 import {governanceAudit} from "../modules/superadmin/governance-audit.js";
 import {adminHasNetworkPermission, normalizeNetworkPermissions, normalizeNetworkLimits} from "../modules/admin-workspaces/permissions.js";
 import { Op } from "sequelize";
@@ -40,13 +41,38 @@ export async function resolveAdminClaims(payload) {
   if(!partner||partner.status!=="active")throw new AppError(403,"FORBIDDEN","Parceria indisponível para impersonação.");
   impersonator={id:actor.id,name:actor.name,role:actor.role,grantId:grant.id};
  } else if(payload.sid) {
-  const session=await AuthSession.findOne({where:{id:payload.sid,adminUserId:user.id,revokedAt:null,expiresAt:{[Op.gt]:new Date()}},attributes:["id"]});
+  const session=await AuthSession.findOne({where:{id:payload.sid,adminUserId:user.id,revokedAt:null,expiresAt:{[Op.gt]:new Date()}},attributes:["id","audience"]});
   if(!session)throw new AppError(401,"INVALID_TOKEN","Sessão encerrada. Entre novamente.");
+  const expectedContext = sessionContext(session.audience, user.role);
+  const actualContext = payload.ctx ?? (session.audience === 'legacy' ? expectedContext : null);
+  if (!expectedContext || actualContext !== expectedContext)
+    throw new AppError(401,"INVALID_TOKEN","Contexto da sessão inválido.");
+  if (!roleForContext(user.role, actualContext, !!user.partnerId))
+    throw new AppError(401,"INVALID_TOKEN","Permissão do portal revogada.");
+  if (actualContext === 'partner') {
+    const partner=await Partner.findByPk(user.partnerId,{attributes:['id','kind','status']});
+    if(!partner || partner.status !== 'active' ||
+       (session.audience === 'content_partner' && !['content','both'].includes(partner.kind)) ||
+       (session.audience === 'partner' && user.role === 'admin' && !['reseller','both'].includes(partner.kind)))
+      throw new AppError(401,"INVALID_TOKEN","Conta operacional indisponível.");
+  }
+  payload.resolvedContext=actualContext;
+ } else if (!payload.imp) {
+   // Tokens antigos sem uma sessão não ganham privilégio de portal nem de Admin.
+   throw new AppError(401,"INVALID_TOKEN","Sessão não identificada.");
  }
- const custom=user.permissionRoleId?await PermissionRole.findByPk(user.permissionRoleId):null;
- const delegatedPermissions = user.role === "admin" ? normalizeNetworkPermissions(user.delegatedPermissions) : [];
- const permissions = user.role === "admin" ? delegatedPermissions : (user.permissionRoleId ? (custom?.baseRole===user.role ? custom.permissions : []) : PERMISSIONS[user.role] || []);
- return {user:{id:user.id,name:user.name,email:user.email,role:user.role,partnerId:user.partnerId,permissionRoleId:user.permissionRoleId,permissions,delegatedPermissions,networkLimits:user.role==="admin"?normalizeNetworkLimits(user.networkLimits):{}},impersonator,tokenVersion:user.tokenVersion};
+ const context = payload.resolvedContext ?? (user.role==='partner' ? 'partner' : 'admin');
+ const effectiveRole = roleForContext(user.role, context, !!user.partnerId);
+ if(!effectiveRole)throw new AppError(401,'INVALID_TOKEN','Contexto inválido.');
+ const custom=user.permissionRoleId && effectiveRole==='partner'?await PermissionRole.findByPk(user.permissionRoleId):null;
+ const delegatedPermissions = effectiveRole === "admin" ? normalizeNetworkPermissions(user.delegatedPermissions) : [];
+ const permissions = effectiveRole === "admin" ? delegatedPermissions :
+   (effectiveRole === 'partner' && user.role === 'admin' ?
+      (user.permissionRoleId ? (custom?.baseRole==='partner' ? custom.permissions : []) : PERMISSIONS.partner) :
+      (user.permissionRoleId ? (custom?.baseRole===effectiveRole ? custom.permissions : []) : PERMISSIONS[effectiveRole] || []));
+ return {user:{id:user.id,name:user.name,email:user.email,role:effectiveRole,partnerId:user.partnerId,
+     permissionRoleId:effectiveRole==='partner'?user.permissionRoleId:null,permissions,delegatedPermissions,
+     networkLimits:effectiveRole==="admin"?normalizeNetworkLimits(user.networkLimits):{}},impersonator,tokenVersion:user.tokenVersion};
 }
 
 export async function authenticate(req, _res, next) {

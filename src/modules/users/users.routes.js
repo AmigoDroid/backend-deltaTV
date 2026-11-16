@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Op } from "sequelize";
-import { sequelize, AdminUser, Partner } from "../../db/models/index.js";
+import { sequelize, AdminUser, Partner, ServicePlanCatalog, LoginHistory } from "../../db/models/index.js";
 import { validate } from "../../shared/validate.js";
 import { pageQuery, pageOf, paged } from "../../shared/pagination.js";
 import { AppError, notFound } from "../../shared/errors.js";
@@ -47,6 +47,19 @@ const partnerNames = async (users) => {
 };
 const present = async (u) => safe(u, u.partnerId ? await Partner.findByPk(u.partnerId, { attributes: ["id", "name"] }) : null);
 const forbiddenRole = () => new AppError(403, "FORBIDDEN", "Seu perfil só gerencia usuários do portal de parceiros.");
+// Somente a DeltaTV vincula uma conta operacional a um Admin. A transação
+// move APENAS a parceria selecionada, não a rede global nem outros parceiros.
+// Não reassocia automaticamente registros ao alterar uma função.
+async function assignPortalAccountToAdmin(partnerId, adminId, transaction) {
+  const partner = await Partner.findByPk(partnerId, {transaction,lock:transaction.LOCK.UPDATE});
+  if(!partner || partner.status === 'deleted') throw new AppError(422,'INVALID_PARTNER','Conta do parceiro não encontrada.');
+  if (partner.ownerAdminId && partner.ownerAdminId !== adminId)
+    throw new AppError(409,'PARTNER_OWNED_BY_OTHER_ADMIN','A conta pertence à rede de outro Admin. A transferência exige um processo próprio.');
+  const otherAdmin = await AdminUser.findOne({where:{role:'admin',partnerId,id:{[Op.ne]:adminId},deletedAt:null},transaction});
+  if (otherAdmin) throw new AppError(409,'PARTNER_ALREADY_LINKED','Esta conta operacional já está vinculada a outro Admin.');
+  if(partner.ownerAdminId !== adminId) await partner.update({ownerAdminId:adminId},{transaction});
+}
+
 
 router.get("/", validate({ query: z.object({
   ...pageQuery, q: z.string().trim().max(100).optional(), role: z.enum(ROLES).optional(),
@@ -72,14 +85,44 @@ router.post(
     const b = req.valid.body;
     if (req.userScope === "partner" && b.role !== "partner") throw forbiddenRole();
     if ((b.delegatedPermissions?.length || b.networkLimits) && b.role !== "admin") throw new AppError(422,"INVALID_DELEGATION","Permissões de rede exigem usuário Admin.");
-    if ((b.role === "partner") !== !!b.partnerId) throw new AppError(422, "PARTNER_REQUIRED", "Usuários 'partner' exigem partnerId (e somente eles).");
+    if ((b.role === "partner" && !b.partnerId) || (!['partner','admin'].includes(b.role) && b.partnerId))
+      throw new AppError(422, "PARTNER_REQUIRED", "Parceiro é obrigatório para usuário do portal e opcional para Admin.");
     if (b.partnerId && !(await Partner.findOne({ where: { id: b.partnerId, status: { [Op.ne]: "deleted" } } }))) throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente ou excluído.");
-    const u = await AdminUser.create({ name: b.name, email: b.email, passwordHash: await hashPassword(b.password), role: b.role, partnerId: b.partnerId ?? null, delegatedPermissions: b.role === "admin" ? normalizeNetworkPermissions(b.delegatedPermissions) : [],
-      networkLimits: b.role === "admin" ? normalizeNetworkLimits(b.networkLimits) : {} });
-    await audit({ actor: actorOf(req), action: "user.create", entityType: "admin_user", entityId: u.id, metadata: { role: b.role, partnerId: b.partnerId ?? null } });
+    const u = await sequelize.transaction(async transaction => {
+      const u = await AdminUser.create({ name: b.name, email: b.email,
+        passwordHash: await hashPassword(b.password), role: b.role,
+        partnerId: b.partnerId ?? null,
+        delegatedPermissions: b.role === "admin" ? normalizeNetworkPermissions(b.delegatedPermissions) : [],
+        networkLimits: b.role === "admin" ? normalizeNetworkLimits(b.networkLimits) : {} },{transaction});
+      if (b.role === 'admin' && b.partnerId) await assignPortalAccountToAdmin(b.partnerId, u.id, transaction);
+      await audit({ actor: actorOf(req), action: "user.create", entityType: "admin_user", entityId: u.id,
+        metadata: { role: b.role, partnerId: b.partnerId ?? null }, transaction });
+      return u;
+    });
     res.status(201).json(await present(u));
   },
 );
+
+// Recuperação assistida de contas já promovidas pela versão antiga, que limpava
+// partner_id sem registrar um vínculo novo. Somente a DeltaTV consulta sugestões.
+// Nenhum dado muda até a confirmação explícita do PATCH do usuário.
+router.get('/:id/portal-link-options',validate({params:id}),async(req,res)=>{
+  if(req.user.role !== 'superadmin')throw new AppError(403,'DELTATV_ONLY','Operação exclusiva da DeltaTV.');
+  const u=await AdminUser.findByPk(req.valid.params.id);
+  if(!u || u.deletedAt)throw notFound('Usuário');
+  if(u.role !== 'admin')throw new AppError(409,'NOT_AN_ADMIN','Disponível apenas para Admins.');
+  const history=await LoginHistory.findAll({where:{adminUserId:u.id,partnerId:{[Op.ne]:null}},
+    attributes:['partnerId'],order:[['createdAt','DESC']],limit:30});
+  const ids=[...new Set(history.map(entry=>entry.partnerId).filter(Boolean))];
+  const [historical,byContact]=await Promise.all([
+    ids.length ? Partner.findAll({where:{id:{[Op.in]:ids}},attributes:['id','name','kind','status','ownerAdminId']}) : [],
+    Partner.findAll({where:{contactEmail:{[Op.iLike]:u.email}},attributes:['id','name','kind','status','ownerAdminId'],limit:10})
+  ]);
+  const result=[...new Map([...historical,...byContact]
+    .filter(partner=>partner.status !== 'deleted' && (!partner.ownerAdminId || partner.ownerAdminId===u.id))
+    .map(partner=>[partner.id,partner])).values()];
+  res.set('Cache-Control','no-store').json({data:result.map(partner=>({id:partner.id,name:partner.name,kind:partner.kind}))});
+});
 
 // Não envia senha temporária nem devolve o link na API: somente o e-mail cadastrado recebe.
 router.post("/:id/send-password-reset", passwordResetSendLimiter, validate({ params: id }), async (req, res) => {
@@ -110,15 +153,28 @@ router.patch(
     if (self && rest.status === "disabled") throw new AppError(409, "SELF_DISABLE", "Você não pode desativar a própria conta.");
     if (self && rest.role && rest.role !== u.role) throw new AppError(409, "SELF_ROLE", "Você não pode alterar a própria função.");
 
-    // Função x parceiro: "partner" sempre com parceiro; as demais, nunca.
+    // O Admin pode operar a própria conta de Parceiro/Revenda no mesmo login,
+    // mas os tokens dos portais NUNCA carregam privilégios administrativos.
     const role = rest.role ?? u.role;
-    const partnerId = rest.partnerId !== undefined ? rest.partnerId : (role === "partner" ? u.partnerId : null);
-    if ((role === "partner") !== !!partnerId) throw new AppError(422, "PARTNER_REQUIRED", "Usuários 'partner' exigem um parceiro (e somente eles).");
-    if (partnerId && !(await Partner.findOne({ where: { id: partnerId, status: { [Op.ne]: "deleted" } } }))) throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente ou excluído.");
+    const partnerId = rest.partnerId !== undefined ? rest.partnerId :
+      (['partner','admin'].includes(role) ? u.partnerId : null);
+    if ((role === 'partner' && !partnerId) || (!['partner','admin'].includes(role) && partnerId))
+      throw new AppError(422,'PARTNER_REQUIRED','Parceiro obrigatório no portal e opcional para Admin.');
+    if (partnerId && !(await Partner.findOne({ where: { id: partnerId, status: { [Op.ne]: "deleted" } },transaction })))
+      throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente ou excluído.");
+    if (role === 'admin' && partnerId) await assignPortalAccountToAdmin(partnerId,u.id,transaction);
+    if (u.role === 'admin' && role !== 'admin') {
+      const [ownedPartners,ownedPlans]=await Promise.all([
+        Partner.count({where:{ownerAdminId:u.id},transaction}),
+        ServicePlanCatalog.count({where:{ownerAdminId:u.id},transaction})
+      ]);
+      if (ownedPartners || ownedPlans) throw new AppError(409,'ADMIN_NETWORK_REASSIGN_REQUIRED',
+        'Este Admin possui parceiros ou planos. Reatribua a rede à DeltaTV antes de remover a função.');
+    }
     const changes = { ...rest, role, partnerId,
       delegatedPermissions: role === "admin" ? normalizeNetworkPermissions(rest.delegatedPermissions ?? u.delegatedPermissions) : [],
       networkLimits: role === "admin" ? normalizeNetworkLimits(rest.networkLimits ?? u.networkLimits) : {},
-      ...(role !== u.role ? {permissionRoleId:null} : {}) };
+      ...(role !== u.role && !(role === 'admin' && u.role === 'partner') ? {permissionRoleId:null} : {}) };
 
     // Nunca deixar a plataforma sem superadmin ativo.
     const losesSuper = u.role === "superadmin" && u.status === "active" && (role !== "superadmin" || changes.status === "disabled");

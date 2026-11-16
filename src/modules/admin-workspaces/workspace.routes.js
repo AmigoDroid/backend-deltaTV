@@ -18,6 +18,8 @@ import {invalidateServerPools} from "../provider-monitor/code-pool.service.js";
 import {clearResolutionCache} from "../provider-monitor/resolve.service.js";
 import { clearContractAccessCache } from "../access/access.service.js";
 import { adminHasNetworkPermission, enforceLimit } from "./permissions.js";
+import {scopedPlan,checkPlanCaps,provisionNetworkAccount,lockNetworkOwner} from "./account-provisioning.js";
+import networkInviteAdminRoutes from "./network-invite-admin.routes.js";
 
 // API isolada para redes comerciais de Admins. Sem acesso às consultas globais
 // do painel DeltaTV. O ID do titular é derivado da sessão, não de filtros livres.
@@ -29,6 +31,8 @@ router.use(async (req, res, next) => {
   if (req.user.role === "superadmin") {
     if (req.path === "/admins" && req.method === "GET") return next();
     const target = req.query.adminId;
+    // DeltaTV pode operar diretamente sua rede principal (owner_admin_id IS NULL).
+    if(target==='deltatv'){req.networkOwnerId=null;return next();}
     if (typeof target !== "string" || !z.string().uuid().safeParse(target).success)
       throw new AppError(422,"ADMIN_TARGET_REQUIRED","Selecione qual rede administrativa deseja gerenciar.");
     const user = await AdminUser.findOne({where:{id:target,role:"admin",deletedAt:null},attributes:["id"]});
@@ -45,6 +49,8 @@ const requireScope = permission => (req, _res, next) => {
   next();
 };
 const tenant = req => req.networkOwnerId;
+// Convites usam o mesmo escopo de sessão e as mesmas permissões do cadastro direto.
+router.use('/invitations',networkInviteAdminRoutes);
 const ident = z.object({ id: z.string().uuid() });
 const listQuery = z.object({ page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20), q: z.string().trim().max(100).optional(),
@@ -53,26 +59,30 @@ const intLimit = z.number().int().min(0).max(2147483647).nullable();
 const packageFields = z.object({
   name: z.string().trim().min(3).max(120), description: z.string().trim().max(500).default(""),
   audience: z.enum(["content","reseller","both"]), monthlyPriceCents: z.number().int().min(0).max(100000000),
-  maxServers: intLimit, autoFailover: z.boolean(), autoPriority: z.boolean(),
+  maxServers: intLimit, activationLimit: intLimit, validityDays: z.number().int().min(1).max(3660),
+  autoFailover: z.boolean(), autoPriority: z.boolean(),
   emailAlerts: z.boolean(), detailedHistory: z.boolean(),
 }).strict();
 const packageBody = packageFields.refine(v=>v.autoFailover || !v.autoPriority,{path:["autoPriority"],message:"Prioridade exige failover."});
 const account = z.object({name:z.string().trim().min(2).max(160), email:z.string().trim().email().max(200), password:z.string().min(12).max(128)}).strict();
-const partnerBody = z.object({
-  name: z.string().trim().min(2).max(160), slug:z.string().regex(/^[a-z0-9][a-z0-9-]{1,58}[a-z0-9]$/),
-  kind:z.enum(["content","reseller","both"]), planKey:z.string().min(3).max(32),
-  monthlyFeeCents:z.number().int().min(0).max(100000000), activationLimit:intLimit, dnsLimit:intLimit,
-  endsAt:z.coerce.date(), contactName:z.string().trim().max(160).optional(),
-  contactEmail:z.string().email().max(200).optional(), contactPhone:z.string().max(40).optional(),
-  portalUser:account,
+// A conta é cadastrada com apenas nome, e-mail, senha e plano.
+// Mensalidade, DNS, ativações e validade vêm EXCLUSIVAMENTE do plano no banco.
+const partnerBody=z.object({
+  name:z.string().trim().min(2).max(160),
+  email:z.string().trim().email().max(200),
+  password:z.string().min(12).max(128),
+  kind:z.enum(['content','reseller']).default('content'),
+  planKey:z.string().min(3).max(32),
 }).strict();
-const partnerChanges = partnerBody.omit({slug:true,kind:true,portalUser:true}).partial().extend({
-  name:z.string().trim().min(2).max(160).optional(),
-  contactName:z.string().trim().max(160).nullable().optional(),
-  contactEmail:z.string().email().max(200).nullable().optional(),
-  contactPhone:z.string().max(40).nullable().optional(),
-  status:z.enum(["active","suspended","blocked"]).optional(),
-}).strict().refine(v=>Object.keys(v).length>0,"Nenhuma mudança enviada.");
+const partnerChanges=z.object({
+ name:z.string().trim().min(2).max(160).optional(),
+ planKey:z.string().min(3).max(32).optional(),
+ contactName:z.string().trim().max(160).nullable().optional(),
+ contactEmail:z.string().email().max(200).nullable().optional(),
+ contactPhone:z.string().max(40).nullable().optional(),
+ endsAt:z.coerce.date().optional(),
+ status:z.enum(['active','suspended','blocked']).optional(),
+}).strict().refine(v=>Object.keys(v).length>0,'Nenhuma mudança enviada.');
 function assertQuota(req, field, used, code) { enforceLimit(req.user.networkLimits?.[field], used, code); }
 function assertResourceQuota(req, { dnsLimit, activationLimit }) {
   const dnsCap=req.user.networkLimits?.maxDnsPerCode;
@@ -156,7 +166,7 @@ router.get("/plans",requireScope("network:plans:read"),async(req,res)=>{
 });
 router.post("/plans",requireScope("network:plans:write"),validate({body:packageBody}),async(req,res)=>{
   const adminId=tenant(req);const b=req.valid.body;
-  assertResourceQuota(req,{dnsLimit:b.maxServers});
+  assertResourceQuota(req,{dnsLimit:b.maxServers,activationLimit:b.activationLimit});
   let result;
   try {result=await sequelize.transaction(async t=>{
     // Serializa cadastros concorrentes na mesma rede antes de conferir as cotas.
@@ -176,7 +186,7 @@ router.post("/plans",requireScope("network:plans:write"),validate({body:packageB
 router.put("/plans/:key",requireScope("network:plans:write"),validate({params:z.object({key:z.string().min(2).max(32)}),
   body:packageFields.partial().extend({active:z.boolean().optional()}).strict().refine(v=>Object.keys(v).length>0)}),async(req,res)=>{
   const root=tenant(req),{key}=req.valid.params,body=req.valid.body;
-  if(body.maxServers!==undefined)assertResourceQuota(req,{dnsLimit:body.maxServers});
+  if(body.maxServers!==undefined||body.activationLimit!==undefined)assertResourceQuota(req,{dnsLimit:body.maxServers,activationLimit:body.activationLimit});
   const plan=await sequelize.transaction(async t=>{
     const p=await ServicePlanCatalog.findOne({where:{key,ownerAdminId:root},transaction:t,lock:t.LOCK.UPDATE});
     if(!p)throw new AppError(404,"NOT_FOUND","Plano não encontrado na sua rede.");
@@ -219,38 +229,22 @@ router.get("/partners",validate({query:listQuery}),async(req,res)=>{
     order:[["createdAt","DESC"]],offset:(page-1)*pageSize,limit:pageSize});
   res.json(mapPage(rows,count,{page,pageSize}));
 });
-router.post("/partners",validate({body:partnerBody}),async(req,res)=>{
-  const b=req.valid.body, root=tenant(req), perm=b.kind==="reseller"?"network:resellers:write":"network:partners:write";
-  if(!adminHasNetworkPermission(req.user,perm) || b.kind==="both"&&!adminHasNetworkPermission(req.user,"network:resellers:write"))
-    throw new AppError(403,"NETWORK_PERMISSION_DENIED","Sem permissão para cadastrar este tipo de conta.");
-  assertResourceQuota(req,b);
-  let created;
-  try{created=await sequelize.transaction(async transaction=>{
-    await sequelize.query("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))",{replacements:{key:`network:${root}`},transaction});
-    const plan=await ownedPlan(root,b.planKey,b.kind,transaction);
-    if(plan.maxServers!==null && (b.dnsLimit===null || b.dnsLimit===0 || b.dnsLimit>plan.maxServers))
-      throw new AppError(422,"DNS_ABOVE_PLAN","DNS não pode superar o plano autorizado.");
-    if(b.kind!=="reseller"){
-      const count=await Partner.count({where:{ownerAdminId:root,kind:{[Op.in]:["content","both"]},status:{[Op.ne]:"deleted"}},transaction});
-      assertQuota(req,"maxPartners",count,"PARTNER_QUOTA_EXCEEDED");
-    }
-    if(b.kind!=="content"){
-      const count=await Partner.count({where:{ownerAdminId:root,kind:{[Op.in]:["reseller","both"]},status:{[Op.ne]:"deleted"}},transaction});
-      assertQuota(req,"maxResellers",count,"RESELLER_QUOTA_EXCEEDED");
-    }
-    const begins=new Date();if(b.endsAt<=begins)throw new AppError(422,"INVALID_PERIOD","O vencimento precisa ser futuro.");
-    const p=await Partner.create({name:b.name,slug:b.slug,kind:b.kind,status:"active",ownerAdminId:root,
-      contactName:b.contactName??b.portalUser.name,contactEmail:b.contactEmail??b.portalUser.email,contactPhone:b.contactPhone??null,
-      startsAt:begins,endsAt:b.endsAt,billingModel:"fixed",monthlyFeeCents:b.monthlyFeeCents,
-      deviceLimit:b.activationLimit,dueDay:10,graceDays:5,suspendPolicy:"auto_after_grace"},{transaction});
-    await applyOwnedTerms(p,{activationLimit:b.activationLimit,dnsLimit:b.dnsLimit,monthlyFeeCents:b.monthlyFeeCents,planKey:plan.key},transaction);
-    const u=await AdminUser.create({name:b.portalUser.name,email:b.portalUser.email,passwordHash:await hashPassword(b.portalUser.password),
-      role:"partner",partnerId:p.id,status:"active"},{transaction});
-    await audit({actor:actorOf(req),action:"network.partner.create",entityType:"partner",entityId:p.id,
-      metadata:{kind:b.kind,planKey:b.planKey,userId:u.id,ownerAdminId:root},transaction});
-    return p;
-  });}catch(e){normalizeError(e)}
-  invalidatePlan(created.id);invalidateServerPools();clearResolutionCache();clearContractAccessCache();res.status(201).json({id:created.id,name:created.name,kind:created.kind});
+router.post('/partners',validate({body:partnerBody}),async(req,res)=>{
+ const b=req.valid.body,root=tenant(req),perm=b.kind==='reseller'?'network:resellers:write':'network:partners:write';
+ if(!adminHasNetworkPermission(req.user,perm))throw new AppError(403,'NETWORK_PERMISSION_DENIED','Sem permissão para cadastrar esta conta.');
+ const email=b.email.toLowerCase();
+ // Hash antes de abrir a transação e seus locks.
+ const passwordHash=await hashPassword(b.password);
+ let result;
+ try{result=await sequelize.transaction(async transaction=>{
+   await lockNetworkOwner(root,transaction);
+   const plan=await scopedPlan(root,b.planKey,b.kind,transaction);
+   const created=await provisionNetworkAccount({ownerId:root,actor:actorOf(req),plan,
+     name:b.name,email,passwordHash,kind:b.kind,limits:req.user.networkLimits||{},transaction});
+   return {id:created.partner.id,name:created.partner.name,kind:b.kind};
+ });}catch(e){normalizeError(e)}
+ invalidatePlan(result.id);invalidateServerPools();clearResolutionCache();clearContractAccessCache();
+ res.status(201).json(result);
 });
 router.get("/partners/:id",validate({params:ident}),async(req,res)=>{
   const root=tenant(req),p=await ownedPartner(root,req.valid.params.id);
@@ -262,38 +256,67 @@ router.get("/partners/:id",validate({params:ident}),async(req,res)=>{
       AdminUser.findAll({where:{partnerId:p.id,role:"partner",deletedAt:null},attributes:["id","name","email","status","createdAt"]}):Promise.resolve([])]);
   res.json({partner:p,contract:terms,plan,users});
 });
-router.patch("/partners/:id",validate({params:ident,body:partnerChanges}),async(req,res)=>{
-  const root=tenant(req),b=req.valid.body;
-  assertResourceQuota(req,b);
-  const updated=await sequelize.transaction(async t=>{
-    const p=await ownedPartner(root,req.valid.params.id,t,true);
-    const perm=p.kind==="reseller"?"network:resellers:write":"network:partners:write";
-    if(!adminHasNetworkPermission(req.user,perm) || p.kind==="both"&&!adminHasNetworkPermission(req.user,"network:resellers:write"))
-      throw new AppError(403,"NETWORK_PERMISSION_DENIED","Sem permissão para editar esta conta.");
-    if(b.endsAt && b.endsAt<=p.startsAt)throw new AppError(422,"INVALID_PERIOD","Vencimento inválido.");
-    await verifyLimitsInUse(p.id,b,t);
-    // Mesmo um PATCH contendo apenas dnsLimit deve respeitar o plano já atribuído.
-    // Nunca confiar que o cliente repetirá planKey em toda edição.
-    if(b.planKey!==undefined || b.dnsLimit!==undefined){
-      const technical=await PartnerServicePlan.findByPk(p.id,{transaction:t,lock:t.LOCK.UPDATE});
-      const effectivePlanKey=b.planKey??technical?.tier;
-      if(!effectivePlanKey)throw new AppError(409,"PLAN_REQUIRED","A conta precisa de um plano vigente antes de alterar DNS.");
-      const plan=await ownedPlan(root,effectivePlanKey,p.kind,t);
-      const effective=b.dnsLimit!==undefined ? b.dnsLimit : (technical?.maxServersOverride ?? plan.maxServers);
-      if(plan.maxServers!==null && (effective===null||effective===0||effective>plan.maxServers))
-        throw new AppError(422,"DNS_ABOVE_PLAN","O DNS excede o limite do plano.");
-      await verifyLimitsInUse(p.id,{dnsLimit:effective},t);
-    }
-    const {planKey,activationLimit,dnsLimit,...fields}=b;
-    if(activationLimit!==undefined)fields.deviceLimit=activationLimit;
-    if(fields.monthlyFeeCents!==undefined)fields.billingModel="fixed";
-    await p.update(fields,{transaction:t});
-    if(planKey!==undefined || activationLimit!==undefined || dnsLimit!==undefined || b.monthlyFeeCents!==undefined)
-      await applyOwnedTerms(p,{planKey,activationLimit,dnsLimit,monthlyFeeCents:b.monthlyFeeCents},t);
-    await audit({actor:actorOf(req),action:"network.partner.update",entityType:"partner",entityId:p.id,
-      metadata:{fields:Object.keys(b)},transaction:t});return p;
-  });
-  invalidatePlan(updated.id);invalidateServerPools();clearResolutionCache();clearContractAccessCache();res.json({id:updated.id,status:updated.status});
+router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(req,res)=>{
+ const root=tenant(req),b=req.valid.body;
+ const updated=await sequelize.transaction(async t=>{
+  const p=await ownedPartner(root,req.valid.params.id,t,true);
+  const perm=p.kind==='reseller'?'network:resellers:write':'network:partners:write';
+  if(!adminHasNetworkPermission(req.user,perm) ||
+    (p.kind==='both'&&!adminHasNetworkPermission(req.user,'network:resellers:write')))
+   throw new AppError(403,'NETWORK_PERMISSION_DENIED','Sem permissão para alterar a conta.');
+  if(b.endsAt && b.endsAt<=p.startsAt)throw new AppError(422,'INVALID_PERIOD','Vencimento inválido.');
+  if(p.statusReason==='awaiting_payment' && b.status==='active')
+   throw new AppError(409,'PAYMENT_CONFIRMATION_REQUIRED','Confirme o pagamento na área financeira antes de ativar esta conta.');
+  // O preço, a cota de DNS e as ativações não chegam do navegador: vêm do plano.
+  let changes={...b};
+  if(b.planKey!==undefined){
+   const current=await PartnerServicePlan.findByPk(p.id,{transaction:t,lock:t.LOCK.UPDATE});
+   const plan=await scopedPlan(root,b.planKey,p.kind,t);
+   checkPlanCaps(plan,req.user.networkLimits||{});
+   if(current?.tier!==plan.key){
+    // Trocar para um plano pago nunca equivale a confirmar o seu pagamento.
+    if(plan.monthlyPriceCents>0){changes.status='suspended';changes.statusReason='awaiting_payment';}
+    else {const now=new Date();changes.status='active';changes.statusReason=null;
+      changes.startsAt=now;changes.endsAt=new Date(now.getTime()+plan.validityDays*86400_000);}
+   }
+   await verifyLimitsInUse(p.id,{activationLimit:plan.activationLimit,dnsLimit:plan.maxServers},t);
+   changes.deviceLimit=plan.activationLimit;
+   changes.monthlyFeeCents=plan.monthlyPriceCents;
+   changes.billingModel='fixed';
+   await applyOwnedTerms(p,{planKey:plan.key,activationLimit:plan.activationLimit,
+    dnsLimit:plan.maxServers,monthlyFeeCents:plan.monthlyPriceCents},t);
+   if(p.kind!=='reseller')await ContentPartnerTerms.update({autoPriority:plan.autoPriority},{where:{partnerId:p.id},transaction:t});
+  }
+  delete changes.planKey;
+  await p.update(changes,{transaction:t});
+  await audit({actor:actorOf(req),action:'network.partner.update',entityType:'partner',entityId:p.id,
+    metadata:{fields:Object.keys(b),ownerAdminId:root},transaction:t});
+  return p;
+ });
+ invalidatePlan(updated.id);invalidateServerPools();clearResolutionCache();clearContractAccessCache();
+ res.json({id:updated.id,status:updated.status});
+});
+// A conta de plano pago só ativa com confirmação deliberada do recebimento;
+// a auditoria não deve tratar criação de conta como pagamento.
+router.post('/partners/:id/confirm-payment',validate({params:ident,
+ body:z.object({reference:z.string().trim().min(3).max(180)}).strict()}),async(req,res)=>{
+ if(!adminHasNetworkPermission(req.user,'network:partners:write')||
+    !adminHasNetworkPermission(req.user,'network:billing:write'))
+    throw new AppError(403,'NETWORK_PERMISSION_DENIED','Confirmação exige permissão financeira e de parceiros.');
+ const updated=await sequelize.transaction(async t=>{
+   const p=await ownedPartner(tenant(req),req.valid.params.id,t,true);
+   if(p.statusReason!=='awaiting_payment'||p.status!=='suspended')
+     throw new AppError(409,'NO_PENDING_PAYMENT','Não existe pagamento pendente para este cadastro.');
+   const technical=await PartnerServicePlan.findByPk(p.id,{transaction:t});
+   const plan=await scopedPlan(tenant(req),technical?.tier,p.kind,t);
+   const today=new Date();
+   await p.update({status:'active',statusReason:null,startsAt:today,
+     endsAt:new Date(today.getTime()+plan.validityDays*86400_000)},{transaction:t});
+   await audit({actor:actorOf(req),action:'network.partner.payment_confirmed',entityType:'partner',entityId:p.id,
+     metadata:{reference:req.valid.body.reference,ownerAdminId:tenant(req),planKey:plan.key},transaction:t});
+   return p;
+ });
+ clearContractAccessCache();invalidatePlan(updated.id);res.json({id:updated.id,status:updated.status});
 });
 router.post("/partners/:id/users",validate({params:ident,body:account}),async(req,res)=>{
   const partner=await ownedPartner(tenant(req),req.valid.params.id);

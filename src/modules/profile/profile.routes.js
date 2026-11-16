@@ -18,7 +18,7 @@ r.use((_req, res, next) => { res.set("Cache-Control", "no-store"); next(); });
 
 const publicProfile = p => ({ phone: p?.phone || "", avatarData: p?.avatarData || null,
   showUnreadBanner: p?.showUnreadBanner !== false, showNotificationBadge: p?.showNotificationBadge !== false });
-const publicUser = u => ({ id: u.id, name: u.name, email: u.email, role: u.role, lastLoginAt: u.lastLoginAt });
+const publicUser = (u, effectiveRole = u.role) => ({ id: u.id, name: u.name, email: u.email, role: effectiveRole, lastLoginAt: u.lastLoginAt });
 const getProfile = id => AdminUserProfile.findByPk(id);
 
 r.get("/", async (req, res) => {
@@ -30,7 +30,7 @@ r.get("/", async (req, res) => {
   if (!user || (req.user.role === "partner" && !partner)) throw new AppError(404, "NOT_FOUND", "Conta não encontrada.");
   // Perfil administrativo sem parceria; nenhuma conta de outro usuário é consultada.
   const workspace = partner || { id: null, name: "Administração DeltaTV", kind: "administration", status: "active", billingModel: null, endsAt: null };
-  res.json({ user: publicUser(user), profile: publicProfile(profile), partner: workspace });
+  res.json({ user: publicUser(user,req.user.role), profile: publicProfile(profile), partner: workspace });
 });
 
 // Upsert concorrente sem consultar/destravar registros de outro usuário.
@@ -54,7 +54,7 @@ r.patch("/", validate({ body: z.object({ name: z.string().trim().min(2).max(160)
     await updateProfile(user.id, { phone: phone || null }, transaction);
     await audit({ actor: actorOf(req), action: "profile.update", entityType: "admin_user", entityId: user.id,
       metadata: { fields: ["name", "phone"] }, transaction });
-    return publicUser(user);
+    return publicUser(user,req.user.role);
   });
   res.json({ user: result });
 });

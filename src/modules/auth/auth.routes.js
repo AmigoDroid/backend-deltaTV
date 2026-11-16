@@ -1,4 +1,5 @@
 import { verifyNetworkInvite } from "../distribution/network.routes.js";
+import adminNetworkPublicInvite from "../admin-workspaces/network-invite-public.routes.js";
 import {publicPortalSalesInvitations} from "../partner-portal-sales/sales.routes.js";
 import { Router } from "express";
 import { z } from "zod";
@@ -19,6 +20,7 @@ import { verifyPreRegistration, completePreRegistration } from "../partners/part
 
 const router = Router();
 router.use("/network-invite", verifyNetworkInvite);
+router.use("/admin-network-invite",adminNetworkPublicInvite);
 router.use("/portal-sales-invite", publicPortalSalesInvitations);
 router.use("/history", history);
 router.use("/profile", profileRoutes);

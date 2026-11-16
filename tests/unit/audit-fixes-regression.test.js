@@ -2,11 +2,13 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 const source=path=>readFileSync(new URL(`../../src/${path}`,import.meta.url),'utf8');
-test('Admin de rede: alteração isolada de DNS revalida plano atual',()=>{
+test('Admin de rede: preço e limites são derivados de plano e não de PATCH arbitrário',()=>{
  const s=source('modules/admin-workspaces/workspace.routes.js');
- assert.match(s,/b\.planKey!==undefined \|\| b\.dnsLimit!==undefined/);
- assert.match(s,/effectivePlanKey=b\.planKey\?\?technical\?\.tier/);
- assert.match(s,/ownedPlan\(root,effectivePlanKey,p\.kind,t\)/);
+ assert.match(s,/const partnerChanges=z\.object/);
+ assert.match(s,/scopedPlan\(root,b\.planKey,p\.kind,t\)/);
+ assert.match(s,/verifyLimitsInUse\(p\.id,\{activationLimit:plan\.activationLimit,dnsLimit:plan\.maxServers\},t\)/);
+ assert.match(s,/changes\.monthlyFeeCents=plan\.monthlyPriceCents/);
+ assert.doesNotMatch(s.slice(s.indexOf('const partnerChanges='),s.indexOf('function assertQuota')),/monthlyFeeCents:|dnsLimit:|activationLimit:/);
 });
 test('Admin de rede: códigos de Revenda não burlam a exigência de licença',()=>{
  const s=source('modules/admin-workspaces/workspace.routes.js');

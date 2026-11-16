@@ -80,6 +80,20 @@ export const PartnerPreRegistration = def("PartnerPreRegistration", "partner_pre
   completedAt: ts(), configuredAt: ts(), completedPartnerId: { type: T.UUID }, createdBy: { type: T.UUID },
 });
 
+// Convites de um Admin: não são vendas de estoque nem licença de TV.
+// O token íntegro é entregue uma vez ao emissor; no banco fica apenas SHA-256.
+export const AdminNetworkInvitation = def("AdminNetworkInvitation", "admin_network_invitations", {
+  ownerAdminId: {type:T.UUID,allowNull:true},
+  invitedById: {type:T.UUID,allowNull:false},
+  email: str(200,{allowNull:false}),
+  planKey: str(32,{allowNull:false}),
+  planFingerprint: {type:T.CHAR(64),allowNull:false},
+  tokenHash: {type:T.CHAR(64),allowNull:false},
+  expiresAt: {...ts(),allowNull:false},
+  acceptedAt: ts(), revokedAt: ts(),
+  partnerId: {type:T.UUID},
+}, { indexes:[{fields:['owner_admin_id','created_at']},{unique:true,fields:['token_hash']}] });
+
 export const LoginHistory = def("LoginHistory", "login_history", {
   adminUserId: { type: T.UUID }, userEmail: str(200), role: str(20), partnerId: { type: T.UUID },
   outcome: str(12, { allowNull: false }), reason: str(60), ip: str(64), isp: str(160),
@@ -103,6 +117,7 @@ NotificationCampaign.hasMany(PartnerNotification, { foreignKey: "campaignId", as
 export const AuthSession = def("AuthSession", "auth_sessions", {
   adminUserId: { type: T.UUID, allowNull: false }, refreshHash: { type: T.CHAR(64), allowNull: false },
   expiresAt: { ...ts(), allowNull: false }, revokedAt: ts(), ip: str(64), userAgent: str(300),
+  audience: str(20, { allowNull: false, defaultValue: "legacy" }),
 });
 
 export const Customer = def("Customer", "customers", {
@@ -145,7 +160,10 @@ export const ServicePlanCatalog = sequelize.define("ServicePlanCatalog", {
   key:{type:T.STRING(32),primaryKey:true,allowNull:false},
   name:str(120,{allowNull:false}), description:str(500,{allowNull:false,defaultValue:""}),
   audience:str(16,{allowNull:false}), monthlyPriceCents:{type:T.INTEGER,allowNull:true},
-  maxServers:{type:T.INTEGER,allowNull:true,defaultValue:1},autoFailover:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
+  maxServers:{type:T.INTEGER,allowNull:true,defaultValue:1},
+  activationLimit:{type:T.INTEGER,allowNull:true,defaultValue:100},
+  validityDays:{type:T.INTEGER,allowNull:false,defaultValue:30},
+  autoFailover:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   autoPriority:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   emailAlerts:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   detailedHistory:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
