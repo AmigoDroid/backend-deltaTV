@@ -8,6 +8,7 @@ import { notFound } from '../../shared/errors.js';
 import { checkActivation } from '../access/access.service.js';
 import { presenceOf } from '../devices/presence.js';
 import { liveForDevice } from '../../realtime/live-snapshot.js';
+import { latestForActivation } from '../connection-audit/service.js';
 import { assertControlScope } from '../../realtime/remote-control.service.js';
 import { assessSupport } from './diagnostic.rules.js';
 import { selectClientActivations } from './support.policy.js';
@@ -30,9 +31,10 @@ export async function supportForActivation(activationId, partnerId = null, comme
     Device.findByPk(activation.deviceId, { attributes: ['id','mac','platform','lastSeenAt','appVersion'] }),
     activation.providerId ? PartnerProvider.findByPk(activation.providerId, { attributes: ['id','name','status'] }) : Promise.resolve(null),
     checkActivation(activation.id),
-    select(`SELECT source,state,error_code AS "errorCode",status_code AS "statusCode",created_at AS "createdAt"
-      FROM device_connection_latest WHERE activation_id=:id AND created_at>now()-interval '15 minutes'
-      ORDER BY CASE WHEN source='tv' THEN 0 ELSE 1 END,created_at DESC LIMIT 3`, { id: activationId }),
+    Promise.resolve(latestForActivation(activationId).map(e=>({
+      source:e.source,state:e.state,errorCode:e.error_code,
+      statusCode:e.status_code,createdAt:e.created_at
+    }))),
   ]);
   const providerHealth = provider ? await ProviderHealth.findOne({
     where: { providerId: provider.id }, attributes: ['state','latencyMs','lastCheckedAt','lastGoodAt'],
@@ -64,7 +66,7 @@ export async function supportForActivation(activationId, partnerId = null, comme
       playback: playback.online ? playback.playback : null,
       appActiveSeconds: playback.online ? playback.appActiveSeconds : null,
       usage: playback.online ? playback.usage : null,
-      coverage: 'Estado efêmero no processo API; não há histórico permanente de títulos/IPs.' },
+      coverage: 'Telemetria detalhada desativada; presença e saúde dos servidores permanecem disponíveis.' },
     recentEvent: recent ? { source: recent.source, state: recent.state,
       errorCode: recent.errorCode, statusCode: recent.statusCode, at: recent.createdAt } : null,
     diagnosis,

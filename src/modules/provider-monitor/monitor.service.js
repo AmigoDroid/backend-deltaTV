@@ -5,6 +5,7 @@ import { sequelize } from "../../db/sequelize.js";
 import { Partner, PartnerCode, PartnerProvider, ProviderHealth, CodeFailover, CodeServerPool, ProviderHealthEvent } from "../../db/models/index.js";
 import { assertPublicUrl, safeLookup } from "../../shared/ssrf.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
+import { queueRefreshForDownProvider } from "./active-route.service.js";
 import { clearResolutionCache } from "./resolve.service.js";
 import { sendMail } from "../mail/mail.transport.js";
 import { env } from "../../config/env.js";
@@ -14,40 +15,81 @@ import { invalidatePartnerServerAlerts } from "./visibility.service.js";
 import { createSharedProbe, isNewProbeSample, probeTargetKey } from "./probe-dedup.js";
 import { xtreamApiUrl } from "./url-utils.js";
 import { healthTransition } from "./health-policy.js";
+import { isPlausibleXtreamResponse, smoothLatency } from "./probe-policy.js";
 import { noteProbe, pruneAvailability, availabilityForIds } from "./availability.service.js";
 
 const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
-const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",60,30,3600);
-const SLOW = int("PROVIDER_MONITOR_SLOW_MS",2500,300,5000);
-const TIMEOUT = Math.max(SLOW + 1000, int("PROVIDER_MONITOR_TIMEOUT_MS",4000,800,10000));
+const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",15,10,3600);
+const SLOW = int("PROVIDER_MONITOR_SLOW_MS",1200,300,5000);
+const TIMEOUT = int("PROVIDER_MONITOR_TIMEOUT_MS",2000,800,10000);
 const CONCURRENCY = int("PROVIDER_MONITOR_CONCURRENCY",4,1,8);
 const MAX_PER_CYCLE = int("PROVIDER_MONITOR_MAX_PER_CYCLE",60,5,250);
 // Reaproveita sondagens de URLs idênticas entre parcerias, inclusive em lotes adjacentes.
-// Expira em até um intervalo: a saúde continua sendo realmente reavaliada.
-const PROBE_TTL_MS = int("PROVIDER_MONITOR_DEDUP_TTL_MS",Math.min(INTERVAL*1000,120_000),1000,120_000);
+// TTL sempre menor que o intervalo, mesmo se o .env antigo ainda usar 60000 ms.
+// Isso impede que várias rodadas reaproveitem uma mesma falha como se fossem novas medições.
+const PROBE_TTL_MS = Math.min(int("PROVIDER_MONITOR_DEDUP_TTL_MS",5000,1000,120_000), INTERVAL*1000-1000);
 let timer, running=false, alertRunning=false, cycles=0, lastCleanup=0, alertCursor=null;
 
-/** HEAD/GET de baixo custo, sem seguir redirect, sem guardar o corpo e com proteção SSRF. */
+/** Sondagem leve e limitada: testa o endpoint Xtream real, sem enviar credenciais.
+ * latência = tempo até o primeiro byte HTTP; DNS/TCP/TLS são medidos separadamente.
+ * A disponibilidade autenticada continua sendo confirmada pelo resolvedor por ativação.
+ */
 export async function probeServer(raw) {
   let url;
-  try{url=await assertPublicUrl(raw);}catch(e){
-    return {good:false,slow:false,latencyMs:TIMEOUT,error:`DNS ou destino indisponível: ${String(e.message).slice(0,100)}`};
-  }
-  const target=xtreamApiUrl(url);
-  const started=Date.now();
-  return new Promise(resolve=>{
-    const transport=target.protocol==="https:"?https:http;
-    const req=transport.request(target,{method:"GET",lookup:safeLookup,timeout:TIMEOUT,
-      headers:{"User-Agent":"DeltaTV-Monitor/2.0",Accept:"application/json",Connection:"close"}},res=>{
-      const ms=Date.now()-started;
-      // 401/403 pode ser WAF; indica que o host respondeu, mas não autentica conta do cliente.
-      const good = res.statusCode>=200 && res.statusCode<500 && res.statusCode!==429;
-      const slow = good && ms > SLOW;
-      res.destroy();
-      resolve({good,slow,latencyMs:ms,error:good?(slow?"Resposta lenta":null):`HTTP ${res.statusCode}`});
+  try { url = await assertPublicUrl(raw); }
+  catch(e) { return {good:false,slow:false,latencyMs:TIMEOUT,error:`DNS ou destino indisponível: ${String(e.message).slice(0,100)}`}; }
+  const target = xtreamApiUrl(url);
+  return new Promise(resolve => {
+    const started = performance.now();
+    const transport = target.protocol === "https:" ? https : http;
+    let settled = false, dnsMs = null, tcpMs = null, tlsMs = null, firstByteMs = null;
+    let absoluteTimeout;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(absoluteTimeout);
+      resolve({ ...result, dnsMs, tcpMs, tlsMs, ttfbMs:firstByteMs });
+    };
+    const req = transport.request(target, {
+      method:"GET", lookup:safeLookup, agent:false,
+      headers:{"User-Agent":"DeltaTV-Monitor/3.0",Accept:"application/json",Connection:"close"}
+    }, res => {
+      firstByteMs = Math.round(performance.now()-started);
+      const status = res.statusCode;
+      const contentType = res.headers['content-type'] || '';
+      // Não consumir catálogos nem corpos arbitrários: ler só a primeira amostra.
+      // 401/403/404/429 NÃO demonstram API Xtream utilizável.
+      if (status !== 200) {
+        res.destroy();
+        return finish({good:false,slow:false,latencyMs:firstByteMs,error:`Xtream HTTP ${status}`});
+      }
+      let sampled = Buffer.alloc(0);
+      res.on('data', chunk => {
+        if (settled) return;
+        sampled = Buffer.concat([sampled,chunk.subarray(0,Math.max(0,2048-sampled.length))]);
+        if (sampled.length >= 2048 || /\S/.test(sampled.toString('utf8'))) {
+          const good = isPlausibleXtreamResponse({status,contentType,sample:sampled.toString('utf8')});
+          res.destroy();
+          finish({good,slow:good && firstByteMs>SLOW,latencyMs:firstByteMs,error:good?(firstByteMs>SLOW?'Resposta lenta':null):'Resposta não parece ser JSON Xtream'});
+        }
+      });
+      res.on('end',()=>{
+        const good=isPlausibleXtreamResponse({status,contentType,sample:sampled.toString('utf8')});
+        finish({good,slow:good && firstByteMs>SLOW,latencyMs:firstByteMs,error:good?null:'Resposta vazia ou incompatível com Xtream'});
+      });
+      res.on('error', e => finish({good:false,slow:false,latencyMs:Math.round(performance.now()-started),error:String(e.message).slice(0,160)}));
     });
-    req.on("timeout",()=>req.destroy(new Error("Timeout")));
-    req.on("error",e=>resolve({good:false,slow:false,latencyMs:Date.now()-started,error:String(e.message).slice(0,160)}));
+    req.on('socket', socket => {
+      socket.once('lookup', () => {dnsMs=Math.round(performance.now()-started);});
+      socket.once('connect', () => {tcpMs=Math.round(performance.now()-started);});
+      socket.once('secureConnect', () => {tlsMs=Math.round(performance.now()-started);});
+    });
+    absoluteTimeout=setTimeout(()=>{
+      req.destroy();
+      finish({good:false,slow:false,latencyMs:TIMEOUT,error:'Timeout da sondagem Xtream'});
+    },TIMEOUT);
+    absoluteTimeout.unref?.();
+    req.on('error', e => finish({good:false,slow:false,latencyMs:Math.round(performance.now()-started),error:String(e.message).slice(0,160)}));
     req.end();
   });
 }
@@ -63,10 +105,11 @@ async function updateOne(provider) {
     if (!isNewProbeSample(h.lastCheckedAt, r.sampledAt)) return {stateChanged:false,notify:false};
     const { failures, successes, state } = healthTransition(h, r);
     const oldLatency = h.latencyMs;
+    const effectiveLatency = r.good ? smoothLatency(oldLatency,r.latencyMs) : r.latencyMs;
     const stateChanged = state !== h.state;
     const latencyChanged = r.good && oldLatency != null &&
-      Math.abs(r.latencyMs - oldLatency) >= Math.max(250, oldLatency * 0.4);
-    await h.update({state,latencyMs:r.latencyMs,lastCheckedAt:r.sampledAt,lastGoodAt:r.good?r.sampledAt:h.lastGoodAt,failures,successes,lastError:r.error});
+      Math.abs(effectiveLatency - oldLatency) >= Math.max(250, oldLatency * 0.4);
+    await h.update({state,latencyMs:effectiveLatency,lastCheckedAt:r.sampledAt,lastGoodAt:r.good?r.sampledAt:h.lastGoodAt,failures,successes,lastError:r.error});
     // Totalização horária, sem guardar cada resposta; falha de métrica não desliga failover.
     try { await noteProbe(provider.id,r); }
     catch (metricError) { console.warn('[provider-monitor] agregado de disponibilidade:', metricError.message); }
@@ -75,7 +118,7 @@ async function updateOne(provider) {
       try{await ProviderHealthEvent.create({providerId:provider.id,state,latencyMs:r.latencyMs,note:r.error,occurredAt:r.sampledAt});}
       catch(error){console.warn("[provider-monitor] histórico",error.message)}
     }
-    return { stateChanged, notify: stateChanged || latencyChanged };
+    return { stateChanged, notify: stateChanged || latencyChanged, providerId:provider.id, state };
   }catch(e){ console.warn("[provider-monitor] sondagem",provider.id,e.message);return { stateChanged:false, notify:false }; }
 }
 async function workers(items,fn,n) {
@@ -101,15 +144,25 @@ export async function monitorOnce() {
       LIMIT :limit`, { replacements: { limit: MAX_PER_CYCLE }, type: QueryTypes.SELECT });
     if (!providers.length) return;
     const changedPartnerIds = new Set();
+    const newlyDown = new Set();
     let changedState = false;
     await workers(providers,async p=>{
       const result = await updateOne(p);
       if (result.stateChanged) changedState = true;
+      if (result.stateChanged && result.state === "down") newlyDown.add(result.providerId);
       if (result.notify) changedPartnerIds.add(p.partnerId);
     },CONCURRENCY);
     // Revalidar caches de roteamento só quando muda a disponibilidade.
     // Uma oscilação de latência não precisa invalidar as sessões existentes.
     if (changedState) { clearMirrorAuth();clearResolutionCache(); }
+    // Quando uma origem cai, a seleção futura já a exclui; sinalizar TVs atualmente nela.
+    // Não bloqueia a próxima rodada de monitoramento por lentidão no comando remoto.
+    // Repetir lotes em ciclos seguintes para redes com mais de 100 TVs, sem
+    // executar uma consulta por heartbeat nem concentrar tudo num único ciclo.
+    const stillDown = await ProviderHealth.findAll({where:{state:'down',lastCheckedAt:{[Op.gt]:new Date(Date.now()-Math.max(INTERVAL*3000,180000))}},attributes:['providerId'],limit:5,raw:true});
+    for (const providerId of new Set([...newlyDown,...stillDown.map(p=>p.providerId)])) {
+      void queueRefreshForDownProvider(providerId).catch(e=>console.warn('[provider-monitor] atualização TVs',e.message));
+    }
     // Um único aviso por parceria e rodada, nunca um por TV nem por usuário.
     for (const partnerId of changedPartnerIds) {
       invalidatePartnerServerAlerts(partnerId);

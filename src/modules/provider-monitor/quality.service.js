@@ -13,71 +13,36 @@ const cache = new Map();
 const CACHE_MS = 60_000;
 const LIMIT = 120;
 export function invalidateQualityCache() { cache.clear(); }
-/** Cada amostra usa o servidor selecionado MAIS RECENTEMENTE, não comprova
- * a origem final depois de redirects, portanto exibimos atribuição estimada. */
-// Uma linha por TV no CTE 'selection' (indice unico activation_id,source).
-// Pre-agregamos eventos por ativacao ANTES de juntar aos provedores: evita
-// COUNT(DISTINCT ...) sobre o produto de joins e reduz memoria do PostgreSQL.
-const STATS_SQL = `WITH selection AS (
-  SELECT provider_id, activation_id
-  FROM device_connection_latest
-  WHERE source='selection' AND created_at > now()-interval '20 minutes'
-), tv_events AS (
-  SELECT activation_id,
-    count(*)::integer AS total,
-    count(*) FILTER (WHERE state='error')::integer AS errors,
-    count(*) FILTER (WHERE state='buffering')::integer AS buffers,
-    bool_or(state IN ('error','buffering')) AS affected
-  FROM device_connection_events
-  WHERE source='tv' AND created_at > now()-interval '10 minutes'
-  GROUP BY activation_id
-), provider_totals AS (
-  SELECT selection.provider_id,
-    count(*)::integer AS sample_devices,
-    count(*) FILTER (WHERE coalesce(tv_events.affected,false))::integer AS affected_devices,
-    coalesce(sum(tv_events.total),0)::integer AS sample_events,
-    coalesce(sum(tv_events.errors),0)::integer AS error_events,
-    coalesce(sum(tv_events.buffers),0)::integer AS buffer_events
-  FROM selection
-  LEFT JOIN tv_events ON tv_events.activation_id=selection.activation_id
-  GROUP BY selection.provider_id
-)
-SELECT pp.id AS "providerId", pp.partner_id AS "partnerId", pp.name,
-  h.state AS "healthState", h.latency_ms AS "probeLatencyMs",
-  coalesce(pt.sample_devices,0)::integer AS "sampleDevices",
-  coalesce(pt.affected_devices,0)::integer AS "affectedDevices",
-  coalesce(pt.sample_events,0)::integer AS "sampleEvents",
-  coalesce(pt.error_events,0)::integer AS "errorEvents",
-  coalesce(pt.buffer_events,0)::integer AS "bufferEvents"
-FROM partner_providers pp
-LEFT JOIN provider_health h ON h.provider_id=pp.id
-LEFT JOIN provider_totals pt ON pt.provider_id=pp.id
-WHERE pp.deleted_at IS NULL AND (:partner IS NULL OR pp.partner_id=:partner)
-ORDER BY "affectedDevices" DESC, "sampleDevices" DESC
-LIMIT :limit`;
-
+// A qualidade coletiva usa apenas o último estado vivo por TV, em memória.
+// Não consulta mais device_connection_events nem device_connection_latest.
+const STATS_SQL = `SELECT pp.id AS "providerId", pp.partner_id AS "partnerId", pp.name,
+  h.state AS "healthState", h.latency_ms AS "probeLatencyMs"
+  FROM partner_providers pp
+  LEFT JOIN provider_health h ON h.provider_id=pp.id
+  WHERE pp.deleted_at IS NULL AND (:partner IS NULL OR pp.partner_id=:partner)
+  ORDER BY pp.name LIMIT :limit`;
 
 export async function providerQuality(partnerId=null) {
   const key=partnerId||'*', hit=cache.get(key);
   if(hit && Date.now()-hit.time<CACHE_MS) return hit.data;
   const rows=await read(STATS_SQL,{partner:partnerId,limit:100});
-  const data=rows.map(classifyQuality);
+  const data=rows.map(row => classifyQuality({ ...row,
+    ...{ sampleDevices:0, affectedDevices:0, sampleEvents:0, errorEvents:0, bufferEvents:0 }
+  }));
   if(cache.size>=LIMIT && !cache.has(key)) cache.delete(cache.keys().next().value);
   cache.set(key,{time:Date.now(),data});
   return data;
 }
 
 export async function qualityForActivation(activationId,partnerId=null) {
+  // Fonte estável, de configuração, não o servidor de reprodução que a TV possa ter escolhido.
   const [row]=await read(`SELECT pp.id AS "providerId",pp.name,h.state AS "healthState",
-    h.latency_ms AS "probeLatencyMs",s.created_at AS "selectedAt",
-    q.severity,q.affected_devices AS "affectedDevices",q.sample_devices AS "sampleDevices",
-    q.last_seen_at AS "alertAt"
-    FROM device_connection_latest s JOIN partner_providers pp ON pp.id=s.provider_id
+    h.latency_ms AS "probeLatencyMs"
+    FROM activations a JOIN partner_providers pp ON pp.id=a.provider_id
     LEFT JOIN provider_health h ON h.provider_id=pp.id
-    LEFT JOIN provider_quality_alerts q ON q.provider_id=pp.id AND q.resolved_at IS NULL
-    WHERE s.activation_id=:aid AND s.source='selection'
-      AND (:partner IS NULL OR pp.partner_id=:partner) LIMIT 1`,{aid:activationId,partner:partnerId});
-  return row || null;
+    WHERE a.id=:aid AND (:partner IS NULL OR pp.partner_id=:partner) LIMIT 1`,
+    {aid:activationId,partner:partnerId});
+  return row ? {...row, selectionLive:false} : null;
 }
 
 let running = false;

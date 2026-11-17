@@ -5,7 +5,7 @@ import { availabilityForIds } from "./availability.service.js";
 
 // Consulta somente metadados de saúde já produzidos pelo monitor de fundo.
 // Nenhuma sondagem de rede acontece ao carregar a página.
-const INTERVAL = Math.max(30, Math.min(3600, Number(process.env.PROVIDER_MONITOR_INTERVAL_SECONDS) || 60));
+const INTERVAL = Math.max(10, Math.min(3600, Number(process.env.PROVIDER_MONITOR_INTERVAL_SECONDS) || 15));
 const MAX_PER_CYCLE = Math.max(5, Math.min(250, Number(process.env.PROVIDER_MONITOR_MAX_PER_CYCLE) || 60));
 const enabled = () => env.enableScheduler && process.env.PROVIDER_MONITOR_ENABLED === "true";
 const DEFAULT_PAGE_SIZE = 20;

@@ -1,3 +1,4 @@
+import { rememberSelectedProvider } from "./active-route.service.js";
 import { webActivationDefaults } from "../settings/platform-settings.service.js";
 import { webProvider } from "../web/web-https.js";
 import { selectHealthy } from "./ranking.js";
@@ -77,8 +78,10 @@ export async function resolveForActivation(activation, original, credentials) {
     const servers=(await serversForCode(code)).map(server => webProvider(server, activation));
     if(!servers.length)return {provider:original,verified:false};
     // Se o parceiro removeu explicitamente a origem antiga do pool, ela NÃO pode ser entregue novamente.
-    const fallback={provider:servers.some(s=>s.id===original?.id)?original:null,verified:false};
     const states=await statesOf(servers);
+    // Não devolver uma origem sabidamente DOWN apenas por ser a original.
+    const originalHealth=states.get(original?.id);
+    const fallback={provider:servers.some(s=>s.id===original?.id) && originalHealth?.state!=="down"?original:null,verified:false};
     // Preferência temporária deste dispositivo após erro real de reprodução. Não
     // altera a saúde global do provedor nem as escolhas das outras TVs.
     const [request] = await sequelize.query(`SELECT avoid_provider_id FROM device_failover_requests
@@ -87,20 +90,21 @@ export async function resolveForActivation(activation, original, credentials) {
     const avoidId = request?.avoid_provider_id || null;
     const now=Date.now();
     const freshMs = (await freshnessWindowSeconds()) * 1000;
-    const automatic=plan.features.autoPriority;
     const ranked=servers.filter(s=>s.id!==avoidId && s.status==="active" && ["healthy", "slow"].includes(states.get(s.id)?.state)
       && now-new Date(states.get(s.id).lastCheckedAt).getTime()<freshMs)
-      .sort((a,b)=>(states.get(a.id).state === "slow")-(states.get(b.id).state === "slow") || (automatic?(states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999) || a.priority-b.priority
-        :a.priority-b.priority || (states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999)));
+      .sort((a,b)=>(states.get(a.id).state === "slow")-(states.get(b.id).state === "slow")
+        || (states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999)
+        || a.priority-b.priority);
     if(!ranked.length)return fallback;
     const pinned = avoidId ? null : pins.get(activation.id);
     // Para evitar flapping, só troca por ganho significativo (>=50 ms e >=15%).
     const scored=ranked.map(s=>({...s,latencyMs:states.get(s.id)?.latencyMs??99999}));
     const selected = pinned && states.get(pinned.providerId)?.state === "slow" &&
       scored[0]?.id !== pinned.providerId && states.get(scored[0]?.id)?.state === "healthy"
-      ? scored[0] : (automatic ? selectHealthy(scored,pinned,now)
-        : (pinned?.until > now && scored.find(s => s.id === pinned.providerId) || scored[0]));
-    if(selected.id===original?.id){put(pins,activation.id,{providerId:selected.id,until:now+PIN_MS},MAX_PINS);return {provider:selected,verified:false};}
+      ? scored[0] : selectHealthy(scored,pinned,now);
+    if(selected.id===original?.id){put(pins,activation.id,{providerId:selected.id,until:now+PIN_MS},MAX_PINS);
+      await rememberSelectedProvider(activation.id, selected.id).catch(e=>console.warn("[smart-resolver] estado atual",e.message));
+      return {provider:selected,verified:false};}
     // Tenta progressivamente alternativas saudáveis dentro do orçamento de latência.
     // Cada validação possui timeout individual; não bloquear o catálogo indefinidamente.
     const deadline = Date.now() + 5500;
@@ -109,6 +113,7 @@ export async function resolveForActivation(activation, original, credentials) {
       if (Date.now() >= deadline) break;
       if (await verifyAlternative(candidate, credentials.username, credentials.password)) {
         put(pins, activation.id, { providerId: candidate.id, until: now + PIN_MS }, MAX_PINS);
+        await rememberSelectedProvider(activation.id,candidate.id).catch(e=>console.warn("[smart-resolver] estado atual",e.message));
         return { provider: candidate, verified: true };
       }
     }

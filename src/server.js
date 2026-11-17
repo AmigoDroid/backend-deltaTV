@@ -11,8 +11,6 @@ import { broadcastDeviceHint } from "./realtime/device-channel.js";
 import dotenv from "dotenv";
 import { pruneRemoteCommands } from './realtime/remote-control.service.js';
 import { cleanupDeviceFailover } from './modules/provider-monitor/device-failover.service.js';
-import { assessCollectiveQuality } from './modules/provider-monitor/quality.service.js';
-import { startAudit, stopAudit } from "./modules/connection-audit/service.js";
 import {startPortalUsageMeter,stopPortalUsageMeter} from "./modules/partner-portal-usage/meter.js";
 import { startProviderMonitor,stopProviderMonitor } from "./modules/provider-monitor/monitor.service.js";
 dotenv.config();
@@ -31,7 +29,6 @@ startDeviceChangeBus(msg => broadcastDeviceHint(msg, false));
 server.requestTimeout = (Number.parseInt(process.env.DOWNLOAD_UPLOAD_TIMEOUT_MIN ?? "", 10) || 30) * 60_000;
 // O flush da presença roda em TODA instância (não depende do scheduler): cada processo grava os sinais que recebeu.
 startPresence();
-startAudit();
 startPortalUsageMeter();
 // Publica somente mudanças de contagem. O prazo de expiração dos heartbeats também
 // é observado, mesmo quando nenhum aparelho faz nova requisição.
@@ -57,26 +54,21 @@ const remotePruneTimer = setInterval(() => {
   void cleanupDeviceFailover().catch(e => console.warn('[failover] cleanup',e.message));
 }, 24*60*60*1000);
 remotePruneTimer.unref();
-let qualityTimer = null;
 let stopScheduler = () => {};
 if (env.enableScheduler) {
   stopScheduler = startScheduler(); startProviderMonitor();
-  qualityTimer=setInterval(() => void assessCollectiveQuality().catch(err=>console.warn('[quality]',err.message)),60_000);
-  qualityTimer.unref?.();
 }
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     clearInterval(devicePresenceTimer);
     clearInterval(remotePruneTimer);
-    if(qualityTimer)clearInterval(qualityTimer);
     stopScheduler();
     stopProviderMonitor();
     stopRealtime();
     server.close(async () => {
       await stopDeviceChangeBus();
       try { await stopPortalUsageMeter(); } catch(e) { console.error('[portal-usage] flush final falhou:',e.message); }
-      await stopAudit(); // descarrega a fila de auditoria antes de fechar o PostgreSQL
       await stopPresence(); // grava os últimos sinais antes de fechar o banco
       await sequelize.close();
       process.exit(0);
