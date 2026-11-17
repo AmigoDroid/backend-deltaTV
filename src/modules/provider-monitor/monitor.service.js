@@ -13,9 +13,9 @@ import { broadcastChange } from "../../realtime/socket.js";
 import {getServicePlan} from "../service-plans/plan.service.js";
 import { invalidatePartnerServerAlerts } from "./visibility.service.js";
 import { createSharedProbe, isNewProbeSample, probeTargetKey } from "./probe-dedup.js";
-import { xtreamApiUrl } from "./url-utils.js";
+import { monitorProbeUrl } from "./url-utils.js";
 import { healthTransition } from "./health-policy.js";
-import { isPlausibleXtreamResponse, smoothLatency } from "./probe-policy.js";
+import { isReachableHttpStatus, smoothLatency } from "./probe-policy.js";
 import { noteProbe, pruneAvailability, availabilityForIds } from "./availability.service.js";
 
 const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
@@ -30,15 +30,16 @@ const MAX_PER_CYCLE = int("PROVIDER_MONITOR_MAX_PER_CYCLE",60,5,250);
 const PROBE_TTL_MS = Math.min(int("PROVIDER_MONITOR_DEDUP_TTL_MS",5000,1000,120_000), INTERVAL*1000-1000);
 let timer, running=false, alertRunning=false, cycles=0, lastCleanup=0, alertCursor=null;
 
-/** Sondagem leve e limitada: testa o endpoint Xtream real, sem enviar credenciais.
- * latência = tempo até o primeiro byte HTTP; DNS/TCP/TLS são medidos separadamente.
- * A disponibilidade autenticada continua sendo confirmada pelo resolvedor por ativação.
+/** Sondagem HTTP leve na URL base cadastrada: NÃO acrescenta /player_api.php.
+ * Apenas mede se a origem respondeu (status 200..499, exceto 429), sem
+ * autenticação, inspeção de conteúdo, download de catálogo ou redirects.
+ * Latência até os cabeçalhos; DNS/TCP/TLS são métricas separadas.
  */
 export async function probeServer(raw) {
   let url;
   try { url = await assertPublicUrl(raw); }
   catch(e) { return {good:false,slow:false,latencyMs:TIMEOUT,error:`DNS ou destino indisponível: ${String(e.message).slice(0,100)}`}; }
-  const target = xtreamApiUrl(url);
+  const target = monitorProbeUrl(url);
   return new Promise(resolve => {
     const started = performance.now();
     const transport = target.protocol === "https:" ? https : http;
@@ -52,39 +53,15 @@ export async function probeServer(raw) {
     };
     const req = transport.request(target, {
       method:"GET", lookup:safeLookup, agent:false,
-      headers:{"User-Agent":"DeltaTV-Monitor/3.0",Accept:"application/json",Connection:"close"}
+      headers:{"User-Agent":"DeltaTV-Monitor/3.0",Accept:"*/*",Connection:"close"}
     }, res => {
       firstByteMs = Math.round(performance.now()-started);
-      const status = res.statusCode;
-      const contentType = res.headers['content-type'] || '';
-      // Não consumir catálogos nem corpos arbitrários: ler só a primeira amostra.
-      // Sem credenciais: 401/403/404 provam que o HTTP respondeu, não que
-      // a conta ou o conteúdo Xtream estejam disponíveis. Não penalizar saúde.
-      // 429 (rate limit), erros 5xx e demais status seguem como falha.
-      if ([401,403,404].includes(status)) {
-        res.destroy();
-        return finish({good:true,slow:firstByteMs>SLOW,latencyMs:firstByteMs,
-          error:firstByteMs>SLOW?'Resposta lenta':null});
-      }
-      if (status !== 200) {
-        res.destroy();
-        return finish({good:false,slow:false,latencyMs:firstByteMs,error:`Xtream HTTP ${status}`});
-      }
-      let sampled = Buffer.alloc(0);
-      res.on('data', chunk => {
-        if (settled) return;
-        sampled = Buffer.concat([sampled,chunk.subarray(0,Math.max(0,2048-sampled.length))]);
-        if (sampled.length >= 2048 || /\S/.test(sampled.toString('utf8'))) {
-          const good = isPlausibleXtreamResponse({status,contentType,sample:sampled.toString('utf8')});
-          res.destroy();
-          finish({good,slow:good && firstByteMs>SLOW,latencyMs:firstByteMs,error:good?(firstByteMs>SLOW?'Resposta lenta':null):'Resposta não parece ser JSON Xtream'});
-        }
-      });
-      res.on('end',()=>{
-        const good=isPlausibleXtreamResponse({status,contentType,sample:sampled.toString('utf8')});
-        finish({good,slow:good && firstByteMs>SLOW,latencyMs:firstByteMs,error:good?null:'Resposta vazia ou incompatível com Xtream'});
-      });
-      res.on('error', e => finish({good:false,slow:false,latencyMs:Math.round(performance.now()-started),error:String(e.message).slice(0,160)}));
+      const good = isReachableHttpStatus(res.statusCode);
+      const slow = good && firstByteMs > SLOW;
+      // Não lê o corpo nem segue redirecionamentos: basta a resposta HTTP.
+      res.destroy();
+      finish({good,slow,latencyMs:firstByteMs,
+        error:good?(slow?'Resposta lenta':null):`HTTP ${res.statusCode}`});
     });
     req.on('socket', socket => {
       socket.once('lookup', () => {dnsMs=Math.round(performance.now()-started);});
@@ -93,7 +70,7 @@ export async function probeServer(raw) {
     });
     absoluteTimeout=setTimeout(()=>{
       req.destroy();
-      finish({good:false,slow:false,latencyMs:TIMEOUT,error:'Timeout da sondagem Xtream'});
+      finish({good:false,slow:false,latencyMs:TIMEOUT,error:'Timeout da sondagem HTTP'});
     },TIMEOUT);
     absoluteTimeout.unref?.();
     req.on('error', e => finish({good:false,slow:false,latencyMs:Math.round(performance.now()-started),error:String(e.message).slice(0,160)}));

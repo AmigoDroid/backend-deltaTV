@@ -8,8 +8,8 @@ Por exemplo, 40 cadastros com `https://origem.exemplo` no mesmo intervalo geram
 **uma requisição de sondagem**, não 40. Host em maiúsculas e portas padrão são
 normalizados. HTTP e HTTPS, hosts e portas diferentes continuam independentes.
 
-**Importante:** o monitor testa `GET /player_api.php` *sem credenciais* e *sem baixar
-catálogos*. Apenas esse resultado técnico é compartilhado. Cada parceiro/provedor
+**Importante:** o monitor usa `GET` na **URL base cadastrada**, sem acrescentar
+`/player_api.php`, sem credenciais e sem baixar catálogos. Apenas esse resultado técnico é compartilhado. Cada parceiro/provedor
 mantém seu próprio registro `provider_health`, limiares de falhas, histórico,
 permissões e alertas. Nenhuma credencial ou lista é colocada no cache.
 
@@ -17,7 +17,7 @@ permissões e alertas. Nenhuma credencial ou lista é colocada no cache.
 
 - Sondagens simultâneas para a mesma URL são unificadas (single-flight).
 - Resultados recentes são mantidos em cache LRU com **no máximo 1.000 URLs**.
-- TTL padrão: **um intervalo de monitoramento** (máximo 120 segundos).
+- TTL padrão: **5 segundos**, sempre inferior ao intervalo de monitoramento.
 - Medição reutilizada mantém o instante original da coleta: o mesmo resultado não
   conta duas vezes como duas falhas/duas recuperações para o mesmo servidor.
 - O monitor preserva os limites existentes de concorrência, itens por rodada,
@@ -28,12 +28,12 @@ permissões e alertas. Nenhuma credencial ou lista é colocada no cache.
 ## Configuração opcional
 
 ```env
-PROVIDER_MONITOR_DEDUP_TTL_MS=60000
+PROVIDER_MONITOR_DEDUP_TTL_MS=5000
 ```
 
-Deixar de configurar a variável também funciona: o padrão acompanha o intervalo
-configurado em `PROVIDER_MONITOR_INTERVAL_SECONDS` (até 120 s). Não use TTL muito
-alto: pode retardar a detecção de uma mudança. Para uma VPS de 2 GB de RAM, o
+Deixar a variável ausente também funciona: o padrão é 5 segundos,
+limitado a menos de um intervalo de monitoramento. Não use TTL muito alto: pode retardar
+a detecção de uma mudança. Para uma VPS de 2 GB de RAM, o
 cache de 1.000 entradas ocupa pouca memória.
 
 ## Implantação

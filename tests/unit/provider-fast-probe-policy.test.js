@@ -1,14 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isPlausibleXtreamResponse, smoothLatency } from '../../src/modules/provider-monitor/probe-policy.js';
+import { isReachableHttpStatus, smoothLatency } from '../../src/modules/provider-monitor/probe-policy.js';
 import { healthTransition } from '../../src/modules/provider-monitor/health-policy.js';
 
-test('401, 403 e 404 indicam HTTP alcançável na sondagem sem credenciais; 429 e 5xx não',()=>{
-  for(const status of [401,403,404]) assert.equal(isPlausibleXtreamResponse({status,contentType:'text/html',sample:'<html>restrito</html>'}),true);
-  for(const status of [429,500,503]) assert.equal(isPlausibleXtreamResponse({status,contentType:'application/json',sample:'{}'}),false);
-  assert.equal(isPlausibleXtreamResponse({status:200,contentType:'text/html',sample:'<html>login</html>'}),false);
-  assert.equal(isPlausibleXtreamResponse({status:200,contentType:'application/json',sample:'<html>login</html>'}),false);
-  assert.equal(isPlausibleXtreamResponse({status:200,contentType:'application/json',sample:'{"user_info":{"auth":0}}'}),true);
+test('sondagem HTTP segue a classificação anterior: 200..499, exceto 429',()=>{
+  for(const status of [200,204,301,302,307,400,401,403,404,418,499])
+    assert.equal(isReachableHttpStatus(status),true,`HTTP ${status}`);
+  for(const status of [100,199,429,500,503,599,undefined,null,NaN])
+    assert.equal(isReachableHttpStatus(status),false,`HTTP ${status}`);
 });
 test('média móvel evita trocar DNS por ruído pequeno',()=>{
   assert.equal(smoothLatency(100,200),135);

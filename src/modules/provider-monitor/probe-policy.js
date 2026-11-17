@@ -1,17 +1,9 @@
-/** Verificação mínima de um endpoint Xtream SEM credenciais.
- * Não garante que o usuário/senha funcionem (o resolvedor valida depois).
+/** Política original da sondagem HTTP sem credenciais.
+ * 2xx, 3xx e 4xx (exceto 429) indicam que o servidor respondeu.
+ * Não significa autenticação nem funcionamento do serviço de streaming.
  */
-export function isPlausibleXtreamResponse({status, contentType='', sample=''}) {
-  // Resposta sem credenciais: HTTP 401/403/404 prova alcançabilidade,
-  // mas NÃO autenticação ou catálogo funcional.
-  if ([401,403,404].includes(status)) return true;
-  if (status !== 200) return false;
-  const body = String(sample).trimStart();
-  // Aceita JSON retornado pelo Xtream inclusive auth=0 (sem credenciais).
-  // Para HTTP 200, rejeita páginas HTML de proxy, captive portal e painel administrativo.
-  if (!body.startsWith('{') && !body.startsWith('[')) return false;
-  if (/text\/html/i.test(contentType)) return false;
-  return true;
+export function isReachableHttpStatus(status) {
+  return Number.isInteger(status) && status >= 200 && status < 500 && status !== 429;
 }
 
 /** EMA mantém preferência estável diante de variações pequenas de latência. */

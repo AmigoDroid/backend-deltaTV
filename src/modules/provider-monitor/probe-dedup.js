@@ -1,16 +1,16 @@
 /**
- * A medição do monitor consulta exclusivamente /player_api.php (sem credenciais).
+ * A medição do monitor consulta a URL cadastrada, sem acrescentar /player_api.php.
  * A chave representa a requisição HTTP efetiva, NÃO o ID do parceiro/provedor.
  * URL normaliza esquema, host e porta padrão, mas nunca confunde HTTP com HTTPS
  * ou portas distintas. A proteção SSRF continua sendo feita pelo probe real.
  */
-import { xtreamApiUrl } from "./url-utils.js";
+import { monitorProbeUrl } from "./url-utils.js";
 
 export function probeTargetKey(raw) {
   try {
     const base = new URL(String(raw).trim());
     if (base.protocol !== "http:" && base.protocol !== "https:") throw new Error("unsupported protocol");
-    return xtreamApiUrl(base).href;
+    return monitorProbeUrl(base).href;
   } catch {
     // Endereços inválidos nunca devem colidir com URLs válidas.
     return `invalid:${String(raw).trim()}`;
