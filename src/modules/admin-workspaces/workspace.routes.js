@@ -8,7 +8,7 @@ import { validate } from "../../shared/validate.js";
 import * as codesService from "../partners/partner.service.js";
 import * as providerService from "../providers/provider.service.js";
 import { DEFAULT_TEMPLATE } from "../providers/playlist-url.js";
-import {listActivations} from "../devices/device.service.js";
+import {listActivations,changeActivation,getActivation} from "../devices/device.service.js";
 import {generateInvoice} from "../billing/billing.service.js";
 import { AppError } from "../../shared/errors.js";
 import { actorOf, audit } from "../../shared/audit.js";
@@ -463,9 +463,19 @@ router.patch("/partners/:id/providers/:providerId",requireScope("network:resourc
   const p=await ownedPartner(tenant(req),req.valid.params.id);
   res.json(await providerService.updateProvider(p.id,req.valid.params.providerId,req.valid.body,actorOf(req)));
 });
-router.get("/partners/:id/devices",requireScope("network:devices:read"),validate({params:ident,query:pagination}),async(req,res)=>{
+router.get("/partners/:id/devices",requireScope("network:devices:read"),validate({params:ident,query:pagination.extend({q:z.string().trim().max(40).optional(),status:z.enum(["active","blocked","revoked"]).optional()})}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);
   res.json(await listActivations({...req.valid.query,partnerId:p.id},{partnerId:p.id}));
+});
+// Gestão operacional de TVs pertencentes à conta, validada pelo escopo da rede.
+router.post("/partners/:id/devices/:activationId/:action",requireScope("network:devices:write"),validate({
+  params:z.object({id:z.string().uuid(),activationId:z.string().uuid(),action:z.enum(["block","unblock","revoke"])}),
+  body:z.object({reason:z.string().trim().min(3).max(500)}).strict(),
+}),async(req,res)=>{
+  const p=await ownedPartner(tenant(req),req.valid.params.id);
+  const {activationId,action}=req.valid.params;
+  await changeActivation(activationId,action,{reason:req.valid.body.reason,actor:actorOf(req),scope:{partnerId:p.id},blockedBy:"partner"});
+  res.json(await getActivation(activationId,{partnerId:p.id}));
 });
 router.get("/partners/:id/invoices",requireScope("network:billing:read"),validate({params:ident}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);

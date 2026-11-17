@@ -7,7 +7,7 @@ export const NETWORK_PERMISSIONS = Object.freeze([
   "network:resellers:read", "network:resellers:write", "network:resellers:delete",
   "network:plans:read", "network:plans:write",
   "network:members:read", "network:members:write",
-  "network:resources:read", "network:resources:write", "network:devices:read",
+  "network:resources:read", "network:resources:write", "network:devices:read", "network:devices:write",
   "network:billing:read", "network:billing:write",
   "network:audit:read",
 ]);
