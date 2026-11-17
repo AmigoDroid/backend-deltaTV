@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Op, UniqueConstraintError } from "sequelize";
 import { randomBytes } from "node:crypto";
 import { sequelize, AdminUser, Partner, PartnerServicePlan, ContentPartnerTerms,
-  ServicePlanCatalog, AdminNetworkInvitation, Activation, Invoice } from "../../db/models/index.js";
+  ServicePlanCatalog, AdminNetworkInvitation, Activation, Invoice, PartnerCode, PartnerProvider } from "../../db/models/index.js";
 import { validate } from "../../shared/validate.js";
 import * as codesService from "../partners/partner.service.js";
 import * as providerService from "../providers/provider.service.js";
@@ -238,14 +238,13 @@ router.get("/plans/:key/deletion-preview",requireScope("network:plans:read"),
    warning:accounts||invitations?'O plano será removido das listas e não poderá receber novos cadastros. Contratos e convites históricos serão preservados.':'O plano não tem contas ou convites vinculados e poderá ser removido permanentemente.'});
  });
 router.delete("/plans/:key",requireScope("network:plans:write"),
- validate({params:z.object({key:z.string().min(2).max(32)}),body:z.object({confirmation:z.string(),reason:z.string().trim().min(5).max(500)}).strict()}),async(req,res)=>{
-  const root=tenant(req),{key}=req.valid.params,{confirmation,reason}=req.valid.body;
+ validate({params:z.object({key:z.string().min(2).max(32)}),body:z.object({reason:z.string().trim().max(500).optional().default("")}).strict()}),async(req,res)=>{
+  const root=tenant(req),{key}=req.valid.params,{reason}=req.valid.body;
   const result=await sequelize.transaction(async t=>{
    await sequelize.query("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))",{replacements:{key:`network:${root}`},transaction:t});
    const plan=await ServicePlanCatalog.findOne({where:{key,ownerAdminId:root,deletedAt:null},transaction:t,lock:t.LOCK.UPDATE});
    if(!plan)throw new AppError(404,"NOT_FOUND","Plano não encontrado na sua rede.");
    if(plan.system)throw new AppError(409,"SYSTEM_PLAN","Planos de sistema não podem ser excluídos.");
-   if(confirmation!==plan.name)throw new AppError(422,"CONFIRMATION_REQUIRED","Digite o nome exato do plano para confirmar.");
    const accounts=await PartnerServicePlan.count({where:{tier:key},transaction:t});
    const invitations=await AdminNetworkInvitation.count({where:{planKey:key},transaction:t});
    const mode=accounts||invitations?'archive':'physical';
@@ -383,12 +382,11 @@ router.get('/partners/:id/delete-preview',validate({params:ident}),async(req,res
  res.json(data);
 });
 router.post('/partners/:id/archive',validate({params:ident,body:z.object({
- confirmation:z.string().trim().min(1).max(160),
- reason:z.string().trim().min(8).max(500),
+ reason:z.string().trim().max(500).optional().default(""),
  deleteClients:z.boolean().default(false),deleteDevices:z.boolean().default(false),
 }).strict()}),async(req,res)=>{
  const p=await ownedPartner(tenant(req),req.valid.params.id);canDeleteOwned(req,p);
- const result=await deletePartnerAsSuper(p.id,req.valid.body,actorOf(req),tenant(req));
+ const result=await deletePartnerAsSuper(p.id,{...req.valid.body,confirmation:p.name,reason:req.valid.body.reason||"Exclusão solicitada pelo administrador"},actorOf(req),tenant(req));
  res.json(result);
 });
 router.post('/partners/:id/confirm-payment',validate({params:ident,
@@ -444,13 +442,12 @@ router.patch("/partners/:id/users/:userId",validate({params:z.object({id:z.strin
 });
 router.delete("/partners/:id/users/:userId",requireScope("network:members:write"),validate({
   params:z.object({id:z.string().uuid(),userId:z.string().uuid()}),
-  body:z.object({confirmation:z.string().trim().email(),reason:z.string().trim().min(3).max(400)}).strict(),
+  body:z.object({reason:z.string().trim().max(400).optional().default("")}).strict(),
 }),async(req,res)=>{
   await sequelize.transaction(async t=>{
     await ownedPartner(tenant(req),req.valid.params.id,t,true);
     const u=await AdminUser.findOne({where:{id:req.valid.params.userId,partnerId:req.valid.params.id,role:"partner",deletedAt:null},transaction:t,lock:t.LOCK.UPDATE});
     if(!u)throw new AppError(404,"NOT_FOUND","Usuário não encontrado nesta conta.");
-    if(req.valid.body.confirmation.toLowerCase()!==u.email.toLowerCase())throw new AppError(422,"CONFIRMATION_MISMATCH","Confirme o e-mail exato do usuário.");
     await u.update({status:"disabled",deletedAt:new Date(),tokenVersion:Number(u.tokenVersion||0)+1},{transaction:t});
     await audit({actor:actorOf(req),action:"network.user.archive",entityType:"admin_user",entityId:u.id,metadata:{partnerId:u.partnerId,reason:req.valid.body.reason},transaction:t});
   });
@@ -527,7 +524,7 @@ router.patch("/partners/:id/providers/:providerId",requireScope("network:resourc
 });
 // Exclusão operacional com preview: usa as mesmas garantias do parceiro/Superadmin.
 // Requer propriedade da conta, permissão explícita e confirmação literal.
-const resourceDeleteInput=z.object({confirmation:z.string().trim().min(1).max(160),reason:z.string().trim().min(3).max(400),
+const resourceDeleteInput=z.object({reason:z.string().trim().max(400).optional().default(""),
   replacementProviderId:z.string().uuid().nullable().optional(),force:z.boolean().optional()}).strict();
 router.get("/partners/:id/codes/:codeId/deletion-preview",requireScope("network:resources:write"),validate({params:ownedCodeParams}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);
@@ -535,7 +532,9 @@ router.get("/partners/:id/codes/:codeId/deletion-preview",requireScope("network:
 });
 router.delete("/partners/:id/codes/:codeId",requireScope("network:resources:write"),validate({params:ownedCodeParams,body:resourceDeleteInput}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);
-  res.json(await deleteCodeOperational(p.id,req.valid.params.codeId,req.valid.body,actorOf(req)));
+  const code=await PartnerCode.findOne({where:{id:req.valid.params.codeId,partnerId:p.id,deletedAt:null}});
+  if(!code)throw new AppError(404,"NOT_FOUND","Código não encontrado.");
+  res.json(await deleteCodeOperational(p.id,req.valid.params.codeId,{...req.valid.body,confirmation:code.code},actorOf(req)));
 });
 const ownedProviderParams=z.object({id:z.string().uuid(),providerId:z.string().uuid()});
 router.get("/partners/:id/providers/:providerId/deletion-preview",requireScope("network:resources:write"),validate({params:ownedProviderParams}),async(req,res)=>{
@@ -544,7 +543,9 @@ router.get("/partners/:id/providers/:providerId/deletion-preview",requireScope("
 });
 router.delete("/partners/:id/providers/:providerId",requireScope("network:resources:write"),validate({params:ownedProviderParams,body:resourceDeleteInput}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);
-  res.json(await deleteProviderOperational(p.id,req.valid.params.providerId,req.valid.body,actorOf(req)));
+  const provider=await PartnerProvider.findOne({where:{id:req.valid.params.providerId,partnerId:p.id,deletedAt:null}});
+  if(!provider)throw new AppError(404,"NOT_FOUND","Servidor não encontrado.");
+  res.json(await deleteProviderOperational(p.id,req.valid.params.providerId,{...req.valid.body,confirmation:provider.name},actorOf(req)));
 });
 router.get("/partners/:id/devices",requireScope("network:devices:read"),validate({params:ident,query:pagination.extend({q:z.string().trim().max(40).optional(),status:z.enum(["active","blocked","revoked"]).optional()})}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);
@@ -553,7 +554,7 @@ router.get("/partners/:id/devices",requireScope("network:devices:read"),validate
 // Gestão operacional de TVs pertencentes à conta, validada pelo escopo da rede.
 router.post("/partners/:id/devices/:activationId/:action",requireScope("network:devices:write"),validate({
   params:z.object({id:z.string().uuid(),activationId:z.string().uuid(),action:z.enum(["block","unblock","revoke"])}),
-  body:z.object({reason:z.string().trim().min(3).max(500)}).strict(),
+  body:z.object({reason:z.string().trim().max(500).optional().default("")}).strict(),
 }),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);
   const {activationId,action}=req.valid.params;
