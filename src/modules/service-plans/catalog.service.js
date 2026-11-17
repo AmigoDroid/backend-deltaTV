@@ -31,7 +31,7 @@ async function clearCaches(){
 }
 
 export async function listCatalog({ includeInactive = true } = {}) {
-  const where = includeInactive ? {} : { active: true };
+  const where = includeInactive ? {deletedAt:null} : { active: true,deletedAt:null };
   const rows = await ServicePlanCatalog.findAll({ where, order: [["sortOrder", "ASC"], ["name", "ASC"]], raw: true });
   const counts = await PartnerServicePlan.findAll({
     attributes: ["tier", [sequelize.fn("COUNT", sequelize.col("partner_id")), "assignedCount"]],

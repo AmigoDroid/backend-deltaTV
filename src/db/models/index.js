@@ -186,6 +186,7 @@ export const ServicePlanCatalog = sequelize.define("ServicePlanCatalog", {
   active:{type:T.BOOLEAN,allowNull:false,defaultValue:true},
   system:{type:T.BOOLEAN,allowNull:false,defaultValue:false},sortOrder:int(100),
   ownerAdminId: { type: T.UUID },
+  deletedAt:{type:T.DATE,allowNull:true},
 },{tableName:"service_plan_catalogs"});
 
 export const ContentPartnerTerms = sequelize.define("ContentPartnerTerms", {

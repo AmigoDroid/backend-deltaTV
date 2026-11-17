@@ -7,7 +7,7 @@ import { expirationFromPlan, networkSlug, planBenefits } from './plan-entitlemen
 
 export const planCompatible=(plan,kind='content')=>Boolean(plan?.active&&(plan.audience==='both'||plan.audience===kind));
 export async function scopedPlan(ownerId,key,kind='content',transaction){
- const plan=await ServicePlanCatalog.findOne({where:{ownerAdminId:ownerId,key},transaction,lock:transaction?.LOCK?.UPDATE});
+ const plan=await ServicePlanCatalog.findOne({where:{ownerAdminId:ownerId,key,deletedAt:null},transaction,lock:transaction?.LOCK?.UPDATE});
  if(!planCompatible(plan,kind))throw new AppError(422,'PLAN_NOT_IN_NETWORK','Plano indisponível nesta rede.');
  if(!Number.isInteger(plan.monthlyPriceCents)||plan.monthlyPriceCents<0)
    throw new AppError(409,'PLAN_PRICE_REQUIRED','Configure o preço do plano antes do cadastro (R$ 0 é permitido).');

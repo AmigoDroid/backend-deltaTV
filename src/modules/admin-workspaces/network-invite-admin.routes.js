@@ -44,7 +44,7 @@ router.get('/plans',async(req,res)=>{
  if(adminHasNetworkPermission(req.user,'network:partners:write'))audiences.push('content');
  if(adminHasNetworkPermission(req.user,'network:resellers:write'))audiences.push('reseller');
  audiences.push('both');
- const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:req.networkOwnerId,active:true,
+ const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:req.networkOwnerId,active:true,deletedAt:null,
    audience:{[Op.in]:audiences}},attributes:['key','name','audience','monthlyPriceCents','maxServers','activationLimit','validityDays'],
    order:[['name','ASC']]});
  res.set('Cache-Control','no-store').json({data:rows});

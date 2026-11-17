@@ -3,7 +3,7 @@ import { z } from "zod";
 import { Op, UniqueConstraintError } from "sequelize";
 import { randomBytes } from "node:crypto";
 import { sequelize, AdminUser, Partner, PartnerServicePlan, ContentPartnerTerms,
-  ServicePlanCatalog, Activation, Invoice } from "../../db/models/index.js";
+  ServicePlanCatalog, AdminNetworkInvitation, Activation, Invoice } from "../../db/models/index.js";
 import { validate } from "../../shared/validate.js";
 import * as codesService from "../partners/partner.service.js";
 import * as providerService from "../providers/provider.service.js";
@@ -98,7 +98,7 @@ function planFitsPartner(plan, kind) {
   return plan && plan.active && (plan.audience === "both" || (kind !== "both" && plan.audience === kind));
 }
 async function ownedPlan(adminId, key, kind, transaction) {
-  const plan = await ServicePlanCatalog.findOne({where:{key,ownerAdminId:adminId},transaction});
+  const plan = await ServicePlanCatalog.findOne({where:{key,ownerAdminId:adminId,deletedAt:null},transaction});
   if (!planFitsPartner(plan,kind)) throw new AppError(422,"PLAN_NOT_IN_NETWORK","Plano inexistente, inativo ou incompatível com esta conta.");
   return plan;
 }
@@ -174,7 +174,7 @@ router.get("/summary",requireScope("network:dashboard:read"),async(req,res)=>{
   res.json({owner:{id:root,name:req.user.role==="admin"?req.user.name:"Admin selecionado"},partners,resellers,plans});
 });
 router.get("/plans",requireScope("network:plans:read"),async(req,res)=>{
-  const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:tenant(req)},order:[["createdAt","DESC"]]});
+  const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:tenant(req),deletedAt:null},order:[["createdAt","DESC"]]});
   res.json({data:rows});
 });
 router.post("/plans",requireScope("network:plans:write"),validate({body:packageBody}),async(req,res)=>{
@@ -201,7 +201,7 @@ router.put("/plans/:key",requireScope("network:plans:write"),validate({params:z.
   const root=tenant(req),{key}=req.valid.params,body=req.valid.body;
   if(body.maxServers!==undefined||body.activationLimit!==undefined)assertResourceQuota(req,{dnsLimit:body.maxServers,activationLimit:body.activationLimit});
   const plan=await sequelize.transaction(async t=>{
-    const p=await ServicePlanCatalog.findOne({where:{key,ownerAdminId:root},transaction:t,lock:t.LOCK.UPDATE});
+    const p=await ServicePlanCatalog.findOne({where:{key,ownerAdminId:root,deletedAt:null},transaction:t,lock:t.LOCK.UPDATE});
     if(!p)throw new AppError(404,"NOT_FOUND","Plano não encontrado na sua rede.");
     if(body.active===false && await PartnerServicePlan.count({where:{tier:key},transaction:t}))
       throw new AppError(409,"PLAN_IN_USE","Um plano em uso não pode ser desativado sem reatribuir as contas.");
@@ -223,6 +223,47 @@ router.put("/plans/:key",requireScope("network:plans:write"),validate({params:z.
   });
   invalidatePlan();invalidateServerPools();clearResolutionCache();res.json(plan);
 });
+// Excluir um plano da rede não pode remover um contrato já vinculado.
+// Para planos referenciados, faz exclusão lógica (invisível para novos cadastros).
+// Para planos sem vínculos, remove fisicamente o registro.
+router.get("/plans/:key/deletion-preview",requireScope("network:plans:read"),
+ validate({params:z.object({key:z.string().min(2).max(32)})}),async(req,res)=>{
+  const {key}=req.valid.params,root=tenant(req);
+  const plan=await ServicePlanCatalog.findOne({where:{key,ownerAdminId:root,deletedAt:null}});
+  if(!plan)throw new AppError(404,"NOT_FOUND","Plano não encontrado na sua rede.");
+  const [accounts,invitations]=await Promise.all([
+   PartnerServicePlan.count({where:{tier:key}}),AdminNetworkInvitation.count({where:{planKey:key}}),
+  ]);
+  res.json({key,name:plan.name,accounts,invitations,mode:accounts||invitations?'archive':'physical',
+   warning:accounts||invitations?'O plano será removido das listas e não poderá receber novos cadastros. Contratos e convites históricos serão preservados.':'O plano não tem contas ou convites vinculados e poderá ser removido permanentemente.'});
+ });
+router.delete("/plans/:key",requireScope("network:plans:write"),
+ validate({params:z.object({key:z.string().min(2).max(32)}),body:z.object({confirmation:z.string(),reason:z.string().trim().min(5).max(500)}).strict()}),async(req,res)=>{
+  const root=tenant(req),{key}=req.valid.params,{confirmation,reason}=req.valid.body;
+  const result=await sequelize.transaction(async t=>{
+   await sequelize.query("SELECT pg_advisory_xact_lock(hashtextextended(:key,0))",{replacements:{key:`network:${root}`},transaction:t});
+   const plan=await ServicePlanCatalog.findOne({where:{key,ownerAdminId:root,deletedAt:null},transaction:t,lock:t.LOCK.UPDATE});
+   if(!plan)throw new AppError(404,"NOT_FOUND","Plano não encontrado na sua rede.");
+   if(plan.system)throw new AppError(409,"SYSTEM_PLAN","Planos de sistema não podem ser excluídos.");
+   if(confirmation!==plan.name)throw new AppError(422,"CONFIRMATION_REQUIRED","Digite o nome exato do plano para confirmar.");
+   const accounts=await PartnerServicePlan.count({where:{tier:key},transaction:t});
+   const invitations=await AdminNetworkInvitation.count({where:{planKey:key},transaction:t});
+   const mode=accounts||invitations?'archive':'physical';
+   if(mode==='archive'){
+    await plan.update({deletedAt:new Date(),active:false},{transaction:t});
+    // Links de convite da rede ficam inválidos, sem apagar os registros já utilizados.
+    await AdminNetworkInvitation.update({revokedAt:new Date()},
+     {where:{planKey:key,revokedAt:null},transaction:t});
+   }else{
+    // Qualquer outra FK RESTRICT impede a exclusão no banco, sem perdas em cascata.
+    await plan.destroy({transaction:t});
+   }
+   await audit({actor:actorOf(req),action:"network.plan.delete",entityType:"service_plan",entityId:key,
+    metadata:{ownerAdminId:root,name:plan.name,reason,mode,accounts,invitations},transaction:t});
+   return {ok:true,mode,accounts,invitations};
+  });
+  invalidatePlan();invalidateServerPools();clearResolutionCache();res.json(result);
+ });
 // Consultas de recursos são sempre vinculadas a uma conta do mesmo titular.
 // Permitir a seleção de conta sem conceder leitura da ficha comercial inteira.
 const INDIRECT_ACCOUNT_READS=Object.freeze([
