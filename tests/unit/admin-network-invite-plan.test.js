@@ -23,7 +23,7 @@ test('cadastro usa uma fonte de benefícios e não usa estoque comercial',()=>{
 });
 test('convite é limitado à rede e exige permissão ainda válida no aceite',()=>{
  const s=src('modules/admin-workspaces/network-invite-public.routes.js');
- for(const text of ["ownerAdminId:r.ownerAdminId",'ownerAllowed(r,t)','planFingerprint(plan)!==r.planFingerprint','lock:t.LOCK.UPDATE','row.revokedAt','row.acceptedAt'])assert.ok(s.includes(text),text);
+ for(const text of ["ownerAdminId:r.ownerAdminId",'ownerAllowed(r,t)','planFingerprint(plan)!==r.planFingerprint','lock:t.LOCK.UPDATE','inviteUnavailable(row)','AdminNetworkInviteRedemption.create'])assert.ok(s.includes(text),text);
  const admin=src('modules/admin-workspaces/network-invite-admin.routes.js');
  assert.match(admin,/tokenHash:HASH\(token\)/);
  assert.match(admin,/ownerAdminId:req\.networkOwnerId/);

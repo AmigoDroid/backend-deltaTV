@@ -3,12 +3,13 @@ import {AppError} from "../../shared/errors.js";
 // configurações globais, dados de outras redes ou criação de outros administradores.
 export const NETWORK_PERMISSIONS = Object.freeze([
   "network:dashboard:read",
-  "network:partners:read", "network:partners:write",
-  "network:resellers:read", "network:resellers:write",
+  "network:partners:read", "network:partners:write", "network:partners:delete",
+  "network:resellers:read", "network:resellers:write", "network:resellers:delete",
   "network:plans:read", "network:plans:write",
   "network:members:read", "network:members:write",
   "network:resources:read", "network:resources:write", "network:devices:read",
   "network:billing:read", "network:billing:write",
+  "network:audit:read",
 ]);
 export function normalizeNetworkPermissions(value) {
   if (!Array.isArray(value)) return [];

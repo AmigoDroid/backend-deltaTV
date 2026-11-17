@@ -14,8 +14,14 @@ import { forgetDevice } from "./devices/presence.js";
 import { disconnectPartner, broadcastChange } from "../realtime/socket.js";
 import { matchesPartnerDeletionConfirmation } from "./partner-deletion-confirmation.js";
 
-const checkSuper = (actor) => {
-  if (actor?.role !== "superadmin") throw new AppError(403, "SUPERADMIN_ONLY", "Somente o superadmin pode executar essa exclusão.");
+const checkDeletionAuthority = (actor, scopeOwnerId = undefined) => {
+  if (actor?.role === 'superadmin') return;
+  if (actor?.role === 'admin' && scopeOwnerId && actor.id === scopeOwnerId) return;
+  throw new AppError(403, 'DELETION_SCOPE_DENIED', 'Exclusão não autorizada para esta rede.');
+};
+// Outras exclusões destrutivas permanecem exclusivamente com a DeltaTV.
+const checkSuper = actor => {
+  if (actor?.role !== 'superadmin') throw new AppError(403, 'DELTATV_ONLY', 'Operação exclusiva da DeltaTV.');
 };
 const count = (model, where, transaction) => model.count({ where, transaction });
 // O estoque da revenda pode ter gerado uma licença individual (activation.partner_id = NULL).
@@ -23,9 +29,10 @@ const count = (model, where, transaction) => model.count({ where, transaction })
 const ownedActivation = `(a.partner_id = :id OR EXISTS
   (SELECT 1 FROM licenses l WHERE l.id = a.license_id AND l.owner_partner_id = :id))`;
 
-export async function partnerDeletionPreview(id, actor) {
-  checkSuper(actor);
+export async function partnerDeletionPreview(id, actor, scopeOwnerId = undefined) {
+  checkDeletionAuthority(actor,scopeOwnerId);
   const partner = await Partner.findByPk(id);
+  if(partner && scopeOwnerId!==undefined && partner.ownerAdminId!==scopeOwnerId)throw notFound('Parceiro');
   if (!partner) throw notFound("Revenda ou parceiro");
   const [clients, activationTotals, codes, users, providers, exclusiveDevices] = await Promise.all([
     count(ResellerClient, { partnerId: id }),
@@ -49,11 +56,11 @@ export async function partnerDeletionPreview(id, actor) {
     retainedFinancialHistory: true, deleteIsArchive: true };
 }
 
-export async function deletePartnerAsSuper(id, { confirmation, confirmSlug, deleteClients = false, deleteDevices = false, reason }, actor) {
-  checkSuper(actor);
+export async function deletePartnerAsSuper(id, { confirmation, confirmSlug, deleteClients = false, deleteDevices = false, reason }, actor, scopeOwnerId = undefined) {
+  checkDeletionAuthority(actor,scopeOwnerId);
   const result = await sequelize.transaction(async (transaction) => {
     const partner = await Partner.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
-    if (!partner) throw notFound("Revenda ou parceiro");
+    if (!partner || (scopeOwnerId!==undefined && partner.ownerAdminId!==scopeOwnerId))throw notFound('Revenda ou parceiro');
     if (!matchesPartnerDeletionConfirmation(confirmation ?? confirmSlug, partner)) throw new AppError(422, "CONFIRMATION_MISMATCH", "Confirme o nome ou identificador da revenda ou parceiro mostrado no formulário.");
     if (partner.status === "deleted") throw new AppError(409, "ALREADY_DELETED", "Esta parceria já foi excluída da operação.");
     if (!reason?.trim() || reason.trim().length < 8) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo da exclusão (mínimo de 8 caracteres).");
@@ -113,8 +120,8 @@ export async function deletePartnerAsSuper(id, { confirmation, confirmSlug, dele
         for (const row of rows) if (removedDeviceIds.length < 20000) removedDeviceIds.push(row.id);
       }
     }
-    await partner.update({ status: "deleted", statusReason: `Excluído pelo superadmin: ${reason.trim()}`.slice(0, 500) }, { transaction });
-    await audit({ actor, action: "partner.delete.admin", entityType: "partner", entityId: id,
+    await partner.update({ status: "deleted", statusReason: `Excluído por administração autorizada: ${reason.trim()}`.slice(0, 500) }, { transaction });
+    await audit({ actor, action: scopeOwnerId!==undefined?"partner.delete.network_admin":"partner.delete.admin", entityType: "partner", entityId: id,
       metadata: { name: partner.name, slug: partner.slug, kind: partner.kind, deleteClients, deleteDevices,
         removedClients, removedActivations, removedDevices, retainedFinancialHistory: true, reason }, transaction });
     return { deleted: true, mode: "archived_with_financial_history", removedClients, removedActivations, removedDevices, removedDeviceIds };

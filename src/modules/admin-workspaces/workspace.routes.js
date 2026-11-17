@@ -20,6 +20,7 @@ import { clearContractAccessCache } from "../access/access.service.js";
 import { adminHasNetworkPermission, enforceLimit } from "./permissions.js";
 import {scopedPlan,checkPlanCaps,provisionNetworkAccount,lockNetworkOwner} from "./account-provisioning.js";
 import networkInviteAdminRoutes from "./network-invite-admin.routes.js";
+import {partnerDeletionPreview,deletePartnerAsSuper} from "../admin-deletion.service.js";
 
 // API isolada para redes comerciais de Admins. Sem acesso às consultas globais
 // do painel DeltaTV. O ID do titular é derivado da sessão, não de filtros livres.
@@ -150,6 +151,17 @@ router.get("/admins",async(req,res)=>{
   if(req.user.role!=="superadmin")throw new AppError(403,"DELTATV_ONLY","Operação exclusiva da DeltaTV.");
   const rows=await AdminUser.findAll({where:{role:"admin",deletedAt:null},attributes:["id","name","email","status","delegatedPermissions","networkLimits"],order:[["name","ASC"]]});
   res.json({data:rows});
+});
+// Histórico somente de parceiros pertencentes à rede autenticada.
+// Não retorna registros globais de VPS, API ou dados de outra administração.
+router.get('/audit',requireScope('network:audit:read'),async(req,res)=>{
+ const [rows]=await sequelize.query(`SELECT l.id,l.action,l.result,l.created_at AS "createdAt",
+   p.id AS "partnerId",p.name AS "partnerName"
+   FROM audit_logs l JOIN partners p ON p.id::text=l.entity_id
+   WHERE l.entity_type='partner' AND p.owner_admin_id IS NOT DISTINCT FROM CAST(:ownerId AS uuid)
+   ORDER BY l.created_at DESC,l.id DESC LIMIT 100`,
+  {replacements:{ownerId:tenant(req)}});
+ res.json({data:rows});
 });
 router.get("/summary",requireScope("network:dashboard:read"),async(req,res)=>{
   const root=tenant(req);
@@ -315,13 +327,38 @@ router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(
 });
 // A conta de plano pago só ativa com confirmação deliberada do recebimento;
 // a auditoria não deve tratar criação de conta como pagamento.
+// Exclusão lógica da própria rede: valida proprietário, permissão e confirmação.
+// Registros financeiros e os dados de outros titulares não são apagados.
+function canDeleteOwned(req,p){
+ const basic=p.kind==='reseller'?'network:resellers:delete':'network:partners:delete';
+ if(!adminHasNetworkPermission(req.user,basic) ||
+    (p.kind==='both'&&!adminHasNetworkPermission(req.user,'network:resellers:delete')))
+  throw new AppError(403,'NETWORK_PERMISSION_DENIED','Sem permissão para excluir esta conta.');
+}
+router.get('/partners/:id/delete-preview',validate({params:ident}),async(req,res)=>{
+ const p=await ownedPartner(tenant(req),req.valid.params.id);canDeleteOwned(req,p);
+ const data=await partnerDeletionPreview(p.id,actorOf(req),tenant(req));
+ res.json(data);
+});
+router.post('/partners/:id/archive',validate({params:ident,body:z.object({
+ confirmation:z.string().trim().min(1).max(160),
+ reason:z.string().trim().min(8).max(500),
+ deleteClients:z.boolean().default(false),deleteDevices:z.boolean().default(false),
+}).strict()}),async(req,res)=>{
+ const p=await ownedPartner(tenant(req),req.valid.params.id);canDeleteOwned(req,p);
+ const result=await deletePartnerAsSuper(p.id,req.valid.body,actorOf(req),tenant(req));
+ res.json(result);
+});
 router.post('/partners/:id/confirm-payment',validate({params:ident,
  body:z.object({reference:z.string().trim().min(3).max(180)}).strict()}),async(req,res)=>{
- if(!adminHasNetworkPermission(req.user,'network:partners:write')||
-    !adminHasNetworkPermission(req.user,'network:billing:write'))
-    throw new AppError(403,'NETWORK_PERMISSION_DENIED','Confirmação exige permissão financeira e de parceiros.');
+ if(!adminHasNetworkPermission(req.user,'network:billing:write'))
+    throw new AppError(403,'NETWORK_PERMISSION_DENIED','Confirmação exige permissão financeira.');
  const updated=await sequelize.transaction(async t=>{
    const p=await ownedPartner(tenant(req),req.valid.params.id,t,true);
+   const perm=p.kind==='reseller'?'network:resellers:write':'network:partners:write';
+   if(!adminHasNetworkPermission(req.user,perm)||
+      (p.kind==='both'&&!adminHasNetworkPermission(req.user,'network:resellers:write')))
+    throw new AppError(403,'NETWORK_PERMISSION_DENIED','Sem permissão para ativar esta conta.');
    if(p.statusReason!=='awaiting_payment'||p.status!=='suspended')
      throw new AppError(409,'NO_PENDING_PAYMENT','Não existe pagamento pendente para este cadastro.');
    const technical=await PartnerServicePlan.findByPk(p.id,{transaction:t});

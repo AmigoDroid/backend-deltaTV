@@ -85,7 +85,12 @@ export const PartnerPreRegistration = def("PartnerPreRegistration", "partner_pre
 export const AdminNetworkInvitation = def("AdminNetworkInvitation", "admin_network_invitations", {
   ownerAdminId: {type:T.UUID,allowNull:true},
   invitedById: {type:T.UUID,allowNull:false},
-  email: str(200,{allowNull:false}),
+  email: str(200), // null: link compartilhável, destinatário escolhe e-mail
+  kind: str(10,{allowNull:false,defaultValue:"content"}),
+  label: str(120),
+  maxUses: {type:T.INTEGER,allowNull:true,defaultValue:1}, // null: ilimitado
+  useCount: int(0),
+  lastUsedAt: ts(),
   planKey: str(32,{allowNull:false}),
   planFingerprint: {type:T.CHAR(64),allowNull:false},
   tokenHash: {type:T.CHAR(64),allowNull:false},
@@ -93,6 +98,13 @@ export const AdminNetworkInvitation = def("AdminNetworkInvitation", "admin_netwo
   acceptedAt: ts(), revokedAt: ts(),
   partnerId: {type:T.UUID},
 }, { indexes:[{fields:['owner_admin_id','created_at']},{unique:true,fields:['token_hash']}] });
+
+// Cada conclusão de link compartilhável possui auditoria individual por parceiro e e-mail.
+export const AdminNetworkInviteRedemption = def("AdminNetworkInviteRedemption", "admin_network_invite_redemptions", {
+  invitationId: {type:T.UUID,allowNull:false},
+  partnerId: {type:T.UUID,allowNull:true},
+  email: str(200,{allowNull:false}),
+}, { updatedAt:false, indexes:[{fields:['invitation_id','created_at']},{unique:true,fields:['partner_id']}] });
 
 export const LoginHistory = def("LoginHistory", "login_history", {
   adminUserId: { type: T.UUID }, userEmail: str(200), role: str(20), partnerId: { type: T.UUID },
