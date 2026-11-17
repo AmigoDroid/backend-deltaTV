@@ -95,7 +95,7 @@ export const AdminNetworkInvitation = def("AdminNetworkInvitation", "admin_netwo
   planFingerprint: {type:T.CHAR(64),allowNull:false},
   tokenHash: {type:T.CHAR(64),allowNull:false},
   expiresAt: {...ts(),allowNull:false},
-  acceptedAt: ts(), revokedAt: ts(),
+  acceptedAt: ts(), revokedAt: ts(), deletedAt: ts(),
   partnerId: {type:T.UUID},
 }, { indexes:[{fields:['owner_admin_id','created_at']},{unique:true,fields:['token_hash']}] });
 

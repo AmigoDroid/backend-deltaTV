@@ -56,7 +56,7 @@ router.get('/',validate({query:z.object({page:z.coerce.number().int().min(1).def
   ...(adminHasNetworkPermission(req.user,'network:partners:write')?['content']:[]),
   ...(adminHasNetworkPermission(req.user,'network:resellers:write')?['reseller']:[]),
  ];
- const {rows,count}=await AdminNetworkInvitation.findAndCountAll({where:{ownerAdminId:req.networkOwnerId,kind:{[Op.in]:allowedKinds}},
+ const {rows,count}=await AdminNetworkInvitation.findAndCountAll({where:{ownerAdminId:req.networkOwnerId,deletedAt:null,kind:{[Op.in]:allowedKinds}},
    attributes:['id','email','kind','label','planKey','expiresAt','acceptedAt','revokedAt','partnerId','createdAt','maxUses','useCount','lastUsedAt'],
    order:[['createdAt','DESC']],limit:pageSize,offset:(page-1)*pageSize});
  res.set('Cache-Control','no-store').json({data:rows.map(r=>({...r.toJSON(),remainingUses:remainingUses(r)})),meta:{page,pageSize,total:count,totalPages:Math.ceil(count/pageSize)}});
@@ -95,7 +95,7 @@ router.post('/',validate({body}),async(req,res)=>{
 router.get('/:id/registrations',validate({params:z.object({id:z.string().uuid()}),
  query:z.object({page:z.coerce.number().int().min(1).default(1),pageSize:z.coerce.number().int().min(1).max(100).default(30)})}),async(req,res)=>{
  needWrite(req);
- const row=await AdminNetworkInvitation.findOne({where:{id:req.valid.params.id,ownerAdminId:req.networkOwnerId},attributes:['id','kind']});
+ const row=await AdminNetworkInvitation.findOne({where:{id:req.valid.params.id,ownerAdminId:req.networkOwnerId,deletedAt:null},attributes:['id','kind']});
  if(!row)throw new AppError(404,'NOT_FOUND','Link não encontrado nesta rede.');
  canInvite(req,row.kind);
  const {page,pageSize}=req.valid.query;
@@ -106,12 +106,53 @@ router.get('/:id/registrations',validate({params:z.object({id:z.string().uuid()}
 router.post('/:id/revoke',validate({params:z.object({id:z.string().uuid()})}),async(req,res)=>{
  needWrite(req);
  await sequelize.transaction(async t=>{
-  const invite=await AdminNetworkInvitation.findOne({where:{id:req.valid.params.id,ownerAdminId:req.networkOwnerId},transaction:t,lock:t.LOCK.UPDATE});
+  const invite=await AdminNetworkInvitation.findOne({where:{id:req.valid.params.id,ownerAdminId:req.networkOwnerId,deletedAt:null},transaction:t,lock:t.LOCK.UPDATE});
   if(!invite)throw new AppError(404,'NOT_FOUND','Convite não encontrado nesta rede.');
   canInvite(req,invite.kind);
   if(invite.acceptedAt || (invite.maxUses!==null && invite.useCount >= invite.maxUses))throw new AppError(409,'ALREADY_USED','Convite sem usos restantes.');
   await invite.update({revokedAt:new Date()},{transaction:t});
   await audit({actor:actorOf(req),action:'network.invite.revoke',entityType:'network_invitation',entityId:invite.id,transaction:t});
+ });res.json({ok:true});
+});
+// O token antigo nunca é retornado: apenas um novo token pode ser entregue ao Admin.
+const inviteId=z.object({id:z.string().uuid()});
+const changes=z.object({label:z.string().trim().max(120).nullable().optional(),validityDays:z.number().int().min(1).max(90).optional(),maxUses:z.number().int().min(1).max(1000).nullable().optional()}).strict().refine(v=>Object.keys(v).length>0,'Informe uma alteração.');
+async function lockedInvite(req,t){
+ const row=await AdminNetworkInvitation.findOne({where:{id:req.valid.params.id,ownerAdminId:req.networkOwnerId,deletedAt:null},transaction:t,lock:t.LOCK.UPDATE});
+ if(!row)throw new AppError(404,'NOT_FOUND','Convite não encontrado nesta rede.');
+ canInvite(req,row.kind);return row;
+}
+router.patch('/:id',validate({params:inviteId,body:changes}),async(req,res)=>{
+ needWrite(req);
+ const result=await sequelize.transaction(async t=>{
+  const row=await lockedInvite(req,t);
+  if(row.revokedAt||new Date(row.expiresAt)<=new Date())throw new AppError(409,'INVITE_INACTIVE','Link encerrado: crie outro convite.');
+  const b=req.valid.body;
+  if(b.maxUses!==undefined&&(b.maxUses!==null&&b.maxUses<row.useCount||row.email&&b.maxUses!==1))throw new AppError(422,'INVALID_MAX_USES','Quantidade incompatível com os usos realizados ou com convite pessoal.');
+  const updates={};if(b.label!==undefined)updates.label=b.label||null;
+  if(b.maxUses!==undefined)updates.maxUses=b.maxUses;
+  if(b.validityDays!==undefined)updates.expiresAt=new Date(Date.now()+b.validityDays*86400_000);
+  await row.update(updates,{transaction:t});
+  await audit({actor:actorOf(req),action:'network.invite.update',entityType:'network_invitation',entityId:row.id,metadata:{fields:Object.keys(updates)},transaction:t});
+  return {ok:true};
+ });res.json(result);
+});
+router.post('/:id/rotate',validate({params:inviteId}),async(req,res)=>{
+ needWrite(req);const token=randomBytes(32).toString('base64url');
+ await sequelize.transaction(async t=>{
+  const row=await lockedInvite(req,t);
+  if(row.revokedAt||new Date(row.expiresAt)<=new Date()||(row.maxUses!==null&&row.useCount>=row.maxUses))throw new AppError(409,'INVITE_INACTIVE','Este convite não aceita novos cadastros.');
+  await row.update({tokenHash:HASH(token)},{transaction:t});
+  await audit({actor:actorOf(req),action:'network.invite.rotate',entityType:'network_invitation',entityId:row.id,transaction:t});
+ });
+ res.set('Cache-Control','no-store').json({url:`${env.partnerPortalUrl}/convite-rede/${encodeURIComponent(token)}`});
+});
+router.delete('/:id',validate({params:inviteId}),async(req,res)=>{
+ needWrite(req);
+ await sequelize.transaction(async t=>{
+  const row=await lockedInvite(req,t);
+  await row.update({deletedAt:new Date(),revokedAt:row.revokedAt||new Date()},{transaction:t});
+  await audit({actor:actorOf(req),action:'network.invite.delete',entityType:'network_invitation',entityId:row.id,metadata:{usedCount:row.useCount},transaction:t});
  });res.json({ok:true});
 });
 export default router;
