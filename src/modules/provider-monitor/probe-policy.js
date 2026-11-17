@@ -2,10 +2,13 @@
  * Não garante que o usuário/senha funcionem (o resolvedor valida depois).
  */
 export function isPlausibleXtreamResponse({status, contentType='', sample=''}) {
+  // Resposta sem credenciais: HTTP 401/403/404 prova alcançabilidade,
+  // mas NÃO autenticação ou catálogo funcional.
+  if ([401,403,404].includes(status)) return true;
   if (status !== 200) return false;
   const body = String(sample).trimStart();
   // Aceita JSON retornado pelo Xtream inclusive auth=0 (sem credenciais).
-  // Rejeita páginas HTML de proxy, captive portal, painel administrativo e 404.
+  // Para HTTP 200, rejeita páginas HTML de proxy, captive portal e painel administrativo.
   if (!body.startsWith('{') && !body.startsWith('[')) return false;
   if (/text\/html/i.test(contentType)) return false;
   return true;

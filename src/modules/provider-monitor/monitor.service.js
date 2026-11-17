@@ -58,7 +58,14 @@ export async function probeServer(raw) {
       const status = res.statusCode;
       const contentType = res.headers['content-type'] || '';
       // Não consumir catálogos nem corpos arbitrários: ler só a primeira amostra.
-      // 401/403/404/429 NÃO demonstram API Xtream utilizável.
+      // Sem credenciais: 401/403/404 provam que o HTTP respondeu, não que
+      // a conta ou o conteúdo Xtream estejam disponíveis. Não penalizar saúde.
+      // 429 (rate limit), erros 5xx e demais status seguem como falha.
+      if ([401,403,404].includes(status)) {
+        res.destroy();
+        return finish({good:true,slow:firstByteMs>SLOW,latencyMs:firstByteMs,
+          error:firstByteMs>SLOW?'Resposta lenta':null});
+      }
       if (status !== 200) {
         res.destroy();
         return finish({good:false,slow:false,latencyMs:firstByteMs,error:`Xtream HTTP ${status}`});
