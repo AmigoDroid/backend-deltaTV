@@ -156,6 +156,11 @@ router.patch(
     // O Admin pode operar a própria conta de Parceiro/Revenda no mesmo login,
     // mas os tokens dos portais NUNCA carregam privilégios administrativos.
     const role = rest.role ?? u.role;
+    // Promoção de Parceiro para Admin nunca substitui a parceria anterior por
+    // um ID selecionado acidentalmente no formulário administrativo.
+    if (u.role === 'partner' && role === 'admin' && rest.partnerId !== undefined && rest.partnerId !== u.partnerId)
+      throw new AppError(422, 'ORIGINAL_PARTNER_MISMATCH',
+        'A promoção deve preservar a parceria original. Altere o vínculo separadamente se realmente necessário.');
     const partnerId = rest.partnerId !== undefined ? rest.partnerId :
       (['partner','admin'].includes(role) ? u.partnerId : null);
     if ((role === 'partner' && !partnerId) || (!['partner','admin'].includes(role) && partnerId))

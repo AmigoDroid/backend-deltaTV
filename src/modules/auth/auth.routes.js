@@ -63,8 +63,8 @@ router.post("/partner-invite/complete", signupLimiter,
   }).strict() }),
   async (req, res) => res.set("Cache-Control", "no-store").json(await completePreRegistration(req.valid.body)));
 
-// Seletor de conta do Admin: o servidor extrai audiencia e identidade da sessao
-// autenticada; nunca aceita um ownerAdminId enviado pelo navegador.
+// Compatibilidade para clientes antigos: somente a conta operacional original.
+// Não expõe seletor de outras contas nem permite alterar o vínculo pelo cliente.
 router.get('/portal-accounts',authenticate,
   validate({query:z.object({q:z.string().trim().max(100).optional(),page:z.coerce.number().int().min(1).default(1)}).strict()}),
   async (req,res)=>{

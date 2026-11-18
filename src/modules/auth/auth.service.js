@@ -26,7 +26,7 @@ const publicUser = async (u, context = u.role === 'partner' ? 'partner' : 'admin
      (u.permissionRoleId ? (custom?.baseRole===effectiveRole?custom.permissions:[]) : PERMISSIONS[effectiveRole]||[]));
  const linkedPartner = partnerId ? await Partner.findByPk(partnerId, {attributes:['id','kind','status'],transaction}) : null;
  return {id:u.id,name:u.name,email:u.email,role:effectiveRole,partnerId,
-   portalAdmin:u.role==='admin' && context!=='admin', portalSelectionRequired:context==='portal_select',
+   portalAdmin:u.role==='admin' && context!=='admin', portalSelectionRequired:false,
    partnerKind:linkedPartner?.kind||null,permissionRoleId:effectiveRole==='partner' ? u.permissionRoleId : null,
    permissions,delegatedPermissions:effectiveRole==='admin'?permissions:[],networkLimits:effectiveRole==='admin'?normalizeNetworkLimits(u.networkLimits):{}};
 };
@@ -83,13 +83,20 @@ export async function login({ email, password, audience }, meta) {
   const targetAudience = audience || (user.role === 'partner' ? 'partner' : 'admin');
   // Contas antigas promovidas com partner_id perdido: só restaurar após prova
   // inequívoca de um login operacional anterior do mesmo usuário.
-  if (user.role === 'admin' && PORTAL_AUDIENCES.includes(targetAudience) && !user.partnerId)
+  if (user.role === 'admin' && PORTAL_AUDIENCES.includes(targetAudience))
     await restoreOriginalPortalAccount(user, targetAudience);
   const selected = user.role === 'admin' && PORTAL_AUDIENCES.includes(targetAudience)
     ? await defaultPortalAccount(user, targetAudience) : null;
+  // Não oferecer seletor ou cadastro de teste quando o vínculo original não
+  // foi localizado. A correção do partnerId exige histórico inequívoco ou ação
+  // explícita do Superadmin na conta do usuário.
+  if (user.role === 'admin' && PORTAL_AUDIENCES.includes(targetAudience) && !selected) {
+    throw new AppError(409, 'ORIGINAL_PARTNER_LINK_REQUIRED',
+      'Sua parceria original não está vinculada a este usuário. Solicite ao Superadmin a correção da conta operacional vinculada. Nenhuma nova conta foi criada.');
+  }
   const partner = user.role === 'admin' ? selected : (user.partnerId ? await Partner.findByPk(user.partnerId, {attributes:['id','kind','status']}) : null);
   const context = user.role === 'admin' && PORTAL_AUDIENCES.includes(targetAudience)
-    ? (selected ? 'partner' : 'portal_select') : loginContext(user, targetAudience, partner?.kind);
+    ? 'partner' : loginContext(user, targetAudience, partner?.kind);
   if (!context || (targetAudience !== 'admin' && user.role !== 'admin' && (!partner || partner.status !== 'active'))) {
     await audit({ actor, action: 'auth.login', entityType: 'admin_user', entityId: user.id, result: 'failure', metadata: { reason: 'wrong_audience', audience: targetAudience } });
     await recordLogin(user, meta, 'failure', 'wrong_audience');
@@ -117,6 +124,8 @@ export async function refresh(refreshToken, meta) {
     const audience = session.audience === 'legacy' ? (user.role === 'partner' ? 'partner' : 'admin') : session.audience;
     const selected = user.role === 'admin' && PORTAL_AUDIENCES.includes(audience) && session.portalPartnerId
       ? await findPortalAccount(user, audience, session.portalPartnerId, t) : null;
+    if (user.role === 'admin' && PORTAL_AUDIENCES.includes(audience) && !selected)
+      throw new AppError(401, 'ORIGINAL_PARTNER_LINK_REQUIRED', 'Entre novamente após vincular sua parceria original.');
     const partner = user.role === 'admin' ? selected : (user.partnerId ? await Partner.findByPk(user.partnerId, {transaction:t,attributes:['id','kind','status']}) : null);
     if ((user.role === 'admin' && PORTAL_AUDIENCES.includes(audience) && session.portalPartnerId && !selected) ||
         (user.role !== 'admin' && (!loginContext(user, audience, partner?.kind) || (audience !== 'admin' && partner?.status !== 'active'))))
@@ -138,8 +147,8 @@ export async function revokeAllSessions(userId, transaction) {
 }
 
 
-// Um Admin pode consultar e trocar a conta operacional sem compartilhar senha
-// ou obter acesso a qualquer conta de outra rede.
+// Compatibilidade: retorna apenas a conta operacional vinculada ao usuário.
+// Nunca listar outras contas da rede nos portais Parceiro e Revenda.
 export async function portalAccounts(adminId, sessionId, {q, page=1} = {}) {
   const [user, session] = await Promise.all([
     AdminUser.findByPk(adminId),

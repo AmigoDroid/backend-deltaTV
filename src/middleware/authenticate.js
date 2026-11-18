@@ -49,11 +49,15 @@ export async function resolveAdminClaims(payload) {
   const expectedContext = sessionContext(session.audience, user.role,
     user.role === 'admin' && PORTAL_AUDIENCES.includes(session.audience) ? session.portalPartnerId : undefined);
   const actualContext = payload.ctx ?? (session.audience === 'legacy' ? expectedContext : null);
+  // Sessões antigas de seleção não são mais válidas: cada portal abre apenas
+  // a conta operacional explicitamente vinculada ao usuário.
+  if (PORTAL_AUDIENCES.includes(session.audience) && user.role === 'admin' && !session.portalPartnerId)
+    throw new AppError(401, 'ORIGINAL_PARTNER_LINK_REQUIRED', 'Entre novamente para acessar sua conta operacional vinculada.');
   if (!expectedContext || actualContext !== expectedContext)
     throw new AppError(401,"INVALID_TOKEN","Contexto da sessão inválido.");
   selectedPortalPartnerId = user.role === 'admin' && actualContext === 'partner' ? session.portalPartnerId : user.partnerId;
   portalAdmin = user.role === 'admin' && PORTAL_AUDIENCES.includes(session.audience);
-  if (!roleForContext(user.role,actualContext,actualContext==='portal_select' ? false : !!selectedPortalPartnerId))
+  if (!roleForContext(user.role,actualContext,!!selectedPortalPartnerId))
     throw new AppError(401,'INVALID_TOKEN','Permissão do portal revogada.');
   if (actualContext === 'partner') {
     const partner = portalAdmin
@@ -70,7 +74,7 @@ export async function resolveAdminClaims(payload) {
    throw new AppError(401,"INVALID_TOKEN","Sessão não identificada.");
  }
  const context = payload.resolvedContext ?? (user.role==='partner' ? 'partner' : 'admin');
- const resolvedPartnerId = context === 'partner' ? (selectedPortalPartnerId ?? user.partnerId) : context === 'portal_select' ? null : user.partnerId;
+ const resolvedPartnerId = context === 'partner' ? (selectedPortalPartnerId ?? user.partnerId) : user.partnerId;
  const effectiveRole = roleForContext(user.role, context, !!resolvedPartnerId);
  if(!effectiveRole)throw new AppError(401,'INVALID_TOKEN','Contexto inválido.');
  const custom=user.permissionRoleId && effectiveRole==='partner'?await PermissionRole.findByPk(user.permissionRoleId):null;
@@ -80,7 +84,7 @@ export async function resolveAdminClaims(payload) {
       (user.permissionRoleId ? (custom?.baseRole==='partner' ? custom.permissions : []) : PERMISSIONS.partner) :
       (user.permissionRoleId ? (custom?.baseRole===effectiveRole ? custom.permissions : []) : PERMISSIONS[effectiveRole] || []));
  return {user:{id:user.id,name:user.name,email:user.email,role:effectiveRole,partnerId:resolvedPartnerId,
-     portalAdmin, portalSelectionRequired:context==='portal_select',
+     portalAdmin, portalSelectionRequired:false,
      permissionRoleId:effectiveRole==='partner'?user.permissionRoleId:null,permissions,delegatedPermissions,
      networkLimits:effectiveRole==="admin"?normalizeNetworkLimits(user.networkLimits):{}},impersonator,tokenVersion:user.tokenVersion};
 }

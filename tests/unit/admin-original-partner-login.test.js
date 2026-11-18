@@ -32,7 +32,14 @@ test('Admin vinculado entra na parceria original, ainda que ela pertença a outr
   assert.equal((await m.defaultPortalAccount(admin,'content_partner')).id,'conta-original');
   const where=m.calls.find(x=>x[0]==='partner.findOne')[1].where;
   assert.equal(where.id,'conta-original');
-  assert.ok(where[m.Op.or].some(x=>x.id==='conta-original'));
+  assert.equal(where.id,'conta-original');
+});
+
+test('Não permite selecionar outra parceria pelo endpoint legado, mesmo com ID válido',async()=>{
+  const m=mockedModule({owned:{id:'teste-parceiro',kind:'content',status:'active'}});
+  const admin={id:'admin1',role:'admin',partnerId:'conta-original'};
+  assert.equal(await m.findPortalAccount(admin,'content_partner','teste-parceiro'),null);
+  assert.ok(!m.calls.some(x=>x[0]==='partner.findOne'));
 });
 
 test('Recuperação de identidade antiga exige um único vínculo histórico verificado',async()=>{
@@ -47,6 +54,16 @@ test('Recuperação de identidade antiga exige um único vínculo histórico ver
   assert.equal(query.where.outcome,'success');
   const update=m.calls.find(x=>x[0]==='update');
   assert.deepEqual(JSON.parse(JSON.stringify(update[1])),{partnerId:'conta-original'});
+});
+
+test('Promoção com vínculo equivocado para conta de teste recupera o original comprovado no histórico',async()=>{
+  const original={id:'conta-original',kind:'content',status:'active'};
+  const m=mockedModule({previous:[{partnerId:'conta-original'}],original});
+  const admin={id:'admin1',role:'admin',partnerId:'teste-parceiro'};
+  assert.equal((await m.restoreOriginalPortalAccount(admin,'content_partner')).id,'conta-original');
+  assert.equal(admin.partnerId,'conta-original');
+  const update=m.calls.find(x=>x[0]==='update');
+  assert.equal(update[2].where.partnerId,'teste-parceiro');
 });
 
 test('Histórico ambíguo não escolhe conta nem modifica vínculo',async()=>{
