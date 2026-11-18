@@ -130,6 +130,7 @@ export const AuthSession = def("AuthSession", "auth_sessions", {
   adminUserId: { type: T.UUID, allowNull: false }, refreshHash: { type: T.CHAR(64), allowNull: false },
   expiresAt: { ...ts(), allowNull: false }, revokedAt: ts(), ip: str(64), userAgent: str(300),
   audience: str(20, { allowNull: false, defaultValue: "legacy" }),
+  portalPartnerId: { type: T.UUID }, // conta operacional escolhida por sessao Admin
 });
 
 export const Customer = def("Customer", "customers", {

@@ -10,13 +10,14 @@ export function loginContext(user, audience, partnerKind) {
   if (target === 'partner' && user.role === 'admin' && !['reseller','both'].includes(partnerKind)) return null;
   return 'partner';
 }
-export function sessionContext(audience, persistedRole) {
+export function sessionContext(audience, persistedRole, selectedPartnerId = undefined) {
   if (audience === 'admin') return 'admin';
-  if (PORTAL_AUDIENCES.includes(audience)) return 'partner';
+  if (PORTAL_AUDIENCES.includes(audience)) return persistedRole === 'admin' && selectedPartnerId === null ? 'portal_select' : 'partner';
   if (audience === 'legacy' || audience == null) return persistedRole === 'partner' ? 'partner' : 'admin';
   return null;
 }
 export function roleForContext(persistedRole, context, hasPartner) {
+  if (context === 'portal_select') return persistedRole === 'admin' && !hasPartner ? 'portal_select' : null;
   if (context === 'partner') return (['partner','admin'].includes(persistedRole) && hasPartner) ? 'partner' : null;
   return context === 'admin' && persistedRole !== 'partner' ? persistedRole : null;
 }

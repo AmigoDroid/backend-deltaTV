@@ -39,7 +39,8 @@ router.use(authenticate);
 // pode chamá-las, mesmo que tente digitar a URL ou forçar parâmetros no navegador.
 // Cada rota de /workspace aplica filtro de proprietário antes de ler/escrever.
 router.use((req, _res, next) => {
-  if (req.user?.role === "partner")
+  // Inclusive sessoes de selecao de conta do Admin sao operacionais.
+  if (!['superadmin','support','admin'].includes(req.user?.role))
     throw new AppError(403, "ADMIN_PORTAL_DENIED", "Este token pertence ao portal operacional.");
   if (req.user?.role === "admin" && !/^\/workspace(?:\/|$)/.test(req.path))
     throw new AppError(403, "ADMIN_WORKSPACE_ONLY", "Acesse os recursos da sua rede. As configurações DeltaTV são reservadas.");

@@ -1,4 +1,5 @@
-import {sessionContext, roleForContext} from "../modules/auth/role-context.js";
+import {sessionContext, roleForContext, PORTAL_AUDIENCES} from "../modules/auth/role-context.js";
+import {findPortalAccount} from "../modules/auth/portal-accounts.service.js";
 import {governanceAudit} from "../modules/superadmin/governance-audit.js";
 import {adminHasNetworkPermission, normalizeNetworkPermissions, normalizeNetworkLimits} from "../modules/admin-workspaces/permissions.js";
 import { Op } from "sequelize";
@@ -31,6 +32,8 @@ export async function resolveAdminClaims(payload) {
  const user = await AdminUser.findByPk(payload.sub);
  if (!user || user.status !== "active" || user.deletedAt || user.tokenVersion !== payload.tv) throw new AppError(401,"INVALID_TOKEN","Sessão inválida ou expirada.");
  let impersonator = null;
+ let selectedPortalPartnerId = null;
+ let portalAdmin = false;
  if (payload.imp) {
   const grant = await ImpersonationGrant.findOne({where:{id:payload.imp,targetId:user.id,revokedAt:null,expiresAt:{[Op.gt]:new Date()}}});
   if(!grant || user.role !== "partner")throw new AppError(401,"INVALID_TOKEN","Impersonação encerrada.");
@@ -41,20 +44,25 @@ export async function resolveAdminClaims(payload) {
   if(!partner||partner.status!=="active")throw new AppError(403,"FORBIDDEN","Parceria indisponível para impersonação.");
   impersonator={id:actor.id,name:actor.name,role:actor.role,grantId:grant.id};
  } else if(payload.sid) {
-  const session=await AuthSession.findOne({where:{id:payload.sid,adminUserId:user.id,revokedAt:null,expiresAt:{[Op.gt]:new Date()}},attributes:["id","audience"]});
+  const session=await AuthSession.findOne({where:{id:payload.sid,adminUserId:user.id,revokedAt:null,expiresAt:{[Op.gt]:new Date()}},attributes:["id","audience","portalPartnerId"]});
   if(!session)throw new AppError(401,"INVALID_TOKEN","Sessão encerrada. Entre novamente.");
-  const expectedContext = sessionContext(session.audience, user.role);
+  const expectedContext = sessionContext(session.audience, user.role,
+    user.role === 'admin' && PORTAL_AUDIENCES.includes(session.audience) ? session.portalPartnerId : undefined);
   const actualContext = payload.ctx ?? (session.audience === 'legacy' ? expectedContext : null);
   if (!expectedContext || actualContext !== expectedContext)
     throw new AppError(401,"INVALID_TOKEN","Contexto da sessão inválido.");
-  if (!roleForContext(user.role, actualContext, !!user.partnerId))
-    throw new AppError(401,"INVALID_TOKEN","Permissão do portal revogada.");
+  selectedPortalPartnerId = user.role === 'admin' && actualContext === 'partner' ? session.portalPartnerId : user.partnerId;
+  portalAdmin = user.role === 'admin' && PORTAL_AUDIENCES.includes(session.audience);
+  if (!roleForContext(user.role,actualContext,actualContext==='portal_select' ? false : !!selectedPortalPartnerId))
+    throw new AppError(401,'INVALID_TOKEN','Permissão do portal revogada.');
   if (actualContext === 'partner') {
-    const partner=await Partner.findByPk(user.partnerId,{attributes:['id','kind','status']});
+    const partner = portalAdmin
+      ? await findPortalAccount(user,session.audience,selectedPortalPartnerId)
+      : await Partner.findByPk(selectedPortalPartnerId,{attributes:['id','kind','status']});
     if(!partner || partner.status !== 'active' ||
        (session.audience === 'content_partner' && !['content','both'].includes(partner.kind)) ||
-       (session.audience === 'partner' && user.role === 'admin' && !['reseller','both'].includes(partner.kind)))
-      throw new AppError(401,"INVALID_TOKEN","Conta operacional indisponível.");
+       (session.audience === 'partner' && portalAdmin && !['reseller','both'].includes(partner.kind)))
+      throw new AppError(401,'INVALID_TOKEN','Conta operacional indisponível.');
   }
   payload.resolvedContext=actualContext;
  } else if (!payload.imp) {
@@ -62,7 +70,8 @@ export async function resolveAdminClaims(payload) {
    throw new AppError(401,"INVALID_TOKEN","Sessão não identificada.");
  }
  const context = payload.resolvedContext ?? (user.role==='partner' ? 'partner' : 'admin');
- const effectiveRole = roleForContext(user.role, context, !!user.partnerId);
+ const resolvedPartnerId = context === 'partner' ? (selectedPortalPartnerId ?? user.partnerId) : context === 'portal_select' ? null : user.partnerId;
+ const effectiveRole = roleForContext(user.role, context, !!resolvedPartnerId);
  if(!effectiveRole)throw new AppError(401,'INVALID_TOKEN','Contexto inválido.');
  const custom=user.permissionRoleId && effectiveRole==='partner'?await PermissionRole.findByPk(user.permissionRoleId):null;
  const delegatedPermissions = effectiveRole === "admin" ? normalizeNetworkPermissions(user.delegatedPermissions) : [];
@@ -70,7 +79,8 @@ export async function resolveAdminClaims(payload) {
    (effectiveRole === 'partner' && user.role === 'admin' ?
       (user.permissionRoleId ? (custom?.baseRole==='partner' ? custom.permissions : []) : PERMISSIONS.partner) :
       (user.permissionRoleId ? (custom?.baseRole===effectiveRole ? custom.permissions : []) : PERMISSIONS[effectiveRole] || []));
- return {user:{id:user.id,name:user.name,email:user.email,role:effectiveRole,partnerId:user.partnerId,
+ return {user:{id:user.id,name:user.name,email:user.email,role:effectiveRole,partnerId:resolvedPartnerId,
+     portalAdmin, portalSelectionRequired:context==='portal_select',
      permissionRoleId:effectiveRole==='partner'?user.permissionRoleId:null,permissions,delegatedPermissions,
      networkLimits:effectiveRole==="admin"?normalizeNetworkLimits(user.networkLimits):{}},impersonator,tokenVersion:user.tokenVersion};
 }

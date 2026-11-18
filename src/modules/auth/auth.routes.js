@@ -63,6 +63,18 @@ router.post("/partner-invite/complete", signupLimiter,
   }).strict() }),
   async (req, res) => res.set("Cache-Control", "no-store").json(await completePreRegistration(req.valid.body)));
 
+// Seletor de conta do Admin: o servidor extrai audiencia e identidade da sessao
+// autenticada; nunca aceita um ownerAdminId enviado pelo navegador.
+router.get('/portal-accounts',authenticate,
+  validate({query:z.object({q:z.string().trim().max(100).optional(),page:z.coerce.number().int().min(1).default(1)}).strict()}),
+  async (req,res)=>{
+  res.set('Cache-Control','no-store').json(await svc.portalAccounts(req.user.id,req.sessionId,req.valid.query));
+});
+router.post('/portal-account/select',authenticate,
+  validate({body:z.object({partnerId:z.string().uuid()}).strict()}),
+  async (req,res)=>res.set('Cache-Control','no-store').json(
+    await svc.switchPortalAccount(req.user.id,req.sessionId,req.valid.body.partnerId,meta(req))));
+
 // Recuperação de senha nos portais de conteúdo e revenda: não revela e-mails cadastrados.
 router.post("/password-reset/request", passwordResetRequestLimiter,
   validate({ body: z.object({ email: z.string().trim().email().max(200), audience: z.enum(["content_partner", "reseller"]).default("content_partner") }).strict() }),
