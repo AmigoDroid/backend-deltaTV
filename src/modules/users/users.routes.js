@@ -162,7 +162,12 @@ router.patch(
       throw new AppError(422,'PARTNER_REQUIRED','Parceiro obrigatório no portal e opcional para Admin.');
     if (partnerId && !(await Partner.findOne({ where: { id: partnerId, status: { [Op.ne]: "deleted" } },transaction })))
       throw new AppError(422, "INVALID_PARTNER", "Parceiro inexistente ou excluído.");
-    if (role === 'admin' && partnerId) await assignPortalAccountToAdmin(partnerId,u.id,transaction);
+    // Ao promover o Parceiro existente, preservar sua parceria original sem
+    // reatribuir a rede comercial ou recriar os dados operacionais. O vínculo
+    // já foi provado pela própria conta que está sendo promovida.
+    const preservingOriginal = u.role === 'partner' && role === 'admin' && partnerId === u.partnerId;
+    if (role === 'admin' && partnerId && !preservingOriginal)
+      await assignPortalAccountToAdmin(partnerId,u.id,transaction);
     if (u.role === 'admin' && role !== 'admin') {
       const [ownedPartners,ownedPlans]=await Promise.all([
         Partner.count({where:{ownerAdminId:u.id},transaction}),

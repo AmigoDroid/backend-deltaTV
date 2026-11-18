@@ -1,6 +1,6 @@
 import {PERMISSIONS} from "../../middleware/authenticate.js";
 import {loginContext, sessionContext, roleForContext, PORTAL_AUDIENCES} from "./role-context.js";
-import { defaultPortalAccount, findPortalAccount, listPortalAccounts } from "./portal-accounts.service.js";
+import { defaultPortalAccount, findPortalAccount, listPortalAccounts, restoreOriginalPortalAccount } from "./portal-accounts.service.js";
 import {normalizeNetworkPermissions, normalizeNetworkLimits} from "../admin-workspaces/permissions.js";
 import { disconnectAdminUser } from "../../realtime/socket.js";
 import { recordLogin } from "./login-history.service.js";
@@ -81,6 +81,10 @@ export async function login({ email, password, audience }, meta) {
   // A senha e identidade sao as mesmas nos tres paineis. Para Admin, a
   // parceria operacional pertence a SUA rede e fica vinculada a ESTA sessao.
   const targetAudience = audience || (user.role === 'partner' ? 'partner' : 'admin');
+  // Contas antigas promovidas com partner_id perdido: só restaurar após prova
+  // inequívoca de um login operacional anterior do mesmo usuário.
+  if (user.role === 'admin' && PORTAL_AUDIENCES.includes(targetAudience) && !user.partnerId)
+    await restoreOriginalPortalAccount(user, targetAudience);
   const selected = user.role === 'admin' && PORTAL_AUDIENCES.includes(targetAudience)
     ? await defaultPortalAccount(user, targetAudience) : null;
   const partner = user.role === 'admin' ? selected : (user.partnerId ? await Partner.findByPk(user.partnerId, {attributes:['id','kind','status']}) : null);
