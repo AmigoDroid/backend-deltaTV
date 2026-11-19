@@ -19,7 +19,7 @@
     "test:integration": "NODE_ENV=test node --test \"tests/integration/*.test.js\"",
     "test:regression": "NODE_ENV=test node --experimental-vm-modules --test --test-concurrency=1 tests/regression/*.test.js",
     "test:ipv6": "NODE_ENV=test node --test tests/ipv6/proxy.test.js",
-    "test:connection-audit": "NODE_ENV=test node --test tests/connection-audit/*.test.js",
+    "test:connection-audit": "NODE_ENV=test node --test tests/unit/connection-state-memory-only.test.js",
     "test:tv-messages": "NODE_ENV=test node --experimental-vm-modules --test --test-concurrency=1 tests/tv-messages/*.test.cjs",
     "db:diagnose-portal-usage": "node scripts/diagnose-portal-usage.mjs"
   },
