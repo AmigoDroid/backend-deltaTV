@@ -27,6 +27,7 @@ import playRoutes from "./modules/sources/delivery.routes.js";
 import mirrorRoutes from "./modules/mirror/mirror.routes.js";
 import heartbeatRoutes from "./modules/devices/presence.routes.js";
 import { publicRouter as appDownloadFiles } from "./modules/downloads/download.routes.js";
+import installationRoutes from "./modules/downloads/installation.routes.js";
 
 export function createApp() {
   const app = express();
@@ -99,6 +100,7 @@ export function createApp() {
   app.get("/health", (_req, res) => res.json({ ok: true }));
   app.use("/pair", pairingRoutes);
 
+  app.use("/api/v1/app-installation", authenticate, installationRoutes);
   app.use("/api/v1/tv-messages",panelMessages);
   app.use("/api/v1/auth", authRoutes);
   app.use("/api/v1/content-partner", contentPartnerRoutes);
