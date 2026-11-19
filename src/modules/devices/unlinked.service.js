@@ -132,7 +132,7 @@ export async function removeUnlinkedDevice(deviceId, actor) {
   const device = await Device.findByPk(deviceId);
   if (!device) throw notFound("Dispositivo");
   if ((await Activation.count({ where: { deviceId: device.id } })) > 0) {
-    throw new AppError(409, "DEVICE_HAS_HISTORY", "Este dispositivo já teve vínculo e mantém histórico; não pode ser excluído.");
+    throw new AppError(409, "DEVICE_HAS_HISTORY", "Este dispositivo já teve vínculo. Para excluí-lo, use Dispositivos → Excluir aparelho (Superadmin), informe o MAC e o motivo.");
   }
   await sequelize.transaction(async (transaction) => {
     // Pareamentos, chaves e sessões do aparelho saem junto (ON DELETE CASCADE).

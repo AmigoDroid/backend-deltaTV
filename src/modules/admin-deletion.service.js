@@ -4,11 +4,11 @@
  */
 import { Op, QueryTypes } from "sequelize";
 import { sequelize, Partner, AdminUser, AuthSession, Activation, Device, WebAccess,
-  PartnerCode, PartnerProvider, ResellerClient } from "../db/models/index.js";
+  PartnerCode, PartnerProvider, ResellerClient, AuditLog } from "../db/models/index.js";
 import { AppError, notFound } from "../shared/errors.js";
 import { audit } from "../shared/audit.js";
 import { clearMirrorAuth } from "./mirror/mirror.cache.js";
-import { clearContractAccessCache } from "./access/access.service.js";
+import { clearContractAccessCache, revokeSessionsOf } from "./access/access.service.js";
 import { clearResolutionCache } from "./provider-monitor/resolve.service.js";
 import { forgetDevice } from "./devices/presence.js";
 import { disconnectPartner, broadcastChange } from "../realtime/socket.js";
@@ -140,19 +140,109 @@ export async function activationDeletionPreview(id, actor) {
   return { id: a.id, deviceId: a.deviceId, mac: a.mac?.trim(), status: a.status, otherActivations: await count(Activation, { deviceId: a.deviceId, id: { [Op.ne]: id } }) };
 }
 
-export async function deleteActivationAsSuper(id, { confirmMac, reason }, actor) {
+export async function deleteActivationAsSuper(id, { confirmMac, reason, force = false }, actor) {
   checkSuper(actor);
   const result = await sequelize.transaction(async (transaction) => {
     const a = await Activation.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!a) throw notFound("Ativação");
     if (a.mac?.trim() !== confirmMac?.trim()) throw new AppError(422, "CONFIRMATION_MISMATCH", "Digite exatamente o MAC do aparelho.");
+    if (!reason?.trim() || reason.trim().length < 3) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo (mínimo 3 caracteres).");
+    const licenseIds = [a.licenseId, a.grantedLicenseId].filter(Boolean);
+    if (licenseIds.length) {
+      const active = await sequelize.query(`SELECT 1 FROM licenses WHERE id IN (:ids) AND status='active'
+        AND (expires_at IS NULL OR expires_at > now()) LIMIT 1`, { replacements: { ids: licenseIds }, type: QueryTypes.SELECT, transaction });
+      if (active.length && !force) throw new AppError(409, "ACTIVE_LICENSE", "Licença vigente. Transfira o MAC ou confirme a exclusão forçada com motivo.");
+    }
     const meta = { mac: a.mac, deviceId: a.deviceId, partnerId: a.partnerId, reason: reason?.trim() ?? null };
     await a.destroy({ transaction }); // sessões associadas removidas por FK CASCADE
     await audit({ actor, action: "activation.delete.admin", entityType: "activation", entityId: id, metadata: meta, transaction });
-    return { deleted: true, deviceId: a.deviceId };
+    return { deleted: true, deviceId: a.deviceId, partnerId: a.partnerId };
   });
   clearMirrorAuth(); clearContractAccessCache(); clearResolutionCache(); broadcastChange({ topic: "devices" });
+  if (result.partnerId) await notifyScopedDeviceChange(result.partnerId);
   return result;
+}
+
+/** Exclui APENAS o vínculo autorizado, nunca o cadastro global do MAC.
+ * Uma transação isolada por ID permite lotes com sucesso parcial.
+ */
+export async function deleteScopedActivation(id, { confirmMac, reason, force = false, bulkQuantity = 1 } = {}, actor, { partnerId } = {}) {
+  if (!reason?.trim() || reason.trim().length < 3)
+    throw new AppError(422, "REASON_REQUIRED", "Informe o motivo da exclusão (mínimo 3 caracteres).");
+  if (force && actor?.role !== "superadmin")
+    throw new AppError(403, "FORCE_DENIED", "Somente a DeltaTV pode forçar a exclusão de licença vigente.");
+  const result = await sequelize.transaction(async transaction => {
+    const a = await Activation.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!a) {
+      const previous = await AuditLog.findOne({ where: { entityId: id, entityType: "activation", action: "activation.delete.scoped" }, transaction });
+      if (!previous || (partnerId && String(previous.metadata?.partnerId) !== String(partnerId))) throw notFound("Ativação");
+      return { id, ok: true, alreadyRemoved: true, code: "ALREADY_REMOVED", message: "Vínculo já excluído." };
+    }
+    if (partnerId && String(a.partnerId) !== String(partnerId)) throw notFound("Ativação");
+    if (!confirmMac || a.mac?.trim() !== confirmMac.trim())
+      throw new AppError(422, "CONFIRMATION_MISMATCH", "Digite exatamente o MAC do dispositivo.");
+    const licenseIds = [a.licenseId, a.grantedLicenseId].filter(Boolean);
+    if (licenseIds.length) {
+      const licenses = await sequelize.query(`SELECT id FROM licenses WHERE id IN (:ids)
+        AND status = 'active' AND (expires_at IS NULL OR expires_at > now()) LIMIT 1`,
+        { replacements: { ids: licenseIds }, type: QueryTypes.SELECT, transaction });
+      if (licenses.length && !force)
+        throw new AppError(409, "ACTIVE_LICENSE", "Existe licença vigente. Transfira o MAC ou desvincule a ativação.");
+    }
+    const deviceId = a.deviceId;
+    const mac = a.mac?.trim();
+    await revokeSessionsOf(a.id, transaction);
+    try { await a.destroy({ transaction }); }
+    catch (error) {
+      if (["SequelizeForeignKeyConstraintError"].includes(error?.name) || ["23001", "23503"].includes(error?.parent?.code))
+        throw new AppError(409, "RELATED_RECORDS", "Este vínculo tem registros dependentes. Desvincule primeiro ou solicite revisão administrativa.");
+      throw error;
+    }
+    await audit({ actor, action: "activation.delete.scoped", entityType: "activation", entityId: id,
+      metadata: { mac, partnerId: a.partnerId, deviceId, reason: reason.trim(), forced: Boolean(force), quantity: bulkQuantity }, transaction });
+    return { id, ok: true, deleted: true, code: "DELETED", message: "Vínculo excluído.", deviceId, partnerId: a.partnerId };
+  });
+  if (result.deleted) {
+    clearMirrorAuth(); clearContractAccessCache(); clearResolutionCache();
+    await notifyScopedDeviceChange(result.partnerId);
+  }
+  return result;
+}
+
+/** Post-commit socket errors must never turn a successful DB operation into an HTTP 500. */
+export async function notifyScopedDeviceChange(partnerId) {
+  try {
+    const owner = partnerId ? await Partner.findByPk(partnerId, { attributes: ["ownerAdminId"] }) : null;
+    broadcastChange({ topic: "devices", partnerId: partnerId ?? null, ownerAdminId: owner?.ownerAdminId });
+  } catch (error) { console.warn("[device-change] Notificação pendente:", error.message); }
+}
+
+export async function bulkScopedActivation(action, ids, body, actor, scope = {}) {
+  const results = [];
+  for (const id of ids) {
+    try {
+      if (action === "delete") {
+        // Confirmação do lote é pela palavra EXCLUIR; o MAC é consultado com escopo no servidor.
+        const a = await Activation.findByPk(id, { attributes: ["id", "mac", "partnerId"] });
+        if (a && scope.partnerId && String(a.partnerId) !== String(scope.partnerId)) throw notFound("Ativação");
+        results.push(await deleteScopedActivation(id, { ...body, bulkQuantity: ids.length, confirmMac: a?.mac?.trim() }, actor, scope));
+      } else {
+        const { changeActivation } = await import("./devices/device.service.js");
+        const before = await Activation.findByPk(id, { attributes: ["status", "partnerId"] });
+        if (before && scope.partnerId && String(before.partnerId) !== String(scope.partnerId)) throw notFound("Ativação");
+        if (!before) throw notFound("Ativação");
+        if (before.status === "revoked") {
+          results.push({ id, ok: true, code: "ALREADY_REMOVED", message: "Vínculo já desvinculado." });
+          continue;
+        }
+        await changeActivation(id, "revoke", { actor, reason: body.reason, scope, blockedBy: "partner", bulkQuantity: ids.length });
+        results.push({ id, ok: true, code: "REVOKED", message: "Vínculo desvinculado." });
+      }
+    } catch (e) {
+      results.push({ id, ok: false, code: e.code || "ITEM_FAILED", message: !e.status || e.status >= 500 ? "Falha ao processar vínculo." : (e.message || "Falha ao processar vínculo.") });
+    }
+  }
+  return { total: ids.length, succeeded: results.filter(r => r.ok).length, failed: results.filter(r => !r.ok).length, results };
 }
 
 export async function deviceDeletionPreview(id, actor) {
@@ -164,22 +254,59 @@ export async function deviceDeletionPreview(id, actor) {
     affectsAllPartners: true };
 }
 
-export async function deleteDeviceAsSuper(id, { confirmMac, reason }, actor) {
+export async function deleteDeviceAsSuper(id, { confirmMac, reason, force = false, bulkQuantity = 1 }, actor) {
   checkSuper(actor);
   const result = await sequelize.transaction(async (transaction) => {
     const device = await Device.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
     if (!device) throw notFound("Dispositivo");
     if (device.mac?.trim() !== confirmMac?.trim()) throw new AppError(422, "CONFIRMATION_MISMATCH", "Digite exatamente o MAC do aparelho.");
-    const activations = await Activation.findAll({ where: { deviceId: id }, attributes: ["id"], transaction, lock: transaction.LOCK.UPDATE });
+    if (!reason?.trim() || reason.trim().length < 3) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo (mínimo 3 caracteres).");
+    const active = await sequelize.query(`SELECT 1 FROM activations a JOIN licenses l
+      ON l.id IN (a.license_id, a.granted_license_id) WHERE a.device_id=:id
+      AND l.status='active' AND (l.expires_at IS NULL OR l.expires_at > now()) LIMIT 1`,
+      { replacements: { id }, type: QueryTypes.SELECT, transaction });
+    if (active.length && !force) throw new AppError(409, "ACTIVE_LICENSE", "Existe licença vigente. Transfira o MAC, desvincule ou force com motivo.");
+    const activations = await Activation.findAll({ where: { deviceId: id }, attributes: ["id", "partnerId"], transaction, lock: transaction.LOCK.UPDATE });
+    const webAccesses = await WebAccess.findAll({ where: { deviceId: id }, attributes: ["partnerId"], transaction });
+    const affectedPartners = [...new Set([...activations.map(a => a.partnerId), ...webAccesses.map(w => w.partnerId)].filter(Boolean))];
     const partnerCount = await sequelize.query('SELECT count(DISTINCT partner_id)::int AS n FROM activations WHERE device_id = :id',
       { replacements: { id }, type: QueryTypes.SELECT, transaction });
     await Activation.destroy({ where: { deviceId: id }, transaction });
     // WebAccess é dependência com CASCADE no banco; a exclusão remove também as sessões/chaves do aparelho.
     await device.destroy({ transaction });
     await audit({ actor, action: "device.delete.admin", entityType: "device", entityId: id,
-      metadata: { mac: device.mac, activations: activations.length, partnerCount: partnerCount[0]?.n ?? 0, reason }, transaction });
-    return { deleted: true, activations: activations.length };
+      metadata: { mac: device.mac, activations: activations.length, partnerCount: partnerCount[0]?.n ?? 0, reason, quantity: bulkQuantity }, transaction });
+    return { deleted: true, activations: activations.length, affectedPartners };
   });
   clearMirrorAuth(); clearContractAccessCache(); clearResolutionCache(); forgetDevice(id); broadcastChange({ topic: "devices" });
+  for (const partnerId of result.affectedPartners) await notifyScopedDeviceChange(partnerId);
   return result;
+}
+
+/** Global MAC batch is Superadmin-only and uses the audited existing deletion service per item. */
+export async function bulkDeleteDevicesAsSuper(ids, { reason, force = false }, actor) {
+  checkSuper(actor);
+  if (!reason?.trim() || reason.trim().length < 3) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo (mínimo 3 caracteres).");
+  const results = [];
+  for (const id of ids) {
+    try {
+      const device = await Device.findByPk(id, { attributes: ["id", "mac"] });
+      if (!device) {
+        const previous = await AuditLog.findOne({ where: { entityId: id, entityType: "device", action: "device.delete.admin" } });
+        if (!previous) throw notFound("Dispositivo");
+        results.push({ id, ok: true, code: "ALREADY_REMOVED", message: "Dispositivo já excluído." });
+        continue;
+      }
+      const active = await sequelize.query(`SELECT 1 FROM activations a JOIN licenses l
+        ON l.id IN (a.license_id, a.granted_license_id) WHERE a.device_id = :id
+        AND l.status = 'active' AND (l.expires_at IS NULL OR l.expires_at > now()) LIMIT 1`,
+        { replacements: { id }, type: QueryTypes.SELECT });
+      if (active.length && !force) throw new AppError(409, "ACTIVE_LICENSE", "Licença vigente. Transfira o MAC, desvincule ou force com motivo.");
+      await deleteDeviceAsSuper(id, { confirmMac: device.mac?.trim(), reason, force, bulkQuantity: ids.length }, actor);
+      results.push({ id, ok: true, code: "DELETED", message: "Aparelho excluído." });
+    } catch (e) {
+      results.push({ id, ok: false, code: e.code || "ITEM_FAILED", message: !e.status || e.status >= 500 ? "Falha ao processar dispositivo." : e.message });
+    }
+  }
+  return { total: ids.length, succeeded: results.filter(r => r.ok).length, failed: results.filter(r => !r.ok).length, results };
 }

@@ -1,7 +1,7 @@
 /** Controle puro, testável sem WebSocket e sem banco. */
-export function canReceiveChange(user, partnerId) {
+export function canReceiveChange(user, partnerId, ownerAdminId = null) {
   // Administradores de rede não recebem eventos globais nem IDs de parceiros de outras contas.
-  if (user?.role === "admin") return false;
+  if (user?.role === "admin") return ownerAdminId != null && String(user.id) === String(ownerAdminId);
   return user?.role !== "partner" || (partnerId != null && String(user.partnerId) === String(partnerId));
 }
 export function sameSessionClaims(account, peer) {

@@ -1,3 +1,4 @@
+import { deleteScopedActivation, bulkScopedActivation } from "../admin-deletion.service.js";
 import { Router } from "express";
 import { z } from "zod";
 import { Op, UniqueConstraintError } from "sequelize";
@@ -547,11 +548,25 @@ router.delete("/partners/:id/providers/:providerId",requireScope("network:resour
   if(!provider)throw new AppError(404,"NOT_FOUND","Servidor não encontrado.");
   res.json(await deleteProviderOperational(p.id,req.valid.params.providerId,{...req.valid.body,confirmation:provider.name},actorOf(req)));
 });
-router.get("/partners/:id/devices",requireScope("network:devices:read"),validate({params:ident,query:pagination.extend({q:z.string().trim().max(40).optional(),status:z.enum(["active","blocked","revoked"]).optional()})}),async(req,res)=>{
+router.get("/partners/:id/devices",requireScope("network:devices:read"),validate({params:ident,query:pagination.extend({q:z.string().trim().max(40).optional(),status:z.enum(["active","blocked","revoked"]).optional(),showRemoved:z.enum(["true","false"]).transform(v=>v==="true").optional()})}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);
   res.json(await listActivations({...req.valid.query,partnerId:p.id},{partnerId:p.id}));
 });
 // Gestão operacional de TVs pertencentes à conta, validada pelo escopo da rede.
+const activationDeleteRequest = z.object({ confirmMac:z.string().trim().min(11).max(30), reason:z.string().trim().min(3).max(500) }).strict();
+const deviceBulkRequest = z.object({ ids:z.array(z.string().uuid()).min(1).max(100), reason:z.string().trim().min(3).max(500), confirmation:z.literal("EXCLUIR").optional() }).strict();
+router.delete("/partners/:id/devices/:activationId",requireScope("network:devices:write"),validate({
+  params:z.object({id:z.string().uuid(),activationId:z.string().uuid()}),body:activationDeleteRequest
+}),async(req,res)=>{
+  const p=await ownedPartner(tenant(req),req.valid.params.id);
+  res.json(await deleteScopedActivation(req.valid.params.activationId,req.valid.body,actorOf(req),{partnerId:p.id}));
+});
+for(const action of ["delete","revoke"]) router.post(`/partners/:id/devices/bulk-${action}`,
+  requireScope("network:devices:write"),validate({params:ident,body:deviceBulkRequest}),async(req,res)=>{
+    const p=await ownedPartner(tenant(req),req.valid.params.id);
+    if(action==="delete" && req.valid.body.confirmation!=="EXCLUIR")throw new AppError(422,"CONFIRMATION_REQUIRED","Digite EXCLUIR.");
+    res.json(await bulkScopedActivation(action,req.valid.body.ids,req.valid.body,actorOf(req),{partnerId:p.id}));
+  });
 router.post("/partners/:id/devices/:activationId/:action",requireScope("network:devices:write"),validate({
   params:z.object({id:z.string().uuid(),activationId:z.string().uuid(),action:z.enum(["block","unblock","revoke"])}),
   body:z.object({reason:z.string().trim().max(500).optional().default("")}).strict(),

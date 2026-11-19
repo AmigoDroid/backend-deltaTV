@@ -26,9 +26,10 @@ const include = [
 ];
 
 /** `scope.partnerId` restringe tudo ao parceiro (isolamento): nunca vem do cliente, vem do token. */
-export async function listActivations({ q, status, licenseId, partnerId, online, page, pageSize }, scope = {}) {
+export async function listActivations({ q, status, showRemoved = false, licenseId, partnerId, online, page, pageSize }, scope = {}) {
   const where = {};
   if (status) where.status = status;
+  else if (!showRemoved) where.status = { [Op.in]: ["active", "blocked"] };
   if (licenseId) where.licenseId = licenseId;
   const effectivePartner = scope.partnerId ?? partnerId;
   if (effectivePartner) where.partnerId = effectivePartner;
@@ -57,10 +58,11 @@ export async function listActivations({ q, status, licenseId, partnerId, online,
 }
 
 /** Pagina aparelhos antes de carregar os vínculos: cada MAC ocupa exatamente uma linha. */
-export async function listDevices({ q, status, online, page, pageSize }) {
+export async function listDevices({ q, status, showRemoved = false, online, page, pageSize }) {
   const conditions = [sequelize.literal('"Device"."mac" IS NOT NULL')];
   if (q) conditions.push(sequelize.literal(macSearchSql("Device", q, value => sequelize.escape(value))));
   const exists = clause => `EXISTS (SELECT 1 FROM activations a WHERE a.device_id = "Device".id ${clause})`;
+  if (!status && !showRemoved) conditions.push(sequelize.literal(exists("AND a.status IN ('active','blocked')")));
   if (status === "active") conditions.push(sequelize.literal(exists("AND a.status = 'active'")));
   if (status === "blocked") conditions.push(sequelize.literal(`NOT (${exists("AND a.status = 'active'")}) AND ${exists("AND a.status = 'blocked'")}`));
   if (status === "revoked") conditions.push(sequelize.literal(`${exists("")} AND NOT (${exists("AND a.status <> 'revoked'")})`));
@@ -161,7 +163,7 @@ const ACTIONS = {
  * unblock -> devolve o acesso (se licença/parceria continuarem elegíveis)
  * revoke  -> remove a ativação, derruba sessões e libera o MAC para nova ativação
  */
-export async function changeActivation(id, action, { reason, actor, scope = {}, blockedBy }) {
+export async function changeActivation(id, action, { reason, actor, scope = {}, blockedBy, bulkQuantity = 1 }) {
   const rule = ACTIONS[action];
   if (!rule) throw new AppError(400, "INVALID_ACTION", "Ação inválida.");
   const changed = await sequelize.transaction(async (t) => {
@@ -201,11 +203,15 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
     if (action === "revoke") await revokeSessionsOf(a.id, t);
     await audit({
       actor, action: `activation.${action}`, entityType: "activation", entityId: a.id,
-      metadata: { mac: a.mac, from: before, to: rule.to, reason }, transaction: t,
+      metadata: { mac: a.mac, partnerId: a.partnerId, from: before, to: rule.to, reason, quantity: bulkQuantity }, transaction: t,
     });
     return a;
   });
   dropMirrorAuth(changed.id); // bloquear/desbloquear/remover valem já para o espelho (depois do commit)
+  if (action === "revoke") {
+    const { notifyScopedDeviceChange } = await import("../admin-deletion.service.js");
+    await notifyScopedDeviceChange(changed.partnerId);
+  }
   // A licença já está alterada no banco: o comando apenas solicita que a TV
   // confira o novo estado. Não invalidar a alteração se a fila falhar.
   if (action === 'block' || action === 'unblock') {

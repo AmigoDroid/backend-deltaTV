@@ -1,3 +1,4 @@
+import { deleteScopedActivation, bulkScopedActivation } from "../admin-deletion.service.js";
 /** Operational tools for CONTENT partners.
  * Mounted under /api/v1/content-partner after authentication + content-kind gate.
  * Do not mount reseller stock/credit-purchase routes: content contracts have different accounting.
@@ -65,9 +66,22 @@ router.delete("/clients/:id", clientWriteLimiter, validate({ params: id }), asyn
 // Credential access is opt-in, rate limited, audited, and only for the partner's activation.
 router.post("/clients/credentials", credentialsViewLimiter, validate({ body: z.object({ activationId: z.string().uuid() }) }), async (req, res) => res.json(await clients.credentialsOf({ partnerId: req.user.partnerId, actor: actorOf(req), activationId: req.valid.body.activationId })));
 
-router.get("/licenses", validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), status: z.enum(["active", "blocked", "revoked"]).optional(), online: z.enum(["true", "false"]).optional() }) }), async (req, res) => res.json(await devices.listActivations(req.valid.query, scope(req))));
+router.get("/licenses", validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), status: z.enum(["active", "blocked", "revoked"]).optional(), showRemoved: z.enum(["true", "false"]).transform(v => v === "true").optional(), online: z.enum(["true", "false"]).optional() }) }), async (req, res) => res.json(await devices.listActivations(req.valid.query, scope(req))));
+const deviceDeleteInput = z.object({ confirmMac: z.string().trim().min(11).max(30), reason: z.string().trim().min(3).max(500) }).strict();
+const deviceBulkInput = z.object({ ids: z.array(z.string().uuid()).min(1).max(100), reason: z.string().trim().min(3).max(500), confirmation: z.literal("EXCLUIR").optional() }).strict();
+router.delete("/devices/:id", macWriteLimiter, validate({ params: id, body: deviceDeleteInput }), async(req,res) =>
+  res.json(await deleteScopedActivation(req.valid.params.id,req.valid.body,actorOf(req),scope(req))));
+for (const action of ["delete", "revoke"]) router.post(`/devices/bulk-${action}`,macWriteLimiter,
+  validate({ body: deviceBulkInput }),async(req,res)=>{
+    if(action==="delete" && req.valid.body.confirmation!=="EXCLUIR")
+      throw new AppError(422,"CONFIRMATION_REQUIRED","Digite EXCLUIR para confirmar o lote.");
+    res.json(await bulkScopedActivation(action,req.valid.body.ids,req.valid.body,actorOf(req),scope(req)));
+  });
+router.get("/devices", validate({ query: z.object({ ...pageQuery, q: z.string().trim().max(40).optional(),
+  status:z.enum(["active","blocked","revoked"]).optional(), showRemoved:z.enum(["true","false"]).transform(v=>v==="true").optional() }) }),
+  async(req,res)=>res.json(await devices.listActivations(req.valid.query,scope(req))));
 router.get("/devices/:id", validate({ params: id }), async (req, res) => res.json(await devices.getActivation(req.valid.params.id, scope(req))));
-for (const action of ["block", "unblock"]) {
+for (const action of ["block", "unblock", "revoke"]) {
   router.post(`/devices/:id/${action}`, macWriteLimiter, validate({ params: id, body: z.object({ reason: z.string().trim().min(3).max(500).optional() }).default({}) }), async (req, res) => {
     await devices.changeActivation(req.valid.params.id, action, { scope: scope(req), actor: actorOf(req), reason: req.valid.body.reason, blockedBy: "partner" });
     res.json(await devices.getActivation(req.valid.params.id, scope(req)));
@@ -100,7 +114,7 @@ router.get("/downloads", validate({ query: z.object({ ...pageQuery, q: z.string(
 const webAccessListQuery = z.object({
   ...pageQuery,
   q: z.string().trim().max(60).optional(),
-  status: z.enum(["active", "blocked", "revoked"]).optional(),
+  status: z.enum(["active", "blocked", "revoked"]).optional(), showRemoved: z.enum(["true", "false"]).transform(v => v === "true").optional(),
 });
 router.get("/web-access", validate({ query: webAccessListQuery }), async (req, res) =>
   res.json(await web.listWebAccesses(req.valid.query, { contentOwnerPartnerId: req.user.partnerId })));

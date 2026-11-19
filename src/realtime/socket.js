@@ -24,7 +24,7 @@ const emit = (socket, data) => {
   try { socket.send(JSON.stringify(data)); return true; } catch { return false; }
 };
 import { canReceiveChange, sameSessionClaims } from "./routing-policy.js";
-const allowed = (peer, partnerId) => canReceiveChange(peer.user, partnerId);
+const allowed = (peer, partnerId, ownerAdminId = null) => canReceiveChange(peer.user, partnerId, ownerAdminId);
 // Sessões HTTP revogadas são encerradas também no canal em tempo real.
 export function disconnectAdminUser(userId) {
   for (const peer of [...peers]) if ((String(peer.user.id) === String(userId) || String(peer.impersonator?.id) === String(userId))) peer.socket.close(1008, "Session revoked");
@@ -90,9 +90,9 @@ export function broadcastPartnerNotification(partnerId, notificationId) {
       emit(peer.socket, { type: "notification", id: notificationId });
   }
 }
-export function broadcastChange({ partnerId = null, topic = "data" } = {}) {
+export function broadcastChange({ partnerId = null, ownerAdminId = null, topic = "data" } = {}) {
   for (const peer of peers) {
-    if (allowed(peer, partnerId)) emit(peer.socket, { type: "changed", topic, partnerId });
+    if (allowed(peer, partnerId, ownerAdminId)) emit(peer.socket, { type: "changed", topic, partnerId });
   }
 }
 // Contagem de aparelhos para os painéis administrativos, sem enviar dados de aparelhos.

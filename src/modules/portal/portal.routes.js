@@ -1,3 +1,5 @@
+import { AppError } from "../../shared/errors.js";
+import { deleteScopedActivation, bulkScopedActivation } from "../admin-deletion.service.js";
 import {contentPortalAccessGuard} from "../partner-portal-sales/sales.service.js";
 import { networkResourceGuard, effectiveResources } from "../distribution/network.resources.js";
 import { partnerNetwork } from "../distribution/network.routes.js";
@@ -100,8 +102,18 @@ router.get("/me", async (req, res) => {
 // Contagem leve de aparelhos online (só deste parceiro). Declarada ANTES de /devices/:id.
 router.get("/devices/presence", async (req, res) =>
   res.set("Cache-Control", "no-store").json({ online: await countOnlineForPartner(req.user.partnerId), windowSeconds: env.presenceWindowSeconds }));
-router.get("/devices", validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(), status: z.enum(["active", "blocked", "revoked"]).optional() }) }), async (req, res) =>
+router.get("/devices", validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(), status: z.enum(["active", "blocked", "revoked"]).optional(), showRemoved: z.enum(["true", "false"]).transform(v => v === "true").optional() }) }), async (req, res) =>
   res.json(await devices.listActivations(req.valid.query, scope(req))));
+const deviceDeleteInput = z.object({ confirmMac: z.string().trim().min(11).max(30), reason: z.string().trim().min(3).max(500) }).strict();
+const deviceBulkInput = z.object({ ids: z.array(z.string().uuid()).min(1).max(100), reason: z.string().trim().min(3).max(500), confirmation: z.literal("EXCLUIR").optional() }).strict();
+router.delete("/devices/:id", macWriteLimiter, validate({ params: id, body: deviceDeleteInput }), async(req,res) =>
+  res.json(await deleteScopedActivation(req.valid.params.id,req.valid.body,actorOf(req),scope(req))));
+for (const action of ["delete", "revoke"]) router.post(`/devices/bulk-${action}`,macWriteLimiter,
+  validate({ body: deviceBulkInput }),async(req,res)=>{
+    if(action==="delete" && req.valid.body.confirmation!=="EXCLUIR")
+      throw new AppError(422,"CONFIRMATION_REQUIRED","Digite EXCLUIR para confirmar o lote.");
+    res.json(await bulkScopedActivation(action,req.valid.body.ids,req.valid.body,actorOf(req),scope(req)));
+  });
 router.get("/devices/:id", validate({ params: id }), async (req, res) => res.json(await devices.getActivation(req.valid.params.id, scope(req))));
 for (const action of ["block", "unblock", "revoke"]) {
   router.post(`/devices/:id/${action}`, validate({ params: id, body: z.object({ reason: z.string().trim().min(3).max(500).optional() }) }), async (req, res) => {

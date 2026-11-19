@@ -14,7 +14,7 @@ import { configurationSchema as configuration } from "./device-config.schema.js"
 import { countOnline } from "./presence.js";
 import { env } from "../../config/env.js";
 
-import { activationDeletionPreview, deviceDeletionPreview, deleteActivationAsSuper, deleteDeviceAsSuper } from "../admin-deletion.service.js";
+import { activationDeletionPreview, deviceDeletionPreview, deleteActivationAsSuper, deleteDeviceAsSuper, bulkDeleteDevicesAsSuper } from "../admin-deletion.service.js";
 
 import { Activation } from "../../db/models/index.js";
 import { credentialsOf } from "../clients/client.service.js";
@@ -128,12 +128,12 @@ router.get("/presence", requirePermission("devices:read"), async (_req, res) =>
 
 router.get("/by-mac", requirePermission("devices:read"), validate({ query: z.object({
   ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(),
-  status: z.enum(["active", "blocked", "revoked", "unlinked"]).optional(),
+  status: z.enum(["active", "blocked", "revoked", "unlinked"]).optional(), showRemoved: z.enum(["true", "false"]).transform(v => v === "true").optional(),
 }) }), async (req, res) => res.set("Cache-Control", "no-store").json(await svc.listDevices(req.valid.query)));
 
 router.get(
   "/", requirePermission("devices:read"),
-  validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(), status: z.enum(["active", "blocked", "revoked"]).optional(), licenseId: z.string().uuid().optional(), partnerId: z.string().uuid().optional() }) }),
+  validate({ query: z.object({ ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(), status: z.enum(["active", "blocked", "revoked"]).optional(), showRemoved: z.enum(["true", "false"]).transform(v => v === "true").optional(), licenseId: z.string().uuid().optional(), partnerId: z.string().uuid().optional() }) }),
   async (req, res) => res.json(await svc.listActivations(req.valid.query)),
 );
 router.get("/history", requirePermission("devices:read"), validate({ query: z.object({ ...pageQuery, mac: z.string().min(11).max(20) }) }), async (req, res) => res.set("Cache-Control", "no-store").json(await svc.deviceHistory(req.valid.query.mac, req.valid.query)));
@@ -141,7 +141,10 @@ router.get("/activations/:id", requirePermission("devices:read"), validate({ par
 router.get("/registrations/:id/attribution", requirePermission("devices:read"), validate({ params: id }), async (req, res) => res.json(await svc.deviceAttribution(req.valid.params.id)));
 
 // Exclusão permanente exclusiva do superadmin. Prévia obrigatória na interface.
-const deletionBody = z.object({ confirmMac: z.string().trim().min(11).max(30), reason: z.string().trim().max(400).optional() }).strict();
+const deletionBody = z.object({ confirmMac: z.string().trim().min(11).max(30), reason: z.string().trim().min(3).max(400), force: z.boolean().optional() }).strict();
+router.post("/registrations/bulk-delete", requirePermission("override"), macWriteLimiter,
+  validate({ body: z.object({ ids:z.array(z.string().uuid()).min(1).max(100), reason:z.string().trim().min(3).max(500), confirmation:z.literal("EXCLUIR"), force:z.boolean().optional() }).strict() }),
+  async(req,res)=>res.json(await bulkDeleteDevicesAsSuper(req.valid.body.ids,req.valid.body,actorOf(req))));
 router.get("/activations/:id/deletion-preview", requirePermission("override"), validate({ params: id }), async (req, res) => res.json(await activationDeletionPreview(req.valid.params.id, actorOf(req))));
 router.delete("/activations/:id", requirePermission("override"), validate({ params: id, body: deletionBody }), async (req, res) => res.json(await deleteActivationAsSuper(req.valid.params.id, req.valid.body, actorOf(req))));
 router.get("/registrations/:id/deletion-preview", requirePermission("override"), validate({ params: id }), async (req, res) => res.json(await deviceDeletionPreview(req.valid.params.id, actorOf(req))));
