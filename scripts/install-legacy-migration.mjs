@@ -3,6 +3,10 @@
 import { readFileSync, copyFileSync, writeFileSync, renameSync, existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 const APPLY = process.argv.includes('--apply');
+if (APPLY) {
+  console.error('A migração de clientes legados foi arquivada por decisão de produto. Instalação de rotas proibida.');
+  process.exit(3);
+}
 const root = resolve(process.cwd());
 const file = resolve(root, 'src/modules/admin.routes.js');
 const service = resolve(root, 'src/modules/legacy-migration/legacy-migration.routes.js');
@@ -24,9 +28,9 @@ if (!next.includes(importText)) next = next.replace(deviceImport,deviceImport+'\
 if (!next.includes(mountText)) next = next.replace(deviceMount,mountText+'\n'+deviceMount);
 if (next === src) { console.log('Rotas já instaladas (idempotente).'); process.exit(0); }
 if (!APPLY) {
-  console.log('Prévia: registrar /api/v1/admin/devices/legacy-migration em src/modules/admin.routes.js.');
+  console.log('Migração legada arquivada; rotas não serão registradas.');
   console.log('Somente este arquivo seria modificado. Banco, app.js e mensagens para TVs não serão alterados.');
-  console.log('Para aplicar: node scripts/install-legacy-migration.mjs --apply');
+  console.log('Instalação desativada por decisão de produto.');
   process.exit(0);
 }
 const stamp = new Date().toISOString().replace(/[:.]/g,'-');

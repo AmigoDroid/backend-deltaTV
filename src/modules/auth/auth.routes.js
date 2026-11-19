@@ -4,7 +4,7 @@ import {publicPortalSalesInvitations} from "../partner-portal-sales/sales.routes
 import { Router } from "express";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
-import { loginLimiter, refreshLimiter, signupLimiter, passwordResetRequestLimiter, passwordResetCompleteLimiter, passwordResetSendLimiter, profileSensitiveLimiter } from "../../middleware/security.js";
+import { loginLimiter, refreshLimiter, signupLimiter, inviteVerifyLimiter, inviteCompleteLimiter, passwordResetRequestLimiter, passwordResetCompleteLimiter, passwordResetSendLimiter, profileSensitiveLimiter } from "../../middleware/security.js";
 import { authenticate } from "../../middleware/authenticate.js";
 import { sequelize, AdminUser } from "../../db/models/index.js";
 import { AppError } from "../../shared/errors.js";
@@ -36,6 +36,7 @@ router.post(
 
 // Autocadastro de revendedor (público). O cadastro fica aguardando aprovação do admin. Resposta igual para qualquer e-mail.
 const SIGNUP_OK = { ok: true, message: "Cadastro recebido. Você poderá entrar assim que a plataforma aprovar." };
+const SIGNUP_INVITED_OK = { ok: true, message: "Cadastro recebido. Com convite válido, o acesso é imediato; caso contrário, confira a situação com o responsável." };
 router.post(
   "/register-reseller", signupLimiter,
   validate({ body: z.object({
@@ -48,16 +49,16 @@ router.post(
   async (req, res) => {
     const { website, ...input } = req.valid.body;
     if (!website) await registerReseller(input, meta(req));
-    res.status(202).json(SIGNUP_OK);
+    res.status(202).json(req.valid.body.inviteToken ? SIGNUP_INVITED_OK : SIGNUP_OK);
   },
 );
 
 // Endpoints públicos: o segredo viaja SOMENTE no corpo POST (nunca no log de URL).
 const invitationToken = z.string().min(32).max(100).regex(/^[A-Za-z0-9_-]+$/);
-router.post("/partner-invite/verify", loginLimiter,
+router.post("/partner-invite/verify", inviteVerifyLimiter,
   validate({ body: z.object({ token: invitationToken }).strict() }),
   async (req, res) => res.set("Cache-Control", "no-store").json(await verifyPreRegistration(req.valid.body.token)));
-router.post("/partner-invite/complete", signupLimiter,
+router.post("/partner-invite/complete", inviteCompleteLimiter,
   validate({ body: z.object({
     token: invitationToken, companyName: z.string().trim().min(2).max(160), password: z.string().min(12).max(128),
   }).strict() }),

@@ -14,7 +14,7 @@ import {invalidatePlan} from '../service-plans/plan.service.js';
 import {clearContractAccessCache} from '../access/access.service.js';
 import {invalidateServerPools} from '../provider-monitor/code-pool.service.js';
 import {clearResolutionCache} from '../provider-monitor/resolve.service.js';
-import {loginLimiter,signupLimiter} from '../../middleware/security.js';
+import {inviteVerifyLimiter,inviteCompleteLimiter} from '../../middleware/security.js';
 import {inviteUnavailable,inviteRecipient,remainingUses} from './network-invite.policy.js';
 
 const router=Router();
@@ -35,7 +35,7 @@ async function ownerAllowed(row,transaction){
   throw new AppError(403,'INVITER_NOT_AUTHORIZED','A rede deste convite não está habilitada para novos cadastros.');
  return user;
 }
-router.post('/verify',loginLimiter,validate({body:z.object({token}).strict()}),async(req,res)=>{
+router.post('/verify',inviteVerifyLimiter,validate({body:z.object({token}).strict()}),async(req,res)=>{
  const r=await AdminNetworkInvitation.findOne({where:{tokenHash:HASH(req.valid.body.token)}});
  assertValid(r);
  await ownerAllowed(r);
@@ -44,7 +44,7 @@ router.post('/verify',loginLimiter,validate({body:z.object({token}).strict()}),a
  res.set('Cache-Control','no-store').json({email:r.email||null,kind:r.kind,remainingUses:remainingUses(r),planName:plan.name,monthlyFeeCents:plan.monthlyPriceCents,
    maxDns:plan.maxServers,activationLimit:plan.activationLimit,expiresAt:r.expiresAt});
 });
-router.post('/complete',signupLimiter,validate({body:z.object({token,name:z.string().trim().min(2).max(160),email:z.string().trim().email().max(200).optional(),password:z.string().min(12).max(128)}).strict()}),async(req,res)=>{
+router.post('/complete',inviteCompleteLimiter,validate({body:z.object({token,name:z.string().trim().min(2).max(160),email:z.string().trim().email().max(200).optional(),password:z.string().min(12).max(128)}).strict()}),async(req,res)=>{
  const b=req.valid.body;
  const passwordHash=await hashPassword(b.password); // custo de CPU fora da transação
  const result=await sequelize.transaction(async t=>{

@@ -25,12 +25,14 @@ export async function getServicePackage(code,t){
 }
 /** One write endpoint updates both physical representations transactionally.
  * Existing assignments are snapshots and must never be altered by catalog edits. */
-export async function saveServicePackage(input,actor){
+export async function saveServicePackage(input,actor,{create=false}={}){
  try{assertPackageInput(input);}catch(e){throw new AppError(422,'SERVICE_PACKAGE_INVALID',e.message);}
  let row;
  await sequelize.transaction(async t=>{
   await run('SELECT pg_advisory_xact_lock(99111712)',{},t);
   const prior=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:code FOR UPDATE',{code:input.code},t);
+  if(create&&prior)throw new AppError(409,'SERVICE_PACKAGE_ALREADY_EXISTS','Já existe um pacote com este identificador.');
+  if(!create&&!prior)notFound();
   // A dedicated technical tier avoids rewriting a shared legacy tier (e.g. partner_premium).
   const tier=technicalTierForPackage(input.code);
   const technical=await one('SELECT key,system FROM service_plan_catalogs WHERE key=:tier',{tier},t);
@@ -43,15 +45,24 @@ export async function saveServicePackage(input,actor){
      max_servers=excluded.max_servers,auto_failover=excluded.auto_failover,auto_priority=excluded.auto_priority,
      email_alerts=excluded.email_alerts,detailed_history=excluded.detailed_history,active=excluded.active`,{
      ...input,tier},t);
-  row=await one(`INSERT INTO partner_portal_sales_plans(code,name,wholesale_cents,min_resale_cents,active,service_tier,
-    max_dns,activation_limit,auto_failover,auto_priority,email_alerts,detailed_history)
-    VALUES(:code,:name,:wholesaleCents,:minResaleCents,:active,:tier,
-      :maxDns,:activationLimit,:autoFailover,:autoPriority,:emailAlerts,:detailedHistory)
-    ON CONFLICT(code) DO UPDATE SET name=excluded.name,wholesale_cents=excluded.wholesale_cents,
-      min_resale_cents=excluded.min_resale_cents,active=excluded.active,service_tier=excluded.service_tier,
-      max_dns=excluded.max_dns,activation_limit=excluded.activation_limit,auto_failover=excluded.auto_failover,
-      auto_priority=excluded.auto_priority,email_alerts=excluded.email_alerts,detailed_history=excluded.detailed_history,
-      revision=partner_portal_sales_plans.revision+1,updated_at=now() RETURNING *`,{...input,tier},t);
+  const values={...input,tier};
+  row=create
+   ? await one(`INSERT INTO partner_portal_sales_plans(code,name,wholesale_cents,min_resale_cents,active,service_tier,
+      max_dns,activation_limit,auto_failover,auto_priority,email_alerts,detailed_history)
+      VALUES(:code,:name,:wholesaleCents,:minResaleCents,:active,:tier,
+        :maxDns,:activationLimit,:autoFailover,:autoPriority,:emailAlerts,:detailedHistory)
+      ON CONFLICT(code) DO NOTHING RETURNING *`,values,t)
+   : await one(`UPDATE partner_portal_sales_plans SET
+      name=:name,wholesale_cents=:wholesaleCents,min_resale_cents=:minResaleCents,
+      active=:active,service_tier=:tier,max_dns=:maxDns,activation_limit=:activationLimit,
+      auto_failover=:autoFailover,auto_priority=:autoPriority,email_alerts=:emailAlerts,
+      detailed_history=:detailedHistory,revision=revision+1,updated_at=now()
+      WHERE code=:code RETURNING *`,values,t);
+  // Em criação concorrente, a restrição única prevalece; nenhuma linha antiga é reescrita.
+  if(!row){
+    if(create)throw new AppError(409,'SERVICE_PACKAGE_ALREADY_EXISTS','Já existe um pacote com este identificador.');
+    notFound();
+  }
   await audit({actor,action:'service_package.saved',entityType:'service_package',entityId:null,
    metadata:{packageCode:input.code,version:row.revision,previousVersion:prior?.revision||null,wasNew:!prior},transaction:t});
  });
@@ -62,6 +73,7 @@ export async function saveServicePackage(input,actor){
  invalidateServerPools();clearResolutionCache();
  return {package:packageSnapshotFromRow(row),active:row.active,wholesaleCents:Number(row.wholesale_cents),minResaleCents:Number(row.min_resale_cents)};
 }
+export function createServicePackage(input,actor){return saveServicePackage(input,actor,{create:true});}
 export async function toggleServicePackage(code,active,actor){
  const current=await getServicePackage(code);
  if(!current.service_tier)throw new AppError(409,'LEGACY_PLAN','Converta o plano antigo antes de administrá-lo como Pacote de Serviço.');
@@ -75,7 +87,7 @@ export async function duplicateServicePackage(code,{newCode,newName},actor){
  if(!current.service_tier)throw new AppError(409,'LEGACY_PLAN','O plano antigo precisa ser convertido antes de duplicar.');
  const existing=await one('SELECT code FROM partner_portal_sales_plans WHERE code=:code',{code:newCode});
  if(existing)throw new AppError(409,'PACKAGE_ALREADY_EXISTS','Já existe um pacote com este identificador.');
- return saveServicePackage({code:newCode,name:newName,wholesaleCents:Number(current.wholesale_cents),
+ return createServicePackage({code:newCode,name:newName,wholesaleCents:Number(current.wholesale_cents),
   minResaleCents:Number(current.min_resale_cents),active:true,
   maxDns:current.max_dns===null?null:Number(current.max_dns),activationLimit:current.activation_limit===null?null:Number(current.activation_limit),
   autoFailover:current.auto_failover,autoPriority:current.auto_priority,emailAlerts:current.email_alerts,detailedHistory:current.detailed_history},actor);

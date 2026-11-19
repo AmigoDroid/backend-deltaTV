@@ -3,7 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { validate } from "../../shared/validate.js";
 import { requirePermission } from "../../middleware/authenticate.js";
-import { stockWriteLimiter, signupLimiter } from "../../middleware/security.js";
+import { stockWriteLimiter, inviteVerifyLimiter } from "../../middleware/security.js";
 import { actorOf } from "../../shared/audit.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { Partner } from "../../db/models/index.js";
@@ -155,5 +155,5 @@ partnerNetwork.post("/buy",stockWriteLimiter,validate({body:z.object({months:z.n
 });
 
 export const verifyNetworkInvite=Router();
-verifyNetworkInvite.post("/verify",signupLimiter,validate({body:z.object({token:inviteToken}).strict()}),async(req,res)=>
+verifyNetworkInvite.post("/verify",inviteVerifyLimiter,validate({body:z.object({token:inviteToken}).strict()}),async(req,res)=>
   res.set("Cache-Control","no-store").json(await net.verifyInvite(req.valid.body.token)));
