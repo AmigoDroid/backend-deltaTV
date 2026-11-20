@@ -15,7 +15,10 @@ export const NETWORK_PERMISSIONS = Object.freeze([
 export function normalizeNetworkPermissions(value) {
   if (!Array.isArray(value)) return [];
   const known = new Set(NETWORK_PERMISSIONS);
-  return [...new Set(value.filter(item => typeof item === "string" && known.has(item)))];
+  const permissions = new Set(value.filter(item => typeof item === "string" && known.has(item)));
+  // Configurar um gateway exige poder consultar o mesmo gateway, nunca recursos globais.
+  if (permissions.has("network:gateways:write")) permissions.add("network:gateways:read");
+  return [...permissions];
 }
 export function adminHasNetworkPermission(user, permission) {
   return user?.role === "superadmin" ||
