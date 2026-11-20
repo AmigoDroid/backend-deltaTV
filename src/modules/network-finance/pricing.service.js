@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { QueryTypes } from 'sequelize';
-import { sequelize, Partner, PartnerServicePlan, ServicePlanCatalog } from '../../db/models/index.js';
+import { sequelize, Partner, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms } from '../../db/models/index.js';
 import { effectivePartnerStatus } from '../access/access.policy.js';
 import { audit } from '../../shared/audit.js';
 import {assertPublicPlan,isHiddenNetworkPlan} from '../service-plans/network-plan-visibility.js';
@@ -78,6 +78,10 @@ export async function quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDi
  if(!Number.isInteger(plan.monthlyPriceCents)||plan.monthlyPriceCents<=0)fail(422,'FREE_PLAN','Plano gratuito não gera cobrança.');
  const old= current?.tier? await ServicePlanCatalog.findOne({where:{key:current.tier,ownerAdminId:adminId},transaction}):null;
  if(kind==='upgrade'&&!old)fail(422,'CURRENT_PLAN_MISSING','Não foi possível calcular a base proporcional sem o plano antigo.');
+ if(source==='partner'&&kind==='upgrade'&&partner.kind!=='reseller') {
+  const terms=await ContentPartnerTerms.findByPk(partnerId,{transaction});
+  if(terms?.mode==='credits')fail(409,'CREDIT_PLAN_REQUIRES_MASTER','Contratos por créditos exigem mudança de plano pelo Master.');
+ }
  if(source==='partner'&&kind==='upgrade'&&hasCustomPlanOverrides(current,old))
    fail(409,'CUSTOM_PLAN_REQUIRES_MASTER','Seu contrato possui condições personalizadas. Solicite o upgrade ao Master.');
  if(source==='partner'&&kind==='upgrade'&&!isSelfServiceUpgrade(old,plan))
@@ -127,20 +131,23 @@ export async function partnerPricingInfo(partnerId){
 
 /** Catálogo público, filtrado pelo proprietário e pela regra de upgrade no servidor. */
 export async function partnerUpgradeOptions(partnerId) {
- const partner=await Partner.findByPk(partnerId,{attributes:['id','ownerAdminId','status','endsAt']});
+ const partner=await Partner.findByPk(partnerId,{attributes:['id','ownerAdminId','status','endsAt','kind','billingModel','monthlyFeeCents']});
  if(!partner?.ownerAdminId)return {current:null,plans:[],available:false};
  const service=await PartnerServicePlan.findByPk(partnerId);
- if(!service?.tier)return {current:null,plans:[],available:false};
- const [current,publicPlans]=await Promise.all([
-  ServicePlanCatalog.findOne({where:{key:service.tier,ownerAdminId:partner.ownerAdminId}}),
-  ServicePlanCatalog.findAll({where:{ownerAdminId:partner.ownerAdminId,active:true,deletedAt:null,hiddenFromNetwork:false},order:[['monthlyPriceCents','ASC'],['name','ASC']]})
+ const [current,publicPlans,terms]=await Promise.all([
+  service?.tier?ServicePlanCatalog.findOne({where:{key:service.tier,ownerAdminId:partner.ownerAdminId}}):Promise.resolve(null),
+  ServicePlanCatalog.findAll({where:{ownerAdminId:partner.ownerAdminId,active:true,deletedAt:null,hiddenFromNetwork:false},order:[['monthlyPriceCents','ASC'],['name','ASC']]}),
+  partner.kind!=='reseller'?ContentPartnerTerms.findByPk(partnerId,{attributes:['mode']}):Promise.resolve(null)
  ]);
- if(!current)return {current:null,plans:[],available:false};
  const present=p=>({key:p.key,name:p.name,description:p.description,monthlyPriceCents:p.monthlyPriceCents,
   maxServers:p.maxServers,activationLimit:p.activationLimit,validityDays:p.validityDays,
-  autoFailover:p.autoFailover,autoPriority:p.autoPriority,emailAlerts:p.emailAlerts,detailedHistory:p.detailedHistory});
- const available=effectivePartnerStatus(partner)==='active'&&!hasCustomPlanOverrides(service,current);
- return {current:present(current),plans:available?publicPlans.filter(p=>isSelfServiceUpgrade(current,p)).map(present):[],available};
+  autoFailover:p.autoFailover,autoPriority:p.autoPriority,emailAlerts:p.emailAlerts,detailedHistory:p.detailedHistory,
+  canResellPanel:p.canResellPanel,canCreateSubmasters:p.canCreateSubmasters,
+  canViewFinance:p.canViewFinance,canManageGateways:p.canManageGateways});
+ const available=!!current&&effectivePartnerStatus(partner)==='active'&&terms?.mode!=='credits'&&!hasCustomPlanOverrides(service,current);
+ return {current:current?{...present(current),contractPriceCents:partner.billingModel==='fixed'&&Number.isSafeInteger(partner.monthlyFeeCents)?partner.monthlyFeeCents:null}:null,
+  plans:publicPlans.map(p=>({...present(p),isCurrent:p.key===current?.key,
+   canUpgrade:available&&isSelfServiceUpgrade(current,p)})),available};
 }
 
 export async function quotePartnerUpgrade(partnerId,planTo) {
