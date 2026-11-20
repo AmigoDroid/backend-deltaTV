@@ -46,7 +46,8 @@ test('a rotina de recuperação usa SKIP LOCKED e não dá baixa financeira auto
  const service=readFileSync(new URL('../../src/modules/network-finance/finance.service.js',import.meta.url),'utf8');
  const block=service.slice(service.indexOf('export async function recoverStaleCreatingCharges'));
  assert.match(block,/FOR UPDATE SKIP LOCKED/);
- assert.match(block,/THEN 'needs_review'/);
- assert.doesNotMatch(block,/status='paid'/);
+ assert.match(block,/inspect\(charge,/);
+ assert.match(block,/settleCharge\(charge.id/);
+ assert.doesNotMatch(block,/createCharge\(/);
  assert.match(block,/maxAttempts/);
 });

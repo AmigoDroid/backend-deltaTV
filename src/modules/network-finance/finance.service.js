@@ -11,6 +11,7 @@ import { clearContractAccessCache } from '../access/access.service.js';
 import { invalidatePlan } from '../service-plans/plan.service.js';
 import { createMercadoPago, verifySignature } from '../pix/providers/mercadopago.js';
 import { createInfinitePay, HANDLE_RE, normalizeHandle } from '../distribution/gateways/infinitepay.js';
+import { inspectCreatingCharge } from './provider-lookup.js';
 import { canActivateGateway, csvSafe, fingerprint, maskAccountRef } from './policy.js';
 import { env } from '../../config/env.js';
 
@@ -179,7 +180,10 @@ export async function createCharge(adminId,{partnerId,kind,planTo,method='automa
       {id:row.id,providerRef,checkoutUrl,pixEnc:pixCode?encryptSecret(pixCode):null,expiresAt});
     return {id:row.id,status:'pending',method:'automatic'};
   } catch(error) {
-    await query(`UPDATE admin_network_charges SET status='failed',updated_at=now() WHERE id=CAST(:id AS uuid) AND status='creating'`,{id:row.id});
+    // Falha da resposta NÃO prova que o provedor deixou de criar o Pix.
+    // Manter o vínculo em 'creating' impede emitir outra cobrança até a conciliação.
+    await query(`UPDATE admin_network_charges SET review_reason='PROVIDER_CREATE_RESPONSE_UNKNOWN',
+      updated_at=now() WHERE id=CAST(:id AS uuid) AND status='creating'`,{id:row.id});
     throw error;
   }
 }
@@ -270,13 +274,15 @@ export async function confirmPendingContractFromWorkspace(adminId,partnerId,refe
   return confirmManualCharge(adminId,charge.id,{reference},actor);
 }
 
-async function needsReview(id,reason,amount,actor){
+async function needsReview(id,reason,amount,actor,{onlyCreating=false}={}){
   return sequelize.transaction(async t=>{
     const [charge]=await query(`SELECT status FROM admin_network_charges WHERE id=CAST(:id AS uuid) FOR UPDATE`,{id},t);
     if(!charge)return {ignored:true};
+    if(onlyCreating && charge.status!=='creating')return {id,status:charge.status,ignored:true};
     if(charge.status==='paid')return {id,status:'paid',alreadyPaid:true};
     if(charge.status==='needs_review')return {id,status:'needs_review',alreadyReviewed:true};
-    await query(`UPDATE admin_network_charges SET status='needs_review',paid_at=now(),
+    await query(`UPDATE admin_network_charges SET status='needs_review',
+      paid_at=CASE WHEN :amount IS NOT NULL THEN now() ELSE paid_at END,
       paid_amount_cents=:amount,review_reason=:reason,updated_at=now() WHERE id=CAST(:id AS uuid)`,
       {id,reason,amount:Number.isSafeInteger(amount)&&amount>=0?amount:null},t);
     await audit({actor,action:'network.finance.charge.needs_review',entityType:'network_charge',entityId:id,
@@ -302,7 +308,7 @@ export async function reconcileProviderCharge(id,provider,req) {
     if(payment.status!=='paid')return {ignored:true};
     const owed=new Date(charge.expires_at)<new Date()?requiredSettlementCents(charge.breakdown,new Date(),Number(charge.amount_cents)):Number(charge.amount_cents);
     const receipt={confirmed:true,externalReference:payment.externalReference,providerRef:reported,
-      amountCents:payment.amountCents,currency:payment.currency||'BRL',paymentMethod:payment.paymentMethod||'pix',collectorId:payment.collectorId};
+      amountCents:payment.amountCents,currency:payment.currency,paymentMethod:payment.paymentMethod,collectorId:payment.collectorId};
     if(!verifyNetworkPaymentMatch({...charge,amount_cents:owed},receipt,gateway.account_ref))
       return needsReview(id,'PAYMENT_MISMATCH',payment.amountCents,actor);
     return settleCharge(id,{providerConfirmed:true,amountCents:payment.amountCents},actor);
@@ -432,39 +438,72 @@ export async function maskedAdminGatewaySummary() {
 }
 
 /**
- * Recuperação conservadora de cobranças presas em 'creating'.
- * NÃO cria um segundo link Pix: uma requisição anterior pode ter sido aceita
- * pelo provedor mesmo sem gravar a resposta. Sem comprovante de pagamento
- * não se liquida nem se renova. Depois de tentativas limitadas, exige revisão.
- * SELECT ... FOR UPDATE SKIP LOCKED impede colisões entre dois workers.
+ * Worker de conciliação idempotente de cobranças presas em criação.
+ * O claim usa SKIP LOCKED e CHECKED_AT para evitar a mesma cobrança em dois
+ * workers; consultas de rede são feitas FORA de transações do PostgreSQL.
+ * NUNCA cria nova cobrança. Provedores são consultados apenas por referência.
  */
-export async function recoverStaleCreatingCharges({now=new Date(),limit=25,staleMinutes=10,maxAttempts=3}={}){
+export async function recoverStaleCreatingCharges({now=new Date(),limit=25,staleMinutes=10,maxAttempts=3,
+  inspect=inspectCreatingCharge}={}) {
   if(!Number.isInteger(limit)||limit<1||limit>100 || !Number.isInteger(staleMinutes)||staleMinutes<1||staleMinutes>1440
       || !Number.isInteger(maxAttempts)||maxAttempts<1||maxAttempts>10)
     throw new RangeError('Parâmetros de recuperação inválidos.');
   const cutoff=new Date(new Date(now).getTime()-staleMinutes*60_000);
-  return sequelize.transaction(async transaction=>{
-    const rows=await query(`WITH selected AS (
+  const rows=await sequelize.transaction(async transaction=>query(`WITH claimed AS (
       SELECT id FROM admin_network_charges
-      WHERE status='creating' AND updated_at <= :cutoff
-        AND (recovery_checked_at IS NULL OR recovery_checked_at <= :cutoff)
+      WHERE status='creating' AND updated_at<=:cutoff
+        AND (recovery_checked_at IS NULL OR recovery_checked_at<=:cutoff)
       ORDER BY updated_at ASC,id ASC LIMIT :limit FOR UPDATE SKIP LOCKED
     )
-    UPDATE admin_network_charges c SET
-      recovery_attempts=c.recovery_attempts+1,
-      recovery_checked_at=:now,
-      status=CASE WHEN c.recovery_attempts+1 >= :maxAttempts THEN 'needs_review' ELSE c.status END,
-      review_reason=CASE WHEN c.recovery_attempts+1 >= :maxAttempts
-        THEN 'creating_without_provider_proof' ELSE c.review_reason END
-    FROM selected s WHERE c.id=s.id
-    RETURNING c.id,c.owner_admin_id,c.status,c.recovery_attempts`,
-    {cutoff,now,limit,maxAttempts},transaction);
-    for(const row of rows.filter(r=>r.status==='needs_review')){
-      await audit({actor:{type:'system',id:null},action:'network.finance.charge.needs_review',
-        entityType:'network_charge',entityId:row.id,
-        metadata:{reason:'creating_without_provider_proof',attempts:row.recovery_attempts,
-          ownerAdminId:row.owner_admin_id},transaction});
+    UPDATE admin_network_charges c SET recovery_attempts=c.recovery_attempts+1,
+      recovery_checked_at=:now
+    FROM claimed WHERE c.id=claimed.id
+    RETURNING c.*`,{cutoff,now,limit},transaction));
+  const result={checked:rows.length,recovered:0,paid:0,needsReview:0,errors:0};
+  const actor={type:'system',id:null,role:'reconciliation'};
+  for(const charge of rows){
+    try {
+      const gateway=await rowFor(charge.owner_admin_id,charge.provider);
+      const outcome=await inspect(charge,{
+        accountRef:gateway?.account_ref,credential:gateway?.credentials_enc?decryptSecret(gateway.credentials_enc):null,
+      },{now});
+      if(outcome.kind==='paid') {
+        // Only persist the provider ID for this same locked owner+charge.
+        if(outcome.providerRef)await query(`UPDATE admin_network_charges
+          SET provider_ref=:ref,updated_at=now()
+          WHERE id=CAST(:id AS uuid) AND owner_admin_id=CAST(:owner AS uuid)
+            AND status='creating' AND (provider_ref IS NULL OR provider_ref=:ref)`,
+          {id:charge.id,owner:charge.owner_admin_id,ref:outcome.providerRef});
+        const settled=await settleCharge(charge.id,{providerConfirmed:true,
+          amountCents:outcome.amountCents,transactionNsu:outcome.transactionNsu,slug:outcome.slug},actor);
+        if(settled.status==='paid')result.paid++;
+        else if(settled.status==='needs_review')result.needsReview++;
+      } else if(outcome.kind==='pending' && outcome.providerRef) {
+        const updated=await query(`UPDATE admin_network_charges SET status='pending',provider_ref=:ref,
+          pix_code_enc=COALESCE(pix_code_enc,:pix),updated_at=now()
+          WHERE id=CAST(:id AS uuid) AND owner_admin_id=CAST(:owner AS uuid)
+            AND status='creating' AND (provider_ref IS NULL OR provider_ref=:ref)
+          RETURNING id`,{id:charge.id,owner:charge.owner_admin_id,
+          ref:outcome.providerRef,pix:outcome.qrCode?encryptSecret(outcome.qrCode):null});
+        if(updated.length)result.recovered++;
+      } else if(outcome.kind==='review') {
+        const reviewed=await needsReview(charge.id,outcome.reason,outcome.receivedCents??null,actor,{onlyCreating:true});
+        if(reviewed.status==='needs_review')result.needsReview++;
+      } else if(Number(charge.recovery_attempts)>=maxAttempts) {
+        const reviewed=await needsReview(charge.id,outcome.reason||'CREATING_UNVERIFIED',null,actor,{onlyCreating:true});
+        if(reviewed.status==='needs_review')result.needsReview++;
+      }
+    } catch(error) {
+      result.errors++;
+      // Provider downtime never becomes proof of payment. After bounded retries,
+      // stop the loop by requesting review (no contract extension).
+      if(Number(charge.recovery_attempts)>=maxAttempts){
+        const reviewed=await needsReview(charge.id,'PROVIDER_LOOKUP_UNAVAILABLE',null,actor,{onlyCreating:true});
+        if(reviewed.status==='needs_review')result.needsReview++;
+      }
+      // Never log credentials or provider response bodies.
+      console.warn(`[finance-recovery] consulta falhou para cobrança ${charge.id}: ${error.code||'LOOKUP_ERROR'}`);
     }
-    return {checked:rows.length,needsReview:rows.filter(r=>r.status==='needs_review').length};
-  });
+  }
+  return result;
 }
