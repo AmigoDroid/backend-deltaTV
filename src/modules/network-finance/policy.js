@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const PROVIDERS = Object.freeze(['mercadopago','infinitepay']);
 export const CHARGE_STATUSES = Object.freeze(['creating','pending','paid','expired','cancelled','failed','review','needs_review']);
-export const CHARGE_KINDS = Object.freeze(['renewal','upgrade']);
+export const CHARGE_KINDS = Object.freeze(['renewal','upgrade','one_off']);
 export const maskAccountRef = value => {
   const str = String(value || '');
   return str ? (str.length <= 4 ? '*'.repeat(str.length) : `${'*'.repeat(Math.min(8, Math.max(4,str.length-4)))}${str.slice(-4)}`) : null;

@@ -7,12 +7,13 @@ import { adminHasNetworkPermission } from '../admin-workspaces/permissions.js';
 import * as svc from './finance.service.js';
 import * as pricing from './pricing.service.js';
 import { webhookLimiter } from '../../middleware/security.js';
+import { env } from '../../config/env.js';
 
 const id=z.object({id:z.string().uuid()});
 const providerParam=z.object({provider:z.enum(['mercadopago','infinitepay'])});
 const page=z.object({page:z.coerce.number().int().min(1).default(1),pageSize:z.coerce.number().int().min(1).max(100).default(25),
  adminId:z.string().uuid().optional(),partnerId:z.string().uuid().optional(),
- kind:z.enum(['renewal','upgrade']).optional(),status:z.enum(['creating','pending','paid','expired','cancelled','failed','review','needs_review']).optional(),
+ kind:z.enum(['renewal','upgrade','one_off']).optional(),status:z.enum(['creating','pending','paid','expired','cancelled','failed','review','needs_review']).optional(),
  provider:z.enum(['mercadopago','infinitepay']).optional(),method:z.enum(['manual','automatic']).optional(),
  fromDate:z.iso.date().optional(),toDate:z.iso.date().optional(),
  lateOnly:z.stringbool().optional(),earlyOnly:z.stringbool().optional(),manualOnly:z.stringbool().optional(),waiverOnly:z.stringbool().optional(),}).strict();
@@ -32,6 +33,9 @@ const waiver=z.object({full:z.boolean().default(false),lateFeeCents:z.number().i
 const quoteBody=z.object({partnerId:z.string().uuid(),kind:z.enum(['renewal','upgrade']),planTo:z.string().min(3).max(32),
  manualDiscount:manualDiscount.nullable().optional(),waiver:waiver.nullable().optional()}).strict();
 const chargeBody=quoteBody.extend({method:z.enum(['automatic','manual']).default('automatic'),previewFingerprint:z.string().length(64)}).strict();
+const oneOffInput=z.object({partnerId:z.string().uuid(),description:z.string().trim().min(5).max(200).regex(/^[^\r\n]+$/),
+ amountCents:z.number().int().min(100).max(100000000),method:z.enum(['automatic','manual']).default('automatic')}).strict();
+const oneOffCreate=oneOffInput.extend({previewFingerprint:z.string().length(64)}).strict();
 const configs=z.discriminatedUnion('provider',[
  z.object({provider:z.literal('mercadopago'),accessToken:z.string().trim().min(20).max(600),webhookSecret:z.string().trim().min(8).max(500)}).strict(),
  z.object({provider:z.literal('infinitepay'),handle:z.string().trim().min(2).max(40),apiKey:z.string().trim().min(14).max(250)}).strict(),
@@ -46,6 +50,9 @@ const scope=key=>(req,_res,next)=>{
 };
 export const workspaceFinance=Router();
 workspaceFinance.use((req,res,next)=>{res.set('Cache-Control','private,no-store');next();});
+workspaceFinance.get('/gateways/webhook-info',strictAdmin,scope('network:gateways:read'),(_req,res)=>
+ res.json({mercadopagoUrl:`${env.publicBaseUrl}/api/v1/webhooks/network-finance/mercadopago`,
+   infinitepay:'automático por cobrança',requiresProviderVerification:true}));
 workspaceFinance.get('/gateways',strictAdmin,scope('network:gateways:read'),async(req,res)=>res.json({data:await svc.listGateways(req.networkOwnerId)}));
 workspaceFinance.put('/gateways/:provider',strictAdmin,scope('network:gateways:write'),validate({params:providerParam,body:configs}),async(req,res)=>{
  if(req.valid.params.provider!==req.valid.body.provider)throw new AppError(422,'PROVIDER_MISMATCH','Provedor inválido.');
@@ -60,6 +67,10 @@ workspaceFinance.get('/charges',scope('network:billing:read'),validate({query:pa
  const {page:current,pageSize,...filters}=req.valid.query;
  res.json(await svc.listCharges(filters,{ownerAdminId:req.networkOwnerId,limit:pageSize,offset:(current-1)*pageSize}));
 });
+workspaceFinance.post('/charges/one-off/preview',strictAdmin,scope('network:billing:read'),validate({body:oneOffInput}),async(req,res)=>
+ res.json(await svc.previewOneOffCharge(req.networkOwnerId,req.valid.body)));
+workspaceFinance.post('/charges/one-off',strictAdmin,scope('network:billing:write'),validate({body:oneOffCreate}),async(req,res)=>
+ res.status(201).json(await svc.createOneOffCharge(req.networkOwnerId,req.valid.body,actorOf(req))));
 workspaceFinance.post('/charges',strictAdmin,scope('network:billing:write'),validate({body:chargeBody}),async(req,res)=>{
  const created=await svc.createCharge(req.networkOwnerId,req.valid.body,actorOf(req));res.status(201).json(created);
 });
@@ -80,6 +91,12 @@ const requireSuperAdjustmentReason=(req,_res,next)=>{
 };
 superadminFinance.post('/charges/preview',validate({body:quoteBody.extend({adminId:z.string().uuid()})}),requireSuperAdjustmentReason,async(req,res)=>res.json(await pricing.quoteNetworkCharge(req.valid.body.adminId,req.valid.body,actorOf(req))));
 superadminFinance.post('/charges',validate({body:chargeBody.extend({adminId:z.string().uuid()})}),requireSuperAdjustmentReason,async(req,res)=>res.status(201).json(await svc.createCharge(req.valid.body.adminId,req.valid.body,actorOf(req))));
+superadminFinance.post('/charges/one-off/preview',validate({body:oneOffInput.extend({adminId:z.string().uuid()})}),async(req,res)=>
+ res.json(await svc.previewOneOffCharge(req.valid.body.adminId,req.valid.body)));
+superadminFinance.post('/charges/one-off',validate({body:oneOffCreate.extend({adminId:z.string().uuid()})}),async(req,res)=>
+ res.status(201).json(await svc.createOneOffCharge(req.valid.body.adminId,req.valid.body,actorOf(req))));
+superadminFinance.post('/charges/:id/manual',validate({params:id,body:z.object({reference:z.string().trim().min(5).max(160)}).strict()}),async(req,res)=>
+ res.json(await svc.confirmOneOffManualAsSuper(req.valid.params.id,req.valid.body,actorOf(req))));
 superadminFinance.get('/gateways',async(_req,res)=>res.json({data:await svc.maskedAdminGatewaySummary()}));
 superadminFinance.get('/charges',validate({query:page}),async(req,res)=>{
  const {page:current,pageSize,...filters}=req.valid.query;
@@ -97,6 +114,10 @@ partnerNetworkCharges.get('/pricing',async(req,res)=>res.set('Cache-Control','pr
 partnerNetworkCharges.get('/',async(req,res)=>res.set('Cache-Control','private,no-store').json({data:await svc.partnerCharges(req.user.partnerId)}));
 
 export const networkFinanceWebhooks=Router();
+networkFinanceWebhooks.post('/mercadopago',webhookLimiter,async(req,res)=>{
+ await svc.reconcileMercadoPagoNotification(req);
+ res.status(200).json({ok:true}); // Não expor existência ou estado da cobrança ao chamador público.
+});
 networkFinanceWebhooks.post('/:provider/:id',webhookLimiter,validate({params:z.object({provider:z.enum(['mercadopago','infinitepay']),id:z.string().uuid()})}),async(req,res)=>{
  res.status(200).json({ok:true,...await svc.reconcileProviderCharge(req.valid.params.id,req.valid.params.provider,req)});
 });
