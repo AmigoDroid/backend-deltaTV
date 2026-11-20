@@ -93,7 +93,7 @@ export async function quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDi
    validityDays:plan.validityDays,endsAt:partner.endsAt,effectiveStatus:effective,planKey:planTo,
    now,settings,caps,manual,waiver:forgiven});}
  catch(e){fail(422,'INVALID_CHARGE_PRICING',e.message)}
- if(source==='partner'&&kind==='upgrade'){breakdown.selfServiceUpgrade=true;breakdown.upgradePlanSignature=upgradePlanSignature(plan);}
+ if(source==='partner'&&kind==='upgrade') breakdown={...breakdown,selfServiceUpgrade:true,upgradePlanSignature:upgradePlanSignature(plan)};
  const stable={...breakdown};delete stable.chargedAt;
  const previewFingerprint=fingerprint({partnerId,kind,planTo,endsAt:partner.endsAt?.toISOString?.()||String(partner.endsAt),
    status:partner.status,day:localDate(now),breakdown:stable});
