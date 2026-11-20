@@ -24,8 +24,7 @@ const settingsBody=z.object({
  earlyDiscountType:z.enum(['percent','fixed_cents']).optional(),earlyDiscountValue:z.number().min(0).max(99999999).optional(),
  earlyMinDaysBefore:z.number().int().min(0).max(3660).optional(),earlyStartsAt:z.iso.datetime({offset:true}).nullable().optional(),
  earlyEndsAt:z.iso.datetime({offset:true}).nullable().optional(),earlyPlanKeys:z.array(z.string().min(1).max(32)).max(200).optional(),
- defaultDiscountDays:z.number().int().min(0).max(3660).optional(),minChargeCents:z.number().int().min(1).max(100000000).optional(),
- shortCycleDays:z.number().int().min(0).max(3660).optional(),
+ minChargeCents:z.number().int().min(1).max(100000000).optional(),
 }).strict();
 const capsBody=z.object({lateFeePct:rate.optional(),interestMonthlyPct:rate.optional(),conditionsText:z.string().max(2000).optional()}).strict();
 const manualDiscount=z.object({type:z.enum(['days','percent']),value:z.number().positive(),stack:z.boolean().default(false),reason:z.string().trim().max(300).optional()}).strict();
@@ -74,8 +73,13 @@ superadminFinance.use((req,res,next)=>{
 });
 superadminFinance.get('/pricing/caps',async(_req,res)=>res.json(await pricing.getCaps()));
 superadminFinance.put('/pricing/caps',validate({body:capsBody}),async(req,res)=>res.json(await pricing.saveCaps(req.valid.body,actorOf(req))));
-superadminFinance.post('/charges/preview',validate({body:quoteBody.extend({adminId:z.string().uuid()})}),async(req,res)=>res.json(await pricing.quoteNetworkCharge(req.valid.body.adminId,req.valid.body,actorOf(req))));
-superadminFinance.post('/charges',validate({body:chargeBody.extend({adminId:z.string().uuid()})}),async(req,res)=>res.status(201).json(await svc.createCharge(req.valid.body.adminId,req.valid.body,actorOf(req))));
+const requireSuperAdjustmentReason=(req,_res,next)=>{
+ if(req.valid.body.manualDiscount && !req.valid.body.manualDiscount.reason?.trim())
+  throw new AppError(422,'MANUAL_REASON_REQUIRED','Informe o motivo do desconto concedido pela DeltaTV.');
+ next();
+};
+superadminFinance.post('/charges/preview',validate({body:quoteBody.extend({adminId:z.string().uuid()})}),requireSuperAdjustmentReason,async(req,res)=>res.json(await pricing.quoteNetworkCharge(req.valid.body.adminId,req.valid.body,actorOf(req))));
+superadminFinance.post('/charges',validate({body:chargeBody.extend({adminId:z.string().uuid()})}),requireSuperAdjustmentReason,async(req,res)=>res.status(201).json(await svc.createCharge(req.valid.body.adminId,req.valid.body,actorOf(req))));
 superadminFinance.get('/gateways',async(_req,res)=>res.json({data:await svc.maskedAdminGatewaySummary()}));
 superadminFinance.get('/charges',validate({query:page}),async(req,res)=>{
  const {page:current,pageSize,...filters}=req.valid.query;
@@ -88,6 +92,7 @@ superadminFinance.get('/export.csv',validate({query:page.omit({page:true,pageSiz
 superadminFinance.post('/charges/:id/cancel',validate({params:id,body:reasonBody}),async(req,res)=>res.json(await svc.cancelCharge(req.valid.params.id,req.valid.body.reason,actorOf(req),{superadmin:true})));
 
 export const partnerNetworkCharges=Router();
+partnerNetworkCharges.post(['/','/preview'],(_req,_res)=>{throw new AppError(403,'PARTNER_CHARGE_FORBIDDEN','Cobranças são emitidas apenas pela administração.');});
 partnerNetworkCharges.get('/pricing',async(req,res)=>res.set('Cache-Control','private,no-store').json(await pricing.partnerPricingInfo(req.user.partnerId)));
 partnerNetworkCharges.get('/',async(req,res)=>res.set('Cache-Control','private,no-store').json({data:await svc.partnerCharges(req.user.partnerId)}));
 

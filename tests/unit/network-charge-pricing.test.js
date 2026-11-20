@@ -126,3 +126,20 @@ test('o limite de cobrança mínima também se aplica a desconto manual acumulad
  assert.equal(q.totalCents,1);
  assert.equal(q.earlyDiscountCents+q.manualDiscountCents,4999);
 });
+
+
+test('meia-noite de São Paulo: Pix de 23:59:58 expira exatamente às 23:59:59',()=>{
+ const before=new Date('2026-11-20T23:59:58-03:00');
+ const after=new Date('2026-11-21T00:00:00-03:00');
+ assert.equal(pixExpiry(before,10).toISOString(),'2026-11-21T02:59:59.000Z');
+ assert.equal(pixExpiry(after,10).toISOString(),'2026-11-21T03:10:00.000Z');
+ assert.equal(localDayDifference(before,after),1);
+});
+test('campanha de desconto termina na borda exata do horário configurado',()=>{
+ const instant=new Date('2026-12-05T15:00:00-03:00');
+ const s={earlyDiscountEnabled:true,earlyDiscountValue:10,earlyMinDaysBefore:0,
+  earlyStartsAt:new Date('2026-12-01T00:00:00-03:00').toISOString(),earlyEndsAt:instant.toISOString()};
+ const b=base({endsAt:day('2026-12-15'),effectiveStatus:'active',settings:s});
+ assert.equal(price({...b,now:instant}).earlyDiscountCents,500);
+ assert.equal(price({...b,now:new Date(instant.getTime()+1000)}).earlyDiscountCents,0);
+});

@@ -9,6 +9,7 @@ import {validate} from '../../shared/validate.js';
 import {adminHasNetworkPermission} from './permissions.js';
 import {scopedPlan} from './account-provisioning.js';
 import {planFingerprint} from './plan-entitlements.js';
+import {assertPublicPlan} from '../service-plans/network-plan-visibility.js';
 import {sendMail} from '../mail/mail.transport.js';
 import {env} from '../../config/env.js';
 import {remainingUses} from './network-invite.policy.js';
@@ -44,7 +45,7 @@ router.get('/plans',async(req,res)=>{
  if(adminHasNetworkPermission(req.user,'network:partners:write'))audiences.push('content');
  if(adminHasNetworkPermission(req.user,'network:resellers:write'))audiences.push('reseller');
  audiences.push('both');
- const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:req.networkOwnerId,active:true,deletedAt:null,
+ const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:req.networkOwnerId,active:true,hiddenFromNetwork:false,deletedAt:null,
    audience:{[Op.in]:audiences}},attributes:['key','name','audience','monthlyPriceCents','maxServers','activationLimit','validityDays'],
    order:[['name','ASC']]});
  res.set('Cache-Control','no-store').json({data:rows});
@@ -71,7 +72,7 @@ router.post('/',validate({body}),async(req,res)=>{
  }
  const token=randomBytes(32).toString('base64url');
  const invitation=await sequelize.transaction(async transaction=>{
-  const plan=await scopedPlan(ownerId,b.planKey,b.kind,transaction);
+  const plan=assertPublicPlan(await scopedPlan(ownerId,b.planKey,b.kind,transaction));
   const row=await AdminNetworkInvitation.create({ownerAdminId:ownerId,invitedById:req.user.id,email,kind:b.kind,
     planKey:plan.key,planFingerprint:planFingerprint(plan),tokenHash:HASH(token),
     label:b.label?.trim()||null,maxUses:email?1:(b.maxUses===undefined?10:b.maxUses),useCount:0,

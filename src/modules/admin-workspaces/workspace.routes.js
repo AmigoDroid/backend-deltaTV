@@ -24,6 +24,7 @@ import { clearContractAccessCache } from "../access/access.service.js";
 import { adminHasNetworkPermission, enforceLimit } from "./permissions.js";
 import { effectivePartnerStatus } from "../access/access.policy.js";
 import { partnerStatusWhere } from "../partners/partner-status.query.js";
+import { isHiddenNetworkPlan } from "../service-plans/network-plan-visibility.js";
 import { SIGNUP_PENDING_REASON } from "../partners/reseller-signup.service.js";
 import {scopedPlan,checkPlanCaps,provisionNetworkAccount,lockNetworkOwner} from "./account-provisioning.js";
 import networkInviteAdminRoutes from "./network-invite-admin.routes.js";
@@ -76,6 +77,7 @@ const packageFields = z.object({
   maxServers: intLimit, activationLimit: intLimit, validityDays: z.number().int().min(1).max(3660),
   autoFailover: z.boolean(), autoPriority: z.boolean(),
   emailAlerts: z.boolean(), detailedHistory: z.boolean(),
+  hiddenFromNetwork:z.boolean().default(false),
 }).strict();
 const packageBody = packageFields.refine(v=>v.autoFailover || !v.autoPriority,{path:["autoPriority"],message:"Prioridade exige failover."});
 const account = z.object({name:z.string().trim().min(2).max(160), email:z.string().trim().email().max(200), password:z.string().min(12).max(128)}).strict();
@@ -252,7 +254,11 @@ router.put("/plans/:key",requireScope("network:plans:write"),validate({params:z.
         {transaction:t,replacements:{root,key,max:body.maxServers}});
       if(over.length)throw new AppError(409,"PLAN_BELOW_USAGE","Há códigos com mais DNS do que o novo plano permite.");
     }
+    const wasHidden=isHiddenNetworkPlan(p);
     await p.update(body,{transaction:t});
+    if(body.hiddenFromNetwork!==undefined && wasHidden!==p.hiddenFromNetwork)
+      await audit({actor:actorOf(req),action:"network.plan.visibility",entityType:"service_plan",entityId:key,
+        metadata:{ownerAdminId:root,before:wasHidden,after:p.hiddenFromNetwork},transaction:t});
     if(p.autoPriority&&!p.autoFailover)throw new AppError(422,"INVALID_PLAN","Prioridade automática exige failover.");
     await audit({actor:actorOf(req),action:"network.plan.update",entityType:"service_plan",entityId:key,metadata:{fields:Object.keys(body)},transaction:t});
     return p;

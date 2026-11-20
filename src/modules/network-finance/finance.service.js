@@ -430,3 +430,41 @@ export async function maskedAdminGatewaySummary() {
     ) g ON true
     WHERE a.role='admin' AND a.deleted_at IS NULL ORDER BY a.name LIMIT 500`).then(rows=>rows.map(({accountRef,...r})=>({ ...r,configured:!!r.provider,accountRefMasked:maskAccountRef(accountRef)})));
 }
+
+/**
+ * Recuperação conservadora de cobranças presas em 'creating'.
+ * NÃO cria um segundo link Pix: uma requisição anterior pode ter sido aceita
+ * pelo provedor mesmo sem gravar a resposta. Sem comprovante de pagamento
+ * não se liquida nem se renova. Depois de tentativas limitadas, exige revisão.
+ * SELECT ... FOR UPDATE SKIP LOCKED impede colisões entre dois workers.
+ */
+export async function recoverStaleCreatingCharges({now=new Date(),limit=25,staleMinutes=10,maxAttempts=3}={}){
+  if(!Number.isInteger(limit)||limit<1||limit>100 || !Number.isInteger(staleMinutes)||staleMinutes<1||staleMinutes>1440
+      || !Number.isInteger(maxAttempts)||maxAttempts<1||maxAttempts>10)
+    throw new RangeError('Parâmetros de recuperação inválidos.');
+  const cutoff=new Date(new Date(now).getTime()-staleMinutes*60_000);
+  return sequelize.transaction(async transaction=>{
+    const rows=await query(`WITH selected AS (
+      SELECT id FROM admin_network_charges
+      WHERE status='creating' AND updated_at <= :cutoff
+        AND (recovery_checked_at IS NULL OR recovery_checked_at <= :cutoff)
+      ORDER BY updated_at ASC,id ASC LIMIT :limit FOR UPDATE SKIP LOCKED
+    )
+    UPDATE admin_network_charges c SET
+      recovery_attempts=c.recovery_attempts+1,
+      recovery_checked_at=:now,
+      status=CASE WHEN c.recovery_attempts+1 >= :maxAttempts THEN 'needs_review' ELSE c.status END,
+      review_reason=CASE WHEN c.recovery_attempts+1 >= :maxAttempts
+        THEN 'creating_without_provider_proof' ELSE c.review_reason END
+    FROM selected s WHERE c.id=s.id
+    RETURNING c.id,c.owner_admin_id,c.status,c.recovery_attempts`,
+    {cutoff,now,limit,maxAttempts},transaction);
+    for(const row of rows.filter(r=>r.status==='needs_review')){
+      await audit({actor:{type:'system',id:null},action:'network.finance.charge.needs_review',
+        entityType:'network_charge',entityId:row.id,
+        metadata:{reason:'creating_without_provider_proof',attempts:row.recovery_attempts,
+          ownerAdminId:row.owner_admin_id},transaction});
+    }
+    return {checked:rows.length,needsReview:rows.filter(r=>r.status==='needs_review').length};
+  });
+}

@@ -36,7 +36,7 @@ test("nenhuma tabela é criada por duas migrações diferentes", () => {
 
 test("rotas de mensagens para TV estão montadas no app (esquema legado)", () => {
   const app = readFileSync(new URL("../../src/app.js", import.meta.url), "utf8");
-  assert.match(app, /app\.use\("\/api\/v1\/tv-messages", panelMessages\)/);
-  assert.match(app, /app\.use\("\/api\/v1\/client\/messages", clientMessages\)/);
+  assert.match(app, /app\.use\("\/api\/v1\/tv-messages",\s*panelMessages\)/);
+  assert.match(app, /app\.use\("\/api\/v1\/client\/messages",\s*clientMessages\)/);
   assert.ok(app.indexOf('"/api/v1/client/messages"') < app.indexOf('app.use("/api/v1/client", clientRoutes)'));
 });

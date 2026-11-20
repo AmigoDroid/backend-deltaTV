@@ -3,6 +3,7 @@ import { QueryTypes } from 'sequelize';
 import { sequelize, Partner, PartnerServicePlan, ServicePlanCatalog } from '../../db/models/index.js';
 import { effectivePartnerStatus } from '../access/access.policy.js';
 import { audit } from '../../shared/audit.js';
+import {assertPublicPlan,isHiddenNetworkPlan} from '../service-plans/network-plan-visibility.js';
 import { AppError } from '../../shared/errors.js';
 import { calculateChargePricing, DEFAULT_CAPS, DEFAULT_SETTINGS, localDate, validateSettings } from './charge-pricing.js';
 const sql=(statement,replacements={},transaction)=>sequelize.query(statement,{type:QueryTypes.SELECT,replacements,...(transaction?{transaction}:{})});
@@ -58,13 +59,14 @@ export async function saveCaps(values,actor){
 }
 const fingerprint=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** Todos os preços, datas, identidade e limites vêm do banco. Somente ajustes com papel delegado entram aqui. */
-export async function quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDiscount=null,waiver=null},actor={}, {transaction,now=new Date()}={}){
+export async function quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDiscount=null,waiver=null},actor={}, {transaction,now=new Date(),source='admin'}={}){
  const partner=await Partner.findOne({where:{id:partnerId,ownerAdminId:adminId},transaction});
  if(!partner||partner.status==='deleted')fail(404,'NOT_FOUND','Parceiro fora desta rede.');
  const [plan,current,{settings,caps}]=await Promise.all([
    ServicePlanCatalog.findOne({where:{key:planTo,ownerAdminId:adminId,active:true,deletedAt:null},transaction}),
    PartnerServicePlan.findByPk(partnerId,{transaction}),getSettings(adminId,transaction),
  ]);
+ if(source==='partner')assertPublicPlan(plan);
  if(!plan||(plan.audience!=='both'&&plan.audience!==partner.kind))fail(422,'PLAN_NOT_IN_NETWORK','Plano incompatível ou fora desta rede.');
  if(kind==='renewal'&&current?.tier&&current.tier!==planTo)fail(422,'PLAN_MISMATCH','Renovação exige o plano atual.');
  if(kind==='upgrade'&&current?.tier===planTo)fail(422,'NOT_AN_UPGRADE','Selecione outro plano.');
@@ -94,7 +96,11 @@ export async function partnerPricingInfo(partnerId){
  const current=await PartnerServicePlan.findByPk(partnerId);
  if(!current)fail(404,'PLAN_MISSING','Plano não encontrado.');
  const {settings,caps}=await getSettings(partner.ownerAdminId);
- const quote=await quoteNetworkCharge(partner.ownerAdminId,{partnerId,kind:'renewal',planTo:current.tier});
+ const currentCatalog=await ServicePlanCatalog.findOne({where:{key:current.tier,ownerAdminId:partner.ownerAdminId},attributes:['name','hiddenFromNetwork','active']});
+ if(isHiddenNetworkPlan(currentCatalog))return {planName:currentCatalog.name,renewalAvailable:false,
+   reason:'Plano concedido pela administração. A renovação é realizada apenas pelo administrador.',
+   conditions:conditionsText({settings,caps})};
+ const quote=await quoteNetworkCharge(partner.ownerAdminId,{partnerId,kind:'renewal',planTo:current.tier}, {},{source:'partner'});
  // A data da campanha não é necessariamente o próprio vencimento: um mínimo
  // de N dias antecipados encerra o benefício N dias antes.
  const earlyCutoff=partner.endsAt&&settings.earlyDiscountEnabled?
@@ -102,7 +108,7 @@ export async function partnerPricingInfo(partnerId){
  const earlyDiscountDeadline=earlyCutoff && settings.earlyEndsAt
    ?new Date(Math.min(earlyCutoff.getTime(),new Date(settings.earlyEndsAt).getTime())):earlyCutoff;
  const b=quote.breakdown;
- return {amountCents:quote.amountCents,breakdown:{
+ return {planName:currentCatalog?.name||current.tier,renewalAvailable:true,amountCents:quote.amountCents,breakdown:{
    baseCents:b.baseCents,earlyDiscountCents:b.earlyDiscountCents,
    lateFeeCents:b.lateFeeCents,interestCents:b.interestCents,
    daysLate:b.daysLate,totalCents:b.totalCents},conditions:conditionsText({settings,caps}),

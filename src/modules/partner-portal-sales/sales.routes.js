@@ -126,7 +126,7 @@ partnerPortalSales.get('/packages',async(req,res)=>{
    auto_failover AS "autoFailover",auto_priority AS "autoPriority",email_alerts AS "emailAlerts",
    detailed_history AS "detailedHistory",can_resell_panel AS "canResellPanel",
    1::bigint AS "minResaleCents"
-   FROM service_plan_catalogs WHERE active=true AND audience IN ('content','both')
+   FROM service_plan_catalogs WHERE active=true AND hidden_from_network=false AND audience IN ('content','both')
    ORDER BY sort_order,name`,{type:QueryTypes.SELECT});
  res.json({items:rows});
 });
