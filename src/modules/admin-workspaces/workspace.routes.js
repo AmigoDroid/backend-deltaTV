@@ -19,9 +19,13 @@ import {invalidateServerPools} from "../provider-monitor/code-pool.service.js";
 import {clearResolutionCache} from "../provider-monitor/resolve.service.js";
 import { clearContractAccessCache } from "../access/access.service.js";
 import { adminHasNetworkPermission, enforceLimit } from "./permissions.js";
+import { effectivePartnerStatus } from "../access/access.policy.js";
+import { partnerStatusWhere } from "../partners/partner-status.query.js";
+import { SIGNUP_PENDING_REASON } from "../partners/reseller-signup.service.js";
 import {scopedPlan,checkPlanCaps,provisionNetworkAccount,lockNetworkOwner} from "./account-provisioning.js";
 import networkInviteAdminRoutes from "./network-invite-admin.routes.js";
 import {partnerDeletionPreview,deletePartnerAsSuper} from "../admin-deletion.service.js";
+import {listPartnerTrash,restorePartnerFromTrash} from "../partner-trash.service.js";
 import {codeDeletionPreview,deleteCodeOperational,providerDeletionPreview,deleteProviderOperational} from "../providers/operational-deletion.service.js";
 
 // API isolada para redes comerciais de Admins. Sem acesso às consultas globais
@@ -57,7 +61,8 @@ router.use('/invitations',networkInviteAdminRoutes);
 const ident = z.object({ id: z.string().uuid() });
 const listQuery = z.object({ page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20), q: z.string().trim().max(100).optional(),
-  kind: z.enum(["content","reseller","both"]).optional() });
+  kind: z.enum(["content","reseller","both"]).optional(),
+  status: z.enum(["pending","active","expired","suspended","blocked","cancelled"]).optional() });
 const intLimit = z.number().int().min(0).max(2147483647).nullable();
 const packageFields = z.object({
   name: z.string().trim().min(3).max(120), description: z.string().trim().max(500).default(""),
@@ -110,6 +115,21 @@ async function ownedPartner(adminId,id,transaction,lock=false) {
   return p;
 }
 function mapPage(rows,count,{page,pageSize}) {return {data:rows,meta:{page,pageSize,total:count,totalPages:Math.ceil(count/pageSize)}};}
+function partnerStatusOut(p, { canSeeContract = true } = {}) {
+  const data = p.toJSON ? p.toJSON() : { ...p };
+  const effectiveStatus = effectivePartnerStatus(p);
+  const pending = p.status === "suspended" && p.statusReason === SIGNUP_PENDING_REASON;
+  // endsAt/statusReason are fetched to calculate expiration and 'Novo cadastro',
+  // but do NOT leave the server when contractual visibility was not granted.
+  if (!canSeeContract) {
+    delete data.endsAt;
+    delete data.slug;
+    delete data.statusReason;
+    delete data.monthlyFeeCents;
+    delete data.deviceLimit;
+  }
+  return { ...data, effectiveStatus, pending };
+}
 async function verifyLimitsInUse(partnerId, input, transaction) {
   if(input.activationLimit !== undefined && input.activationLimit !== null) {
     const used=await Activation.count({where:{partnerId,status:{[Op.ne]:"revoked"}},transaction});
@@ -167,12 +187,21 @@ router.get('/audit',requireScope('network:audit:read'),async(req,res)=>{
 });
 router.get("/summary",requireScope("network:dashboard:read"),async(req,res)=>{
   const root=tenant(req);
-  const [partners,resellers,plans]=await Promise.all([
-    Partner.count({where:{ownerAdminId:root,kind:{[Op.in]:["content","both"]},status:{[Op.ne]:"deleted"}}}),
-    Partner.count({where:{ownerAdminId:root,kind:{[Op.in]:["reseller","both"]},status:{[Op.ne]:"deleted"}}}),
-    ServicePlanCatalog.count({where:{ownerAdminId:root}}),
+  const [counts,plans]=await Promise.all([
+    sequelize.query(`SELECT
+      count(*) FILTER (WHERE kind IN ('content','both'))::int AS partners,
+      count(*) FILTER (WHERE kind IN ('reseller','both'))::int AS resellers,
+      count(*) FILTER (WHERE kind IN ('content','both') AND status='active' AND ends_at > :now)::int AS "activePartners",
+      count(*) FILTER (WHERE kind IN ('reseller','both') AND status='active' AND ends_at > :now)::int AS "activeResellers",
+      count(*) FILTER (WHERE status='active' AND ends_at <= :now)::int AS expired,
+      count(*) FILTER (WHERE status='suspended' AND status_reason = :pendingReason)::int AS pending
+      FROM partners WHERE owner_admin_id IS NOT DISTINCT FROM CAST(:root AS uuid) AND status <> 'deleted'`,
+      {replacements:{root,now:new Date(),pendingReason:SIGNUP_PENDING_REASON}}),
+    ServicePlanCatalog.count({where:{ownerAdminId:root,deletedAt:null}}),
   ]);
-  res.json({owner:{id:root,name:req.user.role==="admin"?req.user.name:"Admin selecionado"},partners,resellers,plans});
+  const stats=counts[0][0];
+  res.json({owner:{id:root,name:req.user.role==="admin"?req.user.name:"Admin selecionado"},
+    ...stats,plans});
 });
 router.get("/plans",requireScope("network:plans:read"),async(req,res)=>{
   const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:tenant(req),deletedAt:null},order:[["createdAt","DESC"]]});
@@ -271,7 +300,7 @@ const INDIRECT_ACCOUNT_READS=Object.freeze([
 ]);
 const hasIndirectAccountRead=req=>INDIRECT_ACCOUNT_READS.some(p=>adminHasNetworkPermission(req.user,p));
 router.get("/partners",validate({query:listQuery}),async(req,res)=>{
-  const {page,pageSize,q,kind}=req.valid.query;
+  const {page,pageSize,q,kind,status}=req.valid.query;
   const indirect=hasIndirectAccountRead(req);
   const directPartners=adminHasNetworkPermission(req.user,"network:partners:read"),
     directResellers=adminHasNetworkPermission(req.user,"network:resellers:read");
@@ -284,14 +313,16 @@ router.get("/partners",validate({query:listQuery}),async(req,res)=>{
     kind?[kind,...(mayPartner&&mayReseller?["both"]:[])]:[
       ...(mayPartner?["content"]:[]),...(mayReseller?["reseller"]:[]),
       ...(mayPartner&&mayReseller?["both"]:[])];
-  const where={ownerAdminId:tenant(req),kind:{[Op.in]:types},status:{[Op.ne]:"deleted"}};
+  const where={ownerAdminId:tenant(req),kind:{[Op.in]:types},...partnerStatusWhere(status)};
   if(q){const search=`%${q.replace(/[%_\\]/g,"")}%`;where[Op.or]=[{name:{[Op.iLike]:search}},{contactEmail:{[Op.iLike]:search}},{slug:{[Op.iLike]:search}}]}
   const canSeeContract=directPartners||directResellers||adminHasNetworkPermission(req.user,"network:billing:read");
-  const attributes=canSeeContract?["id","name","slug","kind","status","monthlyFeeCents","deviceLimit","endsAt","createdAt"]:
-    ["id","name","kind","status","createdAt"];
+  const attributes=canSeeContract?["id","name","slug","kind","status","statusReason","monthlyFeeCents","deviceLimit","endsAt","createdAt"]:
+    ["id","name","kind","status","statusReason","endsAt","createdAt"];
   const {rows,count}=await Partner.findAndCountAll({where,attributes,
-    order:[["createdAt","DESC"]],offset:(page-1)*pageSize,limit:pageSize});
-  res.json(mapPage(rows,count,{page,pageSize}));
+    order:[["createdAt","DESC"],["id","ASC"]],offset:(page-1)*pageSize,limit:pageSize});
+  const maySeeContract = p => adminHasNetworkPermission(req.user,"network:billing:read") ||
+    (p.kind === "reseller" ? directResellers : p.kind === "both" ? directPartners && directResellers : directPartners);
+  res.json(mapPage(rows.map(p=>partnerStatusOut(p,{canSeeContract:maySeeContract(p)})),count,{page,pageSize}));
 });
 router.post('/partners',validate({body:partnerBody}),async(req,res)=>{
  const b=req.valid.body,root=tenant(req),perm=b.kind==='reseller'?'network:resellers:write':'network:partners:write';
@@ -324,7 +355,8 @@ router.get("/partners/:id",validate({params:ident}),async(req,res)=>{
     adminHasNetworkPermission(req.user,"network:members:read")?
       AdminUser.findAll({where:{partnerId:p.id,role:"partner",deletedAt:null},attributes:["id","name","email","status","createdAt"]}):Promise.resolve([])]);
   // Selecionar uma conta para visualizar dispositivos não revela credenciais ou contrato.
-  const partner=direct?p:{id:p.id,name:p.name,kind:p.kind,status:p.status};
+  const partner=direct?partnerStatusOut(p):partnerStatusOut(p,{canSeeContract:false});
+  if(!direct){for(const key of Object.keys(partner)) if(!["id","name","kind","status","effectiveStatus","pending"].includes(key))delete partner[key];}
   res.json({partner,contract:terms,plan,users});
 });
 router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(req,res)=>{
@@ -365,8 +397,26 @@ router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(
   return p;
  });
  invalidatePlan(updated.id);invalidateServerPools();clearResolutionCache();clearContractAccessCache();
- res.json({id:updated.id,status:updated.status});
+ res.json({id:updated.id,status:updated.status,effectiveStatus:effectivePartnerStatus(updated)});
 });
+// Same transition rules as Superadmin, with an owner check inside the locked service.
+// The route never grants `force` to Admins, even when the client sends it.
+for(const action of ["suspend","block","reactivate","cancel"]){
+ router.post(`/partners/:id/${action}`,validate({params:ident,
+   body:z.object({reason:z.string().trim().max(500).optional()}).strict()}),async(req,res)=>{
+   const owned=await ownedPartner(tenant(req),req.valid.params.id);
+   const perm=owned.kind==="reseller"?"network:resellers:write":"network:partners:write";
+   if(!adminHasNetworkPermission(req.user,perm) ||
+       (owned.kind==="both"&&!adminHasNetworkPermission(req.user,"network:resellers:write")))
+     throw new AppError(403,"NETWORK_PERMISSION_DENIED","Sem permissão para alterar esta conta.");
+   if(action==="reactivate" && owned.statusReason==="awaiting_payment")
+     throw new AppError(409,"PAYMENT_CONFIRMATION_REQUIRED","Confirme o pagamento antes de reativar.");
+   // Never allow a delegated admin to reactivate a cancelled account by forcing it.
+   const updated=await codesService.changePartnerStatus(owned.id,action,req.valid.body,actorOf(req),tenant(req));
+   clearContractAccessCache();invalidatePlan(updated.id);
+   res.json({id:updated.id,status:updated.status,effectiveStatus:effectivePartnerStatus(updated)});
+ });
+}
 // A conta de plano pago só ativa com confirmação deliberada do recebimento;
 // a auditoria não deve tratar criação de conta como pagamento.
 // Exclusão lógica da própria rede: valida proprietário, permissão e confirmação.
@@ -390,6 +440,27 @@ router.post('/partners/:id/archive',validate({params:ident,body:z.object({
  const result=await deletePartnerAsSuper(p.id,{...req.valid.body,confirmation:p.name,reason:req.valid.body.reason||"Exclusão solicitada pelo administrador"},actorOf(req),tenant(req));
  res.json(result);
 });
+// Lixeira operacional isolada por owner; exclusão definitiva continua exclusiva da DeltaTV.
+// Para contas do tipo "both" são necessárias as duas permissões de exclusão.
+router.get('/trash',validate({query:listQuery}),async(req,res)=>{
+  const rights={content:adminHasNetworkPermission(req.user,'network:partners:delete'),
+    reseller:adminHasNetworkPermission(req.user,'network:resellers:delete')};
+  if(!rights.content&&!rights.reseller)throw new AppError(403,'NETWORK_PERMISSION_DENIED','Sem permissão para consultar a lixeira.');
+  const kinds=[...(rights.content?['content']:[]),...(rights.reseller?['reseller']:[]),
+    ...(rights.content&&rights.reseller?['both']:[])];
+  if(req.valid.query.kind&& !kinds.includes(req.valid.query.kind))
+    throw new AppError(403,'NETWORK_PERMISSION_DENIED','Sem permissão para este tipo de conta.');
+  res.json(await listPartnerTrash(req.valid.query,actorOf(req),tenant(req),
+    req.valid.query.kind?[req.valid.query.kind]:kinds));
+});
+router.post('/trash/:id/restore',validate({params:ident,
+  body:z.object({reason:z.string().trim().min(8).max(400)}).strict()}),async(req,res)=>{
+  const p=await Partner.findOne({where:{id:req.valid.params.id,ownerAdminId:tenant(req),status:'deleted'},
+    attributes:['id','kind','status']});
+  if(!p)throw new AppError(404,'NOT_FOUND','Conta não encontrada na lixeira da sua rede.');
+  canDeleteOwned(req,p);
+  res.json(await restorePartnerFromTrash(p.id,req.valid.body,actorOf(req),tenant(req)));
+});
 router.post('/partners/:id/confirm-payment',validate({params:ident,
  body:z.object({reference:z.string().trim().min(3).max(180)}).strict()}),async(req,res)=>{
  if(!adminHasNetworkPermission(req.user,'network:billing:write'))
@@ -411,7 +482,7 @@ router.post('/partners/:id/confirm-payment',validate({params:ident,
      metadata:{reference:req.valid.body.reference,ownerAdminId:tenant(req),planKey:plan.key},transaction:t});
    return p;
  });
- clearContractAccessCache();invalidatePlan(updated.id);res.json({id:updated.id,status:updated.status});
+ clearContractAccessCache();invalidatePlan(updated.id);res.json({id:updated.id,status:updated.status,effectiveStatus:effectivePartnerStatus(updated)});
 });
 router.post("/partners/:id/users",validate({params:ident,body:account}),async(req,res)=>{
   const partner=await ownedPartner(tenant(req),req.valid.params.id);

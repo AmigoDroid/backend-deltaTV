@@ -1,5 +1,6 @@
 import {sessionContext, roleForContext, PORTAL_AUDIENCES} from "../modules/auth/role-context.js";
 import {findPortalAccount} from "../modules/auth/portal-accounts.service.js";
+import {effectivePartnerStatus} from "../modules/access/access.policy.js";
 import {governanceAudit} from "../modules/superadmin/governance-audit.js";
 import {adminHasNetworkPermission, normalizeNetworkPermissions, normalizeNetworkLimits} from "../modules/admin-workspaces/permissions.js";
 import { Op } from "sequelize";
@@ -41,7 +42,7 @@ export async function resolveAdminClaims(payload) {
   const session=await AuthSession.findOne({where:{id:grant.sessionId,adminUserId:grant.actorId,revokedAt:null,expiresAt:{[Op.gt]:new Date()}}});
   if(!actor||actor.role!=="superadmin"||actor.status!=="active"||actor.deletedAt||!session)throw new AppError(401,"INVALID_TOKEN","Sessão de origem encerrada.");
   const partner=await Partner.findByPk(user.partnerId);
-  if(!partner||partner.status!=="active")throw new AppError(403,"FORBIDDEN","Parceria indisponível para impersonação.");
+  if(!partner||effectivePartnerStatus(partner)!=="active")throw new AppError(403,"FORBIDDEN","Parceria indisponível para impersonação.");
   impersonator={id:actor.id,name:actor.name,role:actor.role,grantId:grant.id};
  } else if(payload.sid) {
   const session=await AuthSession.findOne({where:{id:payload.sid,adminUserId:user.id,revokedAt:null,expiresAt:{[Op.gt]:new Date()}},attributes:["id","audience","portalPartnerId"]});
@@ -62,8 +63,8 @@ export async function resolveAdminClaims(payload) {
   if (actualContext === 'partner') {
     const partner = portalAdmin
       ? await findPortalAccount(user,session.audience,selectedPortalPartnerId)
-      : await Partner.findByPk(selectedPortalPartnerId,{attributes:['id','kind','status']});
-    if(!partner || partner.status !== 'active' ||
+      : await Partner.findByPk(selectedPortalPartnerId,{attributes:['id','kind','status','endsAt']});
+    if(!partner || effectivePartnerStatus(partner) !== 'active' ||
        (session.audience === 'content_partner' && !['content','both'].includes(partner.kind)) ||
        (session.audience === 'partner' && portalAdmin && !['reseller','both'].includes(partner.kind)))
       throw new AppError(401,'INVALID_TOKEN','Conta operacional indisponível.');

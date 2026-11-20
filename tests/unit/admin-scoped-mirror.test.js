@@ -11,7 +11,9 @@ test('consultas do espelho aplicam proprietário e não expõem ficha comercial 
  const routes=read('../../src/modules/admin-workspaces/workspace.routes.js');
  assert.match(routes,/req\.networkOwnerId=req\.user\.id/);
  assert.match(routes,/ownerAdminId:tenant\(req\)/);
- assert.match(routes,/const partner=direct\?p:\{id:p\.id,name:p\.name,kind:p\.kind,status:p\.status\}/);
+ assert.match(routes,/const partner=direct\?partnerStatusOut\(p\):partnerStatusOut\(p,\{canSeeContract:false\}\)/);
+ assert.match(routes,/delete data\.endsAt/);
+ assert.match(routes,/effectivePartnerStatus\(p\)/);
  assert.match(routes,/const attributes=canSeeContract\?/);
  assert.match(routes,/hasIndirectAccountRead\(req\)/);
 });

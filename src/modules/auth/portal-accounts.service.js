@@ -33,7 +33,7 @@ export async function findPortalAccount(admin, audience, partnerId, transaction)
   const where = portalAccountFilter(admin, audience);
   if (!where) return null;
   return Partner.findOne({ where,
-    attributes: ['id','name','kind','status','ownerAdminId'], transaction });
+    attributes: ['id','name','kind','status','endsAt','ownerAdminId'], transaction });
 }
 
 // Reconcilia a parceria anterior a uma promoção de Parceiro para Admin.

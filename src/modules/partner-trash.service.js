@@ -32,10 +32,13 @@ const OWN_ACTIVATION = `a.partner_id = :id OR a.license_id IN (${OWN_LICENSE}) O
   a.granted_license_id IN (${OWN_LICENSE}) OR a.partner_code_id IN (${OWN_CODE})`;
 const OWN_CHARGE = `partner_id = :id OR invoice_id IN (${OWN_INVOICE}) OR license_id IN (${OWN_LICENSE})`;
 
-export async function listPartnerTrash({ page, pageSize, q, kind }, actor) {
-  superOnly(actor);
+export async function listPartnerTrash({ page, pageSize, q, kind }, actor, ownerAdminId = undefined, allowedKinds = undefined) {
+  if (ownerAdminId === undefined) superOnly(actor);
+  else if (!['admin','superadmin'].includes(actor?.role)) throw new AppError(403, 'ADMIN_WORKSPACE_ONLY', 'Operação restrita à rede.');
   const where = { status: "deleted" };
-  if (kindFilter(kind)) where.kind = kindFilter(kind);
+  if (ownerAdminId !== undefined) where.ownerAdminId = ownerAdminId;
+  if (Array.isArray(allowedKinds)) where.kind = { [Op.in]: allowedKinds };
+  else if (kindFilter(kind)) where.kind = kindFilter(kind);
   if (q) where[Op.or] = ["name", "slug", "contactName", "contactEmail"].map(field => ({ [field]: { [Op.iLike]: `%${q}%` } }));
   const { rows, count } = await Partner.findAndCountAll({
     where,
@@ -123,11 +126,12 @@ function clearCaches(id, devices = []) {
 
 /** Restaura estados capturados antes de arquivar. Cadastros antigos sem snapshot
  * voltam BLOQUEADOS, com contas/códigos desligados, para revisão manual. */
-export async function restorePartnerFromTrash(id, { reason }, actor) {
-  superOnly(actor);
+export async function restorePartnerFromTrash(id, { reason }, actor, ownerAdminId = undefined) {
+  if (ownerAdminId === undefined) superOnly(actor);
+  else if (!['admin','superadmin'].includes(actor?.role)) throw new AppError(403, 'ADMIN_WORKSPACE_ONLY', 'Operação restrita à rede.');
   if (!reason?.trim() || reason.trim().length < 8) throw new AppError(422, "REASON_REQUIRED", "Informe um motivo com pelo menos 8 caracteres.");
   const result = await sequelize.transaction(async transaction => {
-    const partner = await Partner.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    const partner = await Partner.findOne({where: ownerAdminId === undefined ? {id} : {id, ownerAdminId}, transaction, lock: transaction.LOCK.UPDATE });
     if (!partner) throw notFound("Cadastro da lixeira");
     if (partner.status !== "deleted") throw new AppError(409, "NOT_IN_TRASH", "Este cadastro não está na lixeira.");
     const [snapshot] = await select("SELECT * FROM partner_trash_snapshots WHERE partner_id = :id FOR UPDATE", { id }, transaction);

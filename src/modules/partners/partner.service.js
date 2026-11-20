@@ -10,9 +10,9 @@ import { hashPassword } from "../../shared/crypto.js";
 import { normalizeShortCode, shortCodeProblem, randomNumericCode } from "./short-code.js";
 import { pageOf, paged } from "../../shared/pagination.js";
 import { effectivePartnerStatus } from "../access/access.policy.js";
+import { partnerStatusWhere } from "./partner-status.query.js";
 import { normalizeTiers } from "../billing/billing.calc.js";
 import { clearMirrorAuth } from "../mirror/mirror.cache.js";
-import { SIGNUP_PENDING_REASON } from "./reseller-signup.service.js";
 import { defaultTier } from "../service-plans/plan.rules.js";
 import { invalidatePlan } from "../service-plans/plan.service.js";
 import { invalidateServerPools } from "../provider-monitor/code-pool.service.js";
@@ -49,11 +49,8 @@ const out = (p) => {
 };
 
 export async function listPartners({ q, status, kind, page, pageSize }) {
-  const where = { status: { [Op.ne]: "deleted" } };
+  const where = partnerStatusWhere(status);
   if (kind === "content" || kind === "reseller") where.kind = { [Op.in]: [kind, "both"] };
-  if (status === "expired") Object.assign(where, { status: "active", endsAt: { [Op.lte]: new Date() } });
-  else if (status === "pending") Object.assign(where, { status: "suspended", statusReason: SIGNUP_PENDING_REASON }); // cadastros públicos aguardando aprovação
-  else if (status) where.status = status;
   if (q) where[Op.or] = ["name", "slug", "contactName", "contactEmail"].map((field) => ({ [field]: { [Op.iLike]: `%${q}%` } }));
   const { rows, count } = await Partner.findAndCountAll({
     where, attributes: { include: [[sequelize.literal(DEVICE_COUNT), "deviceCount"], [sequelize.literal(PORTAL_ACTIVITY), "lastPortalActivityAt"]] },
@@ -210,11 +207,18 @@ const TRANSITIONS = {
 };
 
 /** Afeta TODOS os dispositivos da parceria (qualquer código usado na ativação) na próxima requisição. */
-export async function changePartnerStatus(id, action, { reason, force = false }, actor) {
+export async function changePartnerStatus(id, action, { reason, force = false }, actor, ownerAdminId = undefined) {
   const rule = TRANSITIONS[action];
+  if (!rule) throw new AppError(422, "INVALID_ACTION", "Ação inválida.");
   const changed = await sequelize.transaction(async (t) => {
-    const p = await Partner.findByPk(id, { transaction: t, lock: t.LOCK.UPDATE });
+    // Admin sempre resolve a posse dentro da transação e sob o lock, sem IDOR.
+    const where = ownerAdminId === undefined ? { id } : { id, ownerAdminId };
+    const p = await Partner.findOne({ where, transaction: t, lock: t.LOCK.UPDATE });
     if (!p) throw notFound("Parceiro");
+    // A permissão de reativar um contrato pago é conferida SOB o lock.
+    // Uma chamada concorrente não pode contornar a confirmação financeira.
+    if (ownerAdminId !== undefined && action === "reactivate" && p.statusReason === "awaiting_payment")
+      throw new AppError(409, "PAYMENT_CONFIRMATION_REQUIRED", "Confirme o pagamento antes de reativar.");
     if (!rule.from.includes(p.status) && !(force && rule.forceFrom?.includes(p.status))) {
       if (rule.forceFrom?.includes(p.status)) throw new AppError(403, "SUPERADMIN_ONLY", "Somente o superadmin pode reativar uma parceria cancelada.");
       throw new AppError(409, "INVALID_STATE", `Não é possível '${action}' uma parceria '${p.status}'.`);
