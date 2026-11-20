@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { pixExpiry,requiredSettlementCents } from './charge-pricing.js';
 import { quoteNetworkCharge } from './pricing.service.js';
 import { oneOffQuote } from './one-off.js';
-import { verifyNetworkPaymentMatch } from './policy.js';
+import { verifyNetworkPaymentMatch, infinitePayWebhookReference } from './policy.js';
 import { QueryTypes, Op } from 'sequelize';
 import { sequelize, Partner, AdminUser, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms, Activation } from '../../db/models/index.js';
 import { encryptSecret, decryptSecret } from '../../shared/crypto.js';
@@ -357,9 +357,9 @@ export async function reconcileProviderCharge(id,provider,req) {
       return needsReview(id,'PAYMENT_MISMATCH',payment.amountCents,actor);
     return settleCharge(id,{providerConfirmed:true,amountCents:payment.amountCents},actor);
   }
-  const transactionNsu=String(req.body?.transaction_nsu||req.body?.transactionNsu||'');
-  const slug=String(req.body?.slug||'');
-  if(!/^[\w-]{1,160}$/.test(transactionNsu)|| !/^[\w-]{1,160}$/.test(slug))return {ignored:true};
+  const reference=infinitePayWebhookReference(req.body);
+  if(!reference)return {ignored:true};
+  const {transactionNsu,slug}=reference;
   const payment=await createInfinitePay({handle:gateway.account_ref,apiKey:credential}).paymentCheck({orderNsu:charge.id,transactionNsu,slug});
   if(!payment.paid)return {ignored:true};
   const amount=payment.paidAmountCents??payment.amountCents;
