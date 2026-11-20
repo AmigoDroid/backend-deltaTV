@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { pixExpiry,requiredSettlementCents } from './charge-pricing.js';
+import { quoteNetworkCharge } from './pricing.service.js';
+import { verifyNetworkPaymentMatch } from './policy.js';
 import { QueryTypes, Op } from 'sequelize';
 import { sequelize, Partner, AdminUser, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms, Activation } from '../../db/models/index.js';
 import { encryptSecret, decryptSecret } from '../../shared/crypto.js';
@@ -116,27 +119,30 @@ export async function expireCharges() {
 }
 
 /** O preço é sempre extraído do plano desta rede no banco, jamais de parâmetros da requisição. */
-export async function createCharge(adminId,{partnerId,kind,planTo,method='automatic'},actor) {
+export async function createCharge(adminId,{partnerId,kind,planTo,method='automatic',previewFingerprint,manualDiscount=null,waiver=null},actor,{skipPreview=false}={}) {
   await expireCharges();
   const charge=await sequelize.transaction(async t=>{
     await query('SELECT id FROM admin_users WHERE id=CAST(:adminId AS uuid) FOR UPDATE',{adminId},t);
     const p=await owned(adminId,partnerId,t);
-    const plan=await ServicePlanCatalog.findOne({where:{key:planTo,ownerAdminId:adminId,active:true,deletedAt:null},transaction:t});
-    if(!plan || (plan.audience!=='both' && plan.audience!==p.kind))
-      fail(422,'PLAN_NOT_IN_NETWORK','Plano não pertence à sua rede ou é incompatível.');
-    if(!plan.monthlyPriceCents || plan.monthlyPriceCents<=0)
-      fail(422,'FREE_PLAN','Planos gratuitos não geram cobranças.');
-    const current=await PartnerServicePlan.findByPk(p.id,{transaction:t});
-    if(kind==='upgrade' && current?.tier===planTo)fail(422,'NOT_AN_UPGRADE','Selecione outro plano para o upgrade.');
-    if(kind==='renewal' && current?.tier && current.tier!==planTo)
-      fail(422,'PLAN_MISMATCH','Renovação deve usar o plano atual.');
+    // Trava o contrato para a criação e prévia terem a mesma referência.
+    await query('SELECT id FROM partners WHERE id=CAST(:partnerId AS uuid) FOR UPDATE',{partnerId},t);
+    const quote=await quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDiscount,waiver},actor,{transaction:t});
+    if(!skipPreview && (!previewFingerprint||previewFingerprint!==quote.previewFingerprint))
+      throw new AppError(409,'PRICING_CHANGED','O valor da prévia mudou. Confirme o cálculo atualizado.',{quote});
     const gateway=method==='automatic'?(await query(`SELECT provider FROM admin_network_gateways WHERE admin_user_id=CAST(:adminId AS uuid) AND active=true`,{adminId},t))[0]:null;
     if(method==='automatic'&&!gateway)fail(409,'NO_ACTIVE_GATEWAY','Ative um provedor de pagamento validado.');
-    const [row]=await query(`INSERT INTO admin_network_charges(owner_admin_id,partner_id,kind,plan_from,plan_to,amount_cents,status,provider,method,expires_at)
-      VALUES(CAST(:adminId AS uuid),CAST(:partnerId AS uuid),:kind,:planFrom,:planTo,:amount,'creating',:provider,:method,now()+interval '24 hours') RETURNING *`,
-      {adminId,partnerId,kind,planFrom:current?.tier??null,planTo,amount:plan.monthlyPriceCents,provider:gateway?.provider||null,method},t);
+    const expiresAt=pixExpiry(new Date(),60);
+    if(expiresAt.getTime()<=Date.now()+1000)fail(409,'PRICING_DAY_END','O dia está virando; recalcule o pagamento.');
+    const [row]=await query(`INSERT INTO admin_network_charges(owner_admin_id,partner_id,kind,plan_from,plan_to,amount_cents,status,provider,method,expires_at,breakdown)
+      VALUES(CAST(:adminId AS uuid),CAST(:partnerId AS uuid),:kind,:planFrom,:planTo,:amount,'creating',:provider,:method,:expiresAt,CAST(:breakdown AS jsonb)) RETURNING *`,
+      {adminId,partnerId,kind,planFrom:quote.planFrom,planTo,amount:quote.amountCents,provider:gateway?.provider||null,
+        method,expiresAt,breakdown:JSON.stringify(quote.breakdown)},t);
     await audit({actor,action:'network.finance.charge.create',entityType:'network_charge',entityId:row.id,
       metadata:{partnerId,provider:row.provider,kind,planTo,amountCents:row.amount_cents},transaction:t});
+    if(manualDiscount)await audit({actor,action:'network.finance.charge.manual_discount',entityType:'network_charge',entityId:row.id,
+      metadata:{discount:quote.breakdown.manual,amountCents:quote.breakdown.manualDiscountCents},transaction:t});
+    if(waiver)await audit({actor,action:'network.finance.charge.waiver',entityType:'network_charge',entityId:row.id,
+      metadata:{reason:waiver.reason,feeCents:quote.breakdown.waiverFeeCents,interestCents:quote.breakdown.waiverInterestCents},transaction:t});
     return {row,partner:p.toJSON()};
   });
   const row=charge.row;
@@ -158,7 +164,7 @@ export async function createCharge(adminId,{partnerId,kind,planTo,method='automa
         payer:{email:payerEmail,name:charge.partner.name},expiresAt:new Date(row.expires_at),
         notificationUrl:`${env.publicBaseUrl}/api/v1/webhooks/network-finance/mercadopago/${row.id}`,
       });
-      providerRef=payment.providerRef;pixCode=payment.qrCode;expiresAt=payment.expiresAt;
+      providerRef=payment.providerRef;pixCode=payment.qrCode;expiresAt=new Date(Math.min(new Date(payment.expiresAt||row.expires_at).getTime(),new Date(row.expires_at).getTime()));
     } else {
       const payment=await createInfinitePay({handle:gateway.account_ref,apiKey:credential}).createLink({
         orderNsu:row.id,amountCents:Number(row.amount_cents),description:`DeltaTV ${kind==='renewal'?'renovação':'upgrade'}`,
@@ -190,8 +196,7 @@ async function settleCharge(id,verify,actor) {
     if(['cancelled','failed','creating'].includes(charge.status) && !verify?.providerConfirmed)return {id,status:charge.status};
     if(charge.method==='automatic' && !verify?.providerConfirmed)
       fail(403,'PROVIDER_CONFIRMATION_REQUIRED','Pagamento automático exige confirmação do próprio provedor.');
-    // Em um aviso atrasado após expiração não se perde o recebimento: vai para conciliação.
-    const late=['expired','cancelled','failed','creating'].includes(charge.status) || new Date(charge.expires_at)<new Date();
+    // Expirar o QR não invalida um pagamento comprovado do valor integral.
     const partner=await Partner.findOne({where:{id:charge.partner_id,ownerAdminId:charge.owner_admin_id},transaction:t,lock:t.LOCK.UPDATE});
     if(!partner)fail(409,'PARTNER_OWNER_CHANGED','Titularidade da parceria mudou. Cobrança requer conferência.');
     const current=await PartnerServicePlan.findByPk(charge.partner_id,{transaction:t});
@@ -205,15 +210,18 @@ async function settleCharge(id,verify,actor) {
       ? await Activation.count({where:{partnerId:partner.id,status:{[Op.ne]:'revoked'}},transaction:t}) : 0;
     const blocked=charge.kind==='upgrade' && (
       (terms?.mode==='credits') || (plan?.activationLimit!=null && used>plan.activationLimit));
-    const nextStatus=(late||stale||blocked)?'review':'paid';
+    const nextStatus=(stale||blocked)?'needs_review':'paid';
     await query(`UPDATE admin_network_charges SET status=:status,paid_at=now(),transaction_nsu=:transaction,
-      payment_slug=:slug,manual_reference=:reference,updated_at=now() WHERE id=CAST(:id AS uuid)`,
-      {id,status:nextStatus,transaction:verify?.transactionNsu||null,slug:verify?.slug||null,reference:verify?.reference||null},t);
+      payment_slug=:slug,manual_reference=:reference,paid_amount_cents=:paidAmount,updated_at=now() WHERE id=CAST(:id AS uuid)`,
+      {id,status:nextStatus,transaction:verify?.transactionNsu||null,slug:verify?.slug||null,reference:verify?.reference||null,paidAmount:verify?.amountCents??Number(charge.amount_cents)},t);
     if(nextStatus==='paid'){
       const endTime=new Date(partner.endsAt).getTime();
+      const overdue=Number.isFinite(endTime)&&endTime<Date.now();
       const base=Math.max(Date.now(),Number.isFinite(endTime)?endTime:0);
       const reopen=partner.status==='suspended' && partner.statusReason==='awaiting_payment';
-      const changes={endsAt:new Date(base+plan.validityDays*86400_000)};
+      const snapshotDays=Number(charge.breakdown?.validityDays||plan.validityDays);
+      const changes={endsAt:charge.kind==='upgrade'&&!overdue&&Number.isFinite(endTime)?new Date(endTime):new Date((overdue?Date.now():base)+snapshotDays*86400_000)};
+      if(charge.kind==='upgrade'&&overdue)changes.startsAt=new Date();
       if(reopen){changes.status='active';changes.statusReason=null;changes.startsAt=new Date();}
       if(charge.kind==='upgrade'){
         changes.deviceLimit=plan.activationLimit;
@@ -258,16 +266,32 @@ export async function confirmPendingContractFromWorkspace(adminId,partnerId,refe
     fail(409,'NO_PENDING_PAYMENT','Não existe pagamento aguardando confirmação nesta conta.');
   const current=await PartnerServicePlan.findByPk(partnerId);
   if(!current?.tier)fail(409,'PLAN_MISSING','Plano da parceria não foi localizado.');
-  const charge=await createCharge(adminId,{partnerId,kind:'renewal',planTo:current.tier,method:'manual'},actor);
+  const charge=await createCharge(adminId,{partnerId,kind:'renewal',planTo:current.tier,method:'manual'},actor,{skipPreview:true});
   return confirmManualCharge(adminId,charge.id,{reference},actor);
+}
+
+async function needsReview(id,reason,amount,actor){
+  return sequelize.transaction(async t=>{
+    const [charge]=await query(`SELECT status FROM admin_network_charges WHERE id=CAST(:id AS uuid) FOR UPDATE`,{id},t);
+    if(!charge)return {ignored:true};
+    if(charge.status==='paid')return {id,status:'paid',alreadyPaid:true};
+    if(charge.status==='needs_review')return {id,status:'needs_review',alreadyReviewed:true};
+    await query(`UPDATE admin_network_charges SET status='needs_review',paid_at=now(),
+      paid_amount_cents=:amount,review_reason=:reason,updated_at=now() WHERE id=CAST(:id AS uuid)`,
+      {id,reason,amount:Number.isSafeInteger(amount)&&amount>=0?amount:null},t);
+    await audit({actor,action:'network.finance.charge.needs_review',entityType:'network_charge',entityId:id,
+      metadata:{reason,amountCents:amount},transaction:t});
+    return {id,status:'needs_review'};
+  });
 }
 
 export async function reconcileProviderCharge(id,provider,req) {
   const [charge]=await query(`SELECT * FROM admin_network_charges WHERE id=CAST(:id AS uuid) AND provider=:provider AND method='automatic'`,{id,provider});
   if(!charge)return {ignored:true};
-  const gateway=await rowFor(charge.owner_admin_id,charge.provider); // inclusive inativo: cobranças antigas!
+  if(['paid','needs_review'].includes(charge.status))return {id,status:charge.status,alreadySettled:true};
+  const gateway=await rowFor(charge.owner_admin_id,charge.provider);
   if(!gateway)fail(503,'GATEWAY_NOT_CONFIGURED','Credenciais antigas do provedor não estão disponíveis.');
-  const credential=decryptSecret(gateway.credentials_enc);
+  const credential=decryptSecret(gateway.credentials_enc),actor={type:'system',id:null,role:'webhook'};
   if(provider==='mercadopago') {
     const valid=verifySignature({secret:decryptSecret(gateway.webhook_secret_enc),signatureHeader:req.get('x-signature'),
       requestId:req.get('x-request-id'),dataId:req.query?.['data.id']||req.body?.data?.id});
@@ -276,19 +300,25 @@ export async function reconcileProviderCharge(id,provider,req) {
     if(!reported || (charge.provider_ref && reported!==String(charge.provider_ref)))return {ignored:true};
     const payment=await createMercadoPago({accessToken:credential}).getPayment(reported);
     if(payment.status!=='paid')return {ignored:true};
-    if(payment.externalReference!==charge.id || payment.amountCents!==Number(charge.amount_cents) ||
-      (gateway.account_ref!=='pending'&&payment.collectorId!==gateway.account_ref))
-      fail(409,'PAYMENT_MISMATCH','Recebimento não corresponde à cobrança.');
-    return settleCharge(id,{providerConfirmed:true}, {type:'system',id:null,role:'webhook'});
+    const owed=new Date(charge.expires_at)<new Date()?requiredSettlementCents(charge.breakdown,new Date(),Number(charge.amount_cents)):Number(charge.amount_cents);
+    const receipt={confirmed:true,externalReference:payment.externalReference,providerRef:reported,
+      amountCents:payment.amountCents,currency:payment.currency||'BRL',paymentMethod:payment.paymentMethod||'pix',collectorId:payment.collectorId};
+    if(!verifyNetworkPaymentMatch({...charge,amount_cents:owed},receipt,gateway.account_ref))
+      return needsReview(id,'PAYMENT_MISMATCH',payment.amountCents,actor);
+    return settleCharge(id,{providerConfirmed:true,amountCents:payment.amountCents},actor);
   }
   const transactionNsu=String(req.body?.transaction_nsu||req.body?.transactionNsu||'');
   const slug=String(req.body?.slug||'');
   if(!/^[\w-]{1,160}$/.test(transactionNsu)|| !/^[\w-]{1,160}$/.test(slug))return {ignored:true};
   const payment=await createInfinitePay({handle:gateway.account_ref,apiKey:credential}).paymentCheck({orderNsu:charge.id,transactionNsu,slug});
   if(!payment.paid)return {ignored:true};
-  const value=payment.paidAmountCents??payment.amountCents;
-  if(value!==Number(charge.amount_cents))fail(409,'PAYMENT_MISMATCH','Valor confirmado não corresponde à cobrança.');
-  return settleCharge(id,{providerConfirmed:true,transactionNsu,slug}, {type:'system',id:null,role:'webhook'});
+  const amount=payment.paidAmountCents??payment.amountCents;
+  const owed=new Date(charge.expires_at)<new Date()?requiredSettlementCents(charge.breakdown,new Date(),Number(charge.amount_cents)):Number(charge.amount_cents);
+  const receipt={confirmed:true,externalReference:charge.id,providerRef:charge.provider_ref,
+    amountCents:amount,currency:payment.currency||'BRL',paymentMethod:String(payment.captureMethod||'').trim().toLowerCase(),collectorId:gateway.account_ref};
+  if(!verifyNetworkPaymentMatch({...charge,amount_cents:owed},receipt,gateway.account_ref))
+    return needsReview(id,'PAYMENT_MISMATCH',amount,actor);
+  return settleCharge(id,{providerConfirmed:true,transactionNsu,slug,amountCents:amount},actor);
 }
 
 export async function cancelCharge(id,reason,actor,{ownerAdminId=null,superadmin=false}={}) {
@@ -315,16 +345,21 @@ const FILTERS=`FROM admin_network_charges c
    AND (:status IS NULL OR c.status=:status)
    AND (:provider IS NULL OR c.provider=:provider)
    AND (:method IS NULL OR c.method=:method)
-   AND (:fromDate IS NULL OR c.created_at >= CAST(:fromDate AS timestamptz))
-   AND (:toDate IS NULL OR c.created_at < CAST(:toDate AS timestamptz)+interval '1 day')`;
+   AND (:lateOnly IS NULL OR (COALESCE((c.breakdown->>'daysLate')::int,0)>0)=:lateOnly)
+   AND (:earlyOnly IS NULL OR (COALESCE((c.breakdown->>'earlyDiscountCents')::bigint,0)>0)=:earlyOnly)
+   AND (:manualOnly IS NULL OR (COALESCE((c.breakdown->>'manualDiscountCents')::bigint,0)>0)=:manualOnly)
+   AND (:waiverOnly IS NULL OR (COALESCE((c.breakdown->>'waiverFeeCents')::bigint,0)+COALESCE((c.breakdown->>'waiverInterestCents')::bigint,0)>0)=:waiverOnly)
+   AND (:fromDate IS NULL OR c.created_at >= (CAST(:fromDate AS date)::timestamp AT TIME ZONE 'America/Sao_Paulo'))
+   AND (:toDate IS NULL OR c.created_at < ((CAST(:toDate AS date)+1)::timestamp AT TIME ZONE 'America/Sao_Paulo'))`;
 const FIELDS=`c.id,c.owner_admin_id AS "adminId",a.name AS "adminName",c.partner_id AS "partnerId",p.name AS "partnerName",
- c.kind,c.plan_from AS "planFrom",c.plan_to AS "planTo",c.amount_cents AS "amountCents",c.status,c.provider,c.method,
+ c.kind,c.plan_from AS "planFrom",c.plan_to AS "planTo",c.amount_cents AS "amountCents",c.breakdown,c.review_reason AS "reviewReason",c.status,c.provider,c.method,
  c.created_at AS "createdAt",c.paid_at AS "paidAt",c.expires_at AS "expiresAt",
  CASE WHEN c.method='manual' THEN c.manual_reference ELSE c.provider_ref END AS reference,
- CASE WHEN c.method='manual' AND c.status IN ('paid','review') THEN true ELSE false END AS "manualWithoutProviderProof"`;
-const filtered = ({adminId,partnerId,kind,status,provider,method,fromDate,toDate},owner) => ({
+ CASE WHEN c.method='manual' AND c.status IN ('paid','review','needs_review') THEN true ELSE false END AS "manualWithoutProviderProof"`;
+const filtered = ({adminId,partnerId,kind,status,provider,method,fromDate,toDate,lateOnly,earlyOnly,manualOnly,waiverOnly},owner) => ({
   owner,adminId:adminId||null,partnerId:partnerId||null,kind:kind||null,status:status||null,
   provider:provider||null,method:method||null,fromDate:fromDate||null,toDate:toDate||null,
+  lateOnly:lateOnly??null,earlyOnly:earlyOnly??null,manualOnly:manualOnly??null,waiverOnly:waiverOnly??null,
 });
 export async function listCharges(filters={}, {ownerAdminId=null,superadmin=false,limit=25,offset=0}={}) {
   await expireCharges();
@@ -332,19 +367,31 @@ export async function listCharges(filters={}, {ownerAdminId=null,superadmin=fals
   const [rows,count,totals,byAdmin,byPeriod]=await Promise.all([
     query(`SELECT ${FIELDS} ${FILTERS} ORDER BY c.created_at DESC,c.id DESC LIMIT :limit OFFSET :offset`,{...args,limit,offset}),
     query(`SELECT count(*)::int AS n ${FILTERS}`,args),
-    query(`SELECT COALESCE(sum(amount_cents) FILTER(WHERE status='paid'),0)::bigint AS paid,
-       COALESCE(sum(amount_cents) FILTER(WHERE status='pending'),0)::bigint AS pending,
-       COALESCE(sum(amount_cents) FILTER(WHERE status='expired'),0)::bigint AS expired ${FILTERS}`,args),
+    query(`SELECT COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='paid'),0)::bigint AS paid,
+       COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='pending'),0)::bigint AS pending,
+       COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='expired'),0)::bigint AS expired,
+       COALESCE(sum(COALESCE((c.breakdown->>'lateFeeCents')::bigint,0)),0)::bigint AS late_fees,
+       COALESCE(sum(COALESCE((c.breakdown->>'interestCents')::bigint,0)),0)::bigint AS interest,
+       COALESCE(sum(COALESCE((c.breakdown->>'earlyDiscountCents')::bigint,0)+COALESCE((c.breakdown->>'manualDiscountCents')::bigint,0)),0)::bigint AS discounts,
+       COALESCE(sum(COALESCE((c.breakdown->>'waiverFeeCents')::bigint,0)+COALESCE((c.breakdown->>'waiverInterestCents')::bigint,0)),0)::bigint AS waivers ${FILTERS}`,args),
     query(`SELECT c.owner_admin_id AS "adminId",a.name AS "adminName",
        COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='paid'),0)::bigint AS paid,
        COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='pending'),0)::bigint AS pending,
-       COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='expired'),0)::bigint AS expired ${FILTERS}
+       COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='expired'),0)::bigint AS expired,
+       COALESCE(sum(COALESCE((c.breakdown->>'lateFeeCents')::bigint,0)),0)::bigint AS late_fees,
+       COALESCE(sum(COALESCE((c.breakdown->>'interestCents')::bigint,0)),0)::bigint AS interest,
+       COALESCE(sum(COALESCE((c.breakdown->>'earlyDiscountCents')::bigint,0)+COALESCE((c.breakdown->>'manualDiscountCents')::bigint,0)),0)::bigint AS discounts,
+       COALESCE(sum(COALESCE((c.breakdown->>'waiverFeeCents')::bigint,0)+COALESCE((c.breakdown->>'waiverInterestCents')::bigint,0)),0)::bigint AS waivers ${FILTERS}
        GROUP BY c.owner_admin_id,a.name ORDER BY a.name LIMIT 500`,args),
-    query(`SELECT to_char(date_trunc('month',c.created_at),'YYYY-MM') AS period,
+    query(`SELECT to_char(date_trunc('month',c.created_at AT TIME ZONE 'America/Sao_Paulo'),'YYYY-MM') AS period,
        COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='paid'),0)::bigint AS paid,
        COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='pending'),0)::bigint AS pending,
-       COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='expired'),0)::bigint AS expired ${FILTERS}
-       GROUP BY date_trunc('month',c.created_at) ORDER BY period DESC LIMIT 120`,args),
+       COALESCE(sum(c.amount_cents) FILTER(WHERE c.status='expired'),0)::bigint AS expired,
+       COALESCE(sum(COALESCE((c.breakdown->>'lateFeeCents')::bigint,0)),0)::bigint AS late_fees,
+       COALESCE(sum(COALESCE((c.breakdown->>'interestCents')::bigint,0)),0)::bigint AS interest,
+       COALESCE(sum(COALESCE((c.breakdown->>'earlyDiscountCents')::bigint,0)+COALESCE((c.breakdown->>'manualDiscountCents')::bigint,0)),0)::bigint AS discounts,
+       COALESCE(sum(COALESCE((c.breakdown->>'waiverFeeCents')::bigint,0)+COALESCE((c.breakdown->>'waiverInterestCents')::bigint,0)),0)::bigint AS waivers ${FILTERS}
+       GROUP BY date_trunc('month',c.created_at AT TIME ZONE 'America/Sao_Paulo') ORDER BY period DESC LIMIT 120`,args),
   ]);
   return {data:rows,meta:{page:Math.floor(offset/limit)+1,pageSize:limit,total:count[0]?.n||0},totals:totals[0],byAdmin,byPeriod};
 }
@@ -352,21 +399,27 @@ export async function exportChargesCsv(filters,{superadmin=false,ownerAdminId=nu
   await expireCharges();
   const params=filtered(filters,superadmin?null:asOwner(ownerAdminId));
   const rows=await query(`SELECT ${FIELDS} ${FILTERS} ORDER BY c.created_at DESC,c.id DESC LIMIT :limit`,{...params,limit});
-  const keys=['adminName','partnerName','kind','planFrom','planTo','amountCents','status','provider','method','createdAt','paidAt','reference','manualWithoutProviderProof'];
-  return [keys.join(','),...rows.map(row=>keys.map(k=>csvSafe(row[k] instanceof Date?row[k].toISOString():row[k])).join(','))].join('\r\n')+'\r\n';
+  const keys=['adminName','partnerName','kind','planFrom','planTo','amountCents','status','provider','method','createdAt','paidAt','reference','manualWithoutProviderProof',
+    'lateFeeCents','interestCents','earlyDiscountCents','manualDiscountCents','waiverFeeCents','waiverInterestCents'];
+  return [keys.join(','),...rows.map(row=>keys.map(k=>{const value=k in (row.breakdown||{})?row.breakdown[k]:row[k];return csvSafe(value instanceof Date?value.toISOString():value)}).join(','))].join('\r\n')+'\r\n';
 }
 export async function partnerCharges(partnerId) {
   await expireCharges();
-  const rows=await query(`SELECT id,kind,plan_to,amount_cents,status,method,checkout_url,pix_code_enc,expires_at,created_at
+  const rows=await query(`SELECT id,kind,plan_to,amount_cents,breakdown,status,method,checkout_url,pix_code_enc,expires_at,created_at
     FROM admin_network_charges WHERE partner_id=CAST(:partnerId AS uuid)
     ORDER BY created_at DESC LIMIT 30`,{partnerId});
-  return rows.map(r=>({id:r.id,kind:r.kind,planTo:r.plan_to,amountCents:r.amount_cents,status:r.status,
+  return rows.map(r=>{const b=r.breakdown||{};return ({id:r.id,kind:r.kind,planTo:r.plan_to,amountCents:r.amount_cents,
+    // A conta do pagador nunca inclui identidade, motivo, tipo de desconto
+    // manual ou configurações internas do Administrador.
+    breakdown:b.totalCents?Object.fromEntries(['baseCents','earlyDiscountCents','manualDiscountCents',
+      'lateFeeCents','interestCents','daysLate','lateFeePct','interestMonthlyPct',
+      'waiverFeeCents','waiverInterestCents','totalCents'].map(k=>[k,b[k]??0])):null,status:r.status,
     expiresAt:r.expires_at,createdAt:r.created_at,
     ...(r.status==='pending'&&r.method==='automatic' ? {
       ...(r.pix_code_enc?{pixCode:decryptSecret(r.pix_code_enc)}:{}),
       ...(r.checkout_url?{checkoutUrl:r.checkout_url}:{}),
     }:{}),
-  }));
+  });});
 }
 
 export async function maskedAdminGatewaySummary() {

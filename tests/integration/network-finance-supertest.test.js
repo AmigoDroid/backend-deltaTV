@@ -67,6 +67,41 @@ if (!process.env.DATABASE_URL_TEST) {
     assert.equal(old[0].status,'pending');
     assert.ok(!JSON.stringify(visible.body).includes('only-for-disposable-integration-test'));
 
+    // Precificação HTTP: o pagador não informa centavos, outra rede resulta 404,
+    // teto não pode ser excedido e o snapshot JSONB não é editável.
+    assert.equal((await http.post('/api/v1/admin/workspace/finance/charges/preview').set('Authorization',ta)
+      .send({partnerId:pb.id,kind:'renewal',planTo:'qualquer'})).status,404);
+    assert.equal((await http.put('/api/v1/admin/workspace/finance/pricing/settings').set('Authorization',ta)
+      .send({lateFeePct:4})).status,422);
+    const planKey=`finance-${suffix}`;
+    await db.ServicePlanCatalog.create({key:planKey,name:'Plano teste finanças',audience:'content',monthlyPriceCents:5000,
+      validityDays:30,ownerAdminId:a.id});
+    const oldPartner=await p('Fresh',a.id);
+    await oldPartner.update({endsAt:new Date(Date.now()-6*86400000),status:'active'});
+    const previewRes=await http.post('/api/v1/admin/workspace/finance/charges/preview').set('Authorization',ta)
+      .send({partnerId:oldPartner.id,kind:'renewal',planTo:planKey});
+    assert.equal(previewRes.status,200,JSON.stringify(previewRes.body));
+    assert.equal(previewRes.body.breakdown.lateFeeCents,100);
+    const payload={partnerId:oldPartner.id,kind:'renewal',planTo:planKey,method:'manual'};
+    assert.equal((await http.post('/api/v1/admin/workspace/finance/charges').set('Authorization',ta)
+      .send({...payload,previewFingerprint:'0'.repeat(64)})).status,409);
+    assert.equal((await http.post('/api/v1/admin/workspace/finance/charges').set('Authorization',ta)
+      .send({...payload,amountCents:1,previewFingerprint:previewRes.body.previewFingerprint})).status,400);
+    const added=await http.post('/api/v1/admin/workspace/finance/charges').set('Authorization',ta)
+      .send({...payload,previewFingerprint:previewRes.body.previewFingerprint});
+    assert.equal(added.status,201,JSON.stringify(added.body));
+    const [snapshot]=await db.sequelize.query('SELECT breakdown,amount_cents FROM admin_network_charges WHERE id=:id',
+      {replacements:{id:added.body.id}});
+    assert.equal(Number(snapshot[0].amount_cents),previewRes.body.amountCents);
+    assert.equal(snapshot[0].breakdown.totalCents,previewRes.body.amountCents);
+    const changed=await http.put('/api/v1/admin/workspace/finance/pricing/settings').set('Authorization',ta)
+      .send({lateFeePct:1});
+    assert.equal(changed.status,200,JSON.stringify(changed.body));
+    const [preserved]=await db.sequelize.query('SELECT breakdown FROM admin_network_charges WHERE id=:id',
+      {replacements:{id:added.body.id}});
+    assert.deepEqual(preserved[0].breakdown,snapshot[0].breakdown);
+    await assert.rejects(db.sequelize.query(`UPDATE admin_network_charges SET breakdown='{}'::jsonb WHERE id=:id`,
+      {replacements:{id:added.body.id}}),/immutable_charge_breakdown/);
     const adminA=await http.get('/api/v1/admin/workspace/finance/charges').set('Authorization',ta);
     assert.equal(adminA.status,200,JSON.stringify(adminA.body));
     assert.ok(adminA.body.data.some(x=>x.id===ca));

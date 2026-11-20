@@ -3,6 +3,7 @@ import {loginContext, sessionContext, roleForContext, PORTAL_AUDIENCES} from "./
 import { defaultPortalAccount, findPortalAccount, listPortalAccounts, restoreOriginalPortalAccount } from "./portal-accounts.service.js";
 import {normalizeNetworkPermissions, normalizeNetworkLimits} from "../admin-workspaces/permissions.js";
 import {effectivePartnerStatus} from "../access/access.policy.js";
+import {isNetworkRenewalOnlyPartner, isNetworkPortalAccessible} from "../network-finance/renewal-only-access.js";
 import { disconnectAdminUser } from "../../realtime/socket.js";
 import { recordLogin } from "./login-history.service.js";
 import { Op } from "sequelize";
@@ -25,11 +26,12 @@ const publicUser = async (u, context = u.role === 'partner' ? 'partner' : 'admin
    (effectiveRole === 'partner' && u.role === 'admin' ?
      (u.permissionRoleId ? (custom?.baseRole==='partner' ? custom.permissions : []) : PERMISSIONS.partner) :
      (u.permissionRoleId ? (custom?.baseRole===effectiveRole?custom.permissions:[]) : PERMISSIONS[effectiveRole]||[]));
- const linkedPartner = partnerId ? await Partner.findByPk(partnerId, {attributes:['id','kind','status'],transaction}) : null;
+ const linkedPartner = partnerId ? await Partner.findByPk(partnerId, {attributes:['id','kind','status','endsAt','ownerAdminId'],transaction}) : null;
  return {id:u.id,name:u.name,email:u.email,role:effectiveRole,partnerId,
    portalAdmin:u.role==='admin' && context!=='admin', portalSelectionRequired:false,
    partnerKind:linkedPartner?.kind||null,permissionRoleId:effectiveRole==='partner' ? u.permissionRoleId : null,
-   permissions,delegatedPermissions:effectiveRole==='admin'?permissions:[],networkLimits:effectiveRole==='admin'?normalizeNetworkLimits(u.networkLimits):{}};
+   permissions,renewalOnly:context==='partner' && isNetworkRenewalOnlyPartner(linkedPartner),
+   delegatedPermissions:effectiveRole==='admin'?permissions:[],networkLimits:effectiveRole==='admin'?normalizeNetworkLimits(u.networkLimits):{}};
 };
 
 async function issue(user, meta, transaction, audience = user.role === 'partner' ? 'partner' : 'admin', selectedPartnerId = null) {
@@ -95,10 +97,10 @@ export async function login({ email, password, audience }, meta) {
     throw new AppError(409, 'ORIGINAL_PARTNER_LINK_REQUIRED',
       'Sua parceria original não está vinculada a este usuário. Solicite ao Superadmin a correção da conta operacional vinculada. Nenhuma nova conta foi criada.');
   }
-  const partner = user.role === 'admin' ? selected : (user.partnerId ? await Partner.findByPk(user.partnerId, {attributes:['id','kind','status','endsAt']}) : null);
+  const partner = user.role === 'admin' ? selected : (user.partnerId ? await Partner.findByPk(user.partnerId, {attributes:['id','kind','status','endsAt','ownerAdminId']}) : null);
   const context = user.role === 'admin' && PORTAL_AUDIENCES.includes(targetAudience)
     ? 'partner' : loginContext(user, targetAudience, partner?.kind);
-  if (!context || (targetAudience !== 'admin' && (!partner || effectivePartnerStatus(partner) !== 'active'))) {
+  if (!context || (targetAudience !== 'admin' && (!partner || !isNetworkPortalAccessible(partner,targetAudience)))) {
     await audit({ actor, action: 'auth.login', entityType: 'admin_user', entityId: user.id, result: 'failure', metadata: { reason: 'wrong_audience', audience: targetAudience } });
     await recordLogin(user, meta, 'failure', 'wrong_audience');
     throw new AppError(401, 'INVALID_CREDENTIALS', 'E-mail ou senha inválidos.');
@@ -127,9 +129,9 @@ export async function refresh(refreshToken, meta) {
       ? await findPortalAccount(user, audience, session.portalPartnerId, t) : null;
     if (user.role === 'admin' && PORTAL_AUDIENCES.includes(audience) && !selected)
       throw new AppError(401, 'ORIGINAL_PARTNER_LINK_REQUIRED', 'Entre novamente após vincular sua parceria original.');
-    const partner = user.role === 'admin' ? selected : (user.partnerId ? await Partner.findByPk(user.partnerId, {transaction:t,attributes:['id','kind','status','endsAt']}) : null);
-    if ((user.role === 'admin' && PORTAL_AUDIENCES.includes(audience) && session.portalPartnerId && (!selected || effectivePartnerStatus(selected) !== 'active')) ||
-        (user.role !== 'admin' && (!loginContext(user, audience, partner?.kind) || (audience !== 'admin' && effectivePartnerStatus(partner) !== 'active'))))
+    const partner = user.role === 'admin' ? selected : (user.partnerId ? await Partner.findByPk(user.partnerId, {transaction:t,attributes:['id','kind','status','endsAt','ownerAdminId']}) : null);
+    if ((user.role === 'admin' && PORTAL_AUDIENCES.includes(audience) && session.portalPartnerId && (!selected || !isNetworkPortalAccessible(selected,audience))) ||
+        (user.role !== 'admin' && (!loginContext(user, audience, partner?.kind) || (audience !== 'admin' && !isNetworkPortalAccessible(partner,audience)))))
       throw new AppError(401, 'INVALID_TOKEN', 'Acesso a este painel foi revogado.');
     return issue(user, meta, t, audience, selected?.id ?? null);
   });

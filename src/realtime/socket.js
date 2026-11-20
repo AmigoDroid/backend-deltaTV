@@ -188,6 +188,7 @@ export function attachRealtime(server) {
           const claims = verifyJwt(packet.token, "admin");
           const resolved=await resolveAdminClaims(claims);
           const user=resolved.user;
+          if (user.renewalOnly) {socket.close(1008,"Renewal only");return;}
           if (socket.readyState !== WebSocket.OPEN) return;
           peer = { socket, user: { id: user.id, role: user.role, partnerId: user.partnerId }, claims, impersonator:resolved.impersonator, tokenVersion: resolved.tokenVersion, sessionId: claims.sid || null, exp: claims.exp, alive: true, systemMetricsSubscribed: false };
           peers.add(peer); clearTimeout(timeout);

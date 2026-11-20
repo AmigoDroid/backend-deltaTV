@@ -1,6 +1,7 @@
 import {sessionContext, roleForContext, PORTAL_AUDIENCES} from "../modules/auth/role-context.js";
 import {findPortalAccount} from "../modules/auth/portal-accounts.service.js";
 import {effectivePartnerStatus} from "../modules/access/access.policy.js";
+import {isNetworkRenewalOnlyPartner, isNetworkPortalAccessible} from "../modules/network-finance/renewal-only-access.js";
 import {governanceAudit} from "../modules/superadmin/governance-audit.js";
 import {adminHasNetworkPermission, normalizeNetworkPermissions, normalizeNetworkLimits} from "../modules/admin-workspaces/permissions.js";
 import { Op } from "sequelize";
@@ -35,6 +36,7 @@ export async function resolveAdminClaims(payload) {
  let impersonator = null;
  let selectedPortalPartnerId = null;
  let portalAdmin = false;
+ let renewalOnly = false;
  if (payload.imp) {
   const grant = await ImpersonationGrant.findOne({where:{id:payload.imp,targetId:user.id,revokedAt:null,expiresAt:{[Op.gt]:new Date()}}});
   if(!grant || user.role !== "partner")throw new AppError(401,"INVALID_TOKEN","Impersonação encerrada.");
@@ -63,12 +65,13 @@ export async function resolveAdminClaims(payload) {
   if (actualContext === 'partner') {
     const partner = portalAdmin
       ? await findPortalAccount(user,session.audience,selectedPortalPartnerId)
-      : await Partner.findByPk(selectedPortalPartnerId,{attributes:['id','kind','status','endsAt']});
-    if(!partner || effectivePartnerStatus(partner) !== 'active' ||
+      : await Partner.findByPk(selectedPortalPartnerId,{attributes:['id','kind','status','endsAt','ownerAdminId']});
+    if(!partner || !isNetworkPortalAccessible(partner,session.audience) ||
        (session.audience === 'content_partner' && !['content','both'].includes(partner.kind)) ||
        (session.audience === 'partner' && portalAdmin && !['reseller','both'].includes(partner.kind)))
       throw new AppError(401,'INVALID_TOKEN','Conta operacional indisponível.');
   }
+  if (actualContext === 'partner') renewalOnly = isNetworkRenewalOnlyPartner(partner);
   payload.resolvedContext=actualContext;
  } else if (!payload.imp) {
    // Tokens antigos sem uma sessão não ganham privilégio de portal nem de Admin.
@@ -85,7 +88,7 @@ export async function resolveAdminClaims(payload) {
       (user.permissionRoleId ? (custom?.baseRole==='partner' ? custom.permissions : []) : PERMISSIONS.partner) :
       (user.permissionRoleId ? (custom?.baseRole===effectiveRole ? custom.permissions : []) : PERMISSIONS[effectiveRole] || []));
  return {user:{id:user.id,name:user.name,email:user.email,role:effectiveRole,partnerId:resolvedPartnerId,
-     portalAdmin, portalSelectionRequired:false,
+     portalAdmin, renewalOnly, portalSelectionRequired:false,
      permissionRoleId:effectiveRole==='partner'?user.permissionRoleId:null,permissions,delegatedPermissions,
      networkLimits:effectiveRole==="admin"?normalizeNetworkLimits(user.networkLimits):{}},impersonator,tokenVersion:user.tokenVersion};
 }
@@ -99,9 +102,19 @@ export async function authenticate(req, _res, next) {
   req.impersonator=resolved.impersonator;
   req.impersonationId=payload.imp || null;
   req.sessionId=payload.sid || null;
+  // Renovação: somente duas leituras de cobrança, sem side-effects nem acesso
+  // a recursos operacionais, telemetria, usuários ou APIs globais.
+  if (user.renewalOnly) {
+    const pathname = req.originalUrl.split('?')[0].replace(/\/+$/,'');
+    const allowed = req.method === 'GET' && [
+      '/api/v1/partner/network-charges',
+      '/api/v1/partner/network-charges/pricing',
+    ].includes(pathname);
+    if (!allowed) throw new AppError(403,'RENEWAL_ONLY','Contrato vencido: somente Meu plano e pagamentos estão disponíveis.');
+  }
   // Presença do portal: no máximo uma escrita por minuto por conta, compartilhada entre processos.
   // Falha de telemetria nunca deve derrubar uma requisição autenticada.
-  if (user.role === "partner") {
+  if (user.role === "partner" && !user.renewalOnly) {
     try {
       const cutoff = new Date(Date.now() - 60_000);
       await AdminUser.update({ lastActivityAt: new Date() }, { where: { id: user.id, [Op.or]: [{ lastActivityAt: null }, { lastActivityAt: { [Op.lt]: cutoff } }] } });

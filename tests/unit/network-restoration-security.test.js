@@ -31,12 +31,14 @@ test('Reativação da rede não força cancelado e não libera pagamento pendent
  assert.match(service,/if \(!rule\.from\.includes\(p\.status\) && !\(force && rule\.forceFrom\?\.includes\(p\.status\)\)\)/);
  assert.match(service,/where = ownerAdminId === undefined \? \{ id \} : \{ id, ownerAdminId \}/);
 });
-test('Portal Admin/Parceiro nega sessão expirada (effectivePartnerStatus), sem liberar Admin da rede',()=>{
+test('Portal expirado recebe somente renovação quando pertence à rede, sem liberar Admin',()=>{
  const auth=read('../../src/modules/auth/auth.service.js');
  const middleware=read('../../src/middleware/authenticate.js');
  const accounts=read('../../src/modules/auth/portal-accounts.service.js');
- assert.match(auth,/targetAudience !== 'admin' && \(!partner \|\| effectivePartnerStatus\(partner\) !== 'active'\)/);
- assert.match(auth,/session\.portalPartnerId && \(!selected \|\| effectivePartnerStatus\(selected\) !== 'active'\)/);
- assert.match(middleware,/if\(!partner \|\| effectivePartnerStatus\(partner\) !== 'active'/);
+ assert.match(auth,/targetAudience !== 'admin' && \(!partner \|\| !isNetworkPortalAccessible\(partner,targetAudience\)\)/);
+ assert.match(auth,/session\.portalPartnerId && \(!selected \|\| !isNetworkPortalAccessible\(selected,audience\)\)/);
+ assert.match(middleware,/if\(!partner \|\| !isNetworkPortalAccessible\(partner,session\.audience\)/);
+ assert.match(middleware,/if \(user\.renewalOnly\)/);
+ assert.match(middleware,/RENEWAL_ONLY/);
  assert.match(accounts,/attributes: \['id','name','kind','status','endsAt','ownerAdminId'\]/);
 });

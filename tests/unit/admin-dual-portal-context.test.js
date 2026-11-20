@@ -52,6 +52,7 @@ test('Migração preserva cadastro e só amplia a vinculação sob autorização
   assert.match(guard,/ADMIN_PORTAL_DENIED/);
   const auth=source('../../src/middleware/authenticate.js');
   assert.match(auth,/actualContext !== expectedContext/);
-  assert.match(auth,/effectivePartnerStatus\(partner\) !== 'active'/);
-  assert.match(auth,/attributes:\['id','kind','status','endsAt'\]/);
+  assert.match(auth,/isNetworkPortalAccessible\(partner,session\.audience\)/);
+  assert.match(auth,/renewalOnly/);
+  assert.match(auth,/attributes:\['id','kind','status','endsAt','ownerAdminId'\]/);
 });
