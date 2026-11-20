@@ -27,6 +27,8 @@ import { partnerStatusWhere } from "../partners/partner-status.query.js";
 import { SIGNUP_PENDING_REASON } from "../partners/reseller-signup.service.js";
 import {scopedPlan,checkPlanCaps,provisionNetworkAccount,lockNetworkOwner} from "./account-provisioning.js";
 import networkInviteAdminRoutes from "./network-invite-admin.routes.js";
+import { workspaceFinance } from "../network-finance/finance.routes.js";
+import {confirmPendingContractFromWorkspace} from "../network-finance/finance.service.js";
 import {partnerDeletionPreview,deletePartnerAsSuper} from "../admin-deletion.service.js";
 import {listPartnerTrash,restorePartnerFromTrash} from "../partner-trash.service.js";
 import {codeDeletionPreview,deleteCodeOperational,providerDeletionPreview,deleteProviderOperational} from "../providers/operational-deletion.service.js";
@@ -61,6 +63,7 @@ const requireScope = permission => (req, _res, next) => {
 const tenant = req => req.networkOwnerId;
 // Convites usam o mesmo escopo de sessão e as mesmas permissões do cadastro direto.
 router.use('/invitations',networkInviteAdminRoutes);
+router.use('/finance',workspaceFinance);
 const ident = z.object({ id: z.string().uuid() });
 const listQuery = z.object({ page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(20), q: z.string().trim().max(100).optional(),
@@ -465,27 +468,16 @@ router.post('/trash/:id/restore',validate({params:ident,
   res.json(await restorePartnerFromTrash(p.id,req.valid.body,actorOf(req),tenant(req)));
 });
 router.post('/partners/:id/confirm-payment',validate({params:ident,
- body:z.object({reference:z.string().trim().min(3).max(180)}).strict()}),async(req,res)=>{
+ body:z.object({reference:z.string().trim().min(5).max(160)}).strict()}),async(req,res)=>{
  if(!adminHasNetworkPermission(req.user,'network:billing:write'))
-    throw new AppError(403,'NETWORK_PERMISSION_DENIED','Confirmação exige permissão financeira.');
- const updated=await sequelize.transaction(async t=>{
-   const p=await ownedPartner(tenant(req),req.valid.params.id,t,true);
-   const perm=p.kind==='reseller'?'network:resellers:write':'network:partners:write';
-   if(!adminHasNetworkPermission(req.user,perm)||
-      (p.kind==='both'&&!adminHasNetworkPermission(req.user,'network:resellers:write')))
-    throw new AppError(403,'NETWORK_PERMISSION_DENIED','Sem permissão para ativar esta conta.');
-   if(p.statusReason!=='awaiting_payment'||p.status!=='suspended')
-     throw new AppError(409,'NO_PENDING_PAYMENT','Não existe pagamento pendente para este cadastro.');
-   const technical=await PartnerServicePlan.findByPk(p.id,{transaction:t});
-   const plan=await scopedPlan(tenant(req),technical?.tier,p.kind,t);
-   const today=new Date();
-   await p.update({status:'active',statusReason:null,startsAt:today,
-     endsAt:new Date(today.getTime()+plan.validityDays*86400_000)},{transaction:t});
-   await audit({actor:actorOf(req),action:'network.partner.payment_confirmed',entityType:'partner',entityId:p.id,
-     metadata:{reference:req.valid.body.reference,ownerAdminId:tenant(req),planKey:plan.key},transaction:t});
-   return p;
- });
- clearContractAccessCache();invalidatePlan(updated.id);res.json({id:updated.id,status:updated.status,effectiveStatus:effectivePartnerStatus(updated)});
+   throw new AppError(403,'NETWORK_PERMISSION_DENIED','Confirmação exige permissão financeira.');
+ const p=await ownedPartner(tenant(req),req.valid.params.id);
+ const perm=p.kind==='reseller'?'network:resellers:write':'network:partners:write';
+ if(!adminHasNetworkPermission(req.user,perm) ||
+    (p.kind==='both'&&!adminHasNetworkPermission(req.user,'network:resellers:write')))
+   throw new AppError(403,'NETWORK_PERMISSION_DENIED','Sem permissão para alterar esta conta.');
+ const result=await confirmPendingContractFromWorkspace(tenant(req),p.id,req.valid.body.reference,actorOf(req));
+ res.json({id:p.id,payment:result,effectiveStatus:result.applied?'active':effectivePartnerStatus(p)});
 });
 router.post("/partners/:id/users",validate({params:ident,body:account}),async(req,res)=>{
   const partner=await ownedPartner(tenant(req),req.valid.params.id);

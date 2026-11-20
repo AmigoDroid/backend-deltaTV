@@ -1,4 +1,5 @@
 import { AppError } from "../../shared/errors.js";
+import { partnerNetworkCharges } from "../network-finance/finance.routes.js";
 import { deleteScopedActivation, bulkScopedActivation } from "../admin-deletion.service.js";
 import {contentPortalAccessGuard} from "../partner-portal-sales/sales.service.js";
 import { networkResourceGuard, effectiveResources } from "../distribution/network.resources.js";
@@ -53,9 +54,10 @@ router.use(authenticate, requirePartnerRole, portalPermissionGate);
 // O contrato do Painel do Parceiro cobre também as ferramentas white-label servidas em /partner.
 // Sem contrato comercial registrado, as parcerias legadas não mudam de comportamento.
 router.use(async(req,_res,next)=>{
-  if(!(req.method==="GET" && req.path==="/me"))await contentPortalAccessGuard(req.user.partnerId);
+  if(!(req.method==="GET" && (req.path==="/me" || req.path.startsWith("/network-charges"))))await contentPortalAccessGuard(req.user.partnerId);
   next();
 });
+router.use("/network-charges",partnerNetworkCharges);
 router.use(networkResourceGuard);
 router.use("/notifications", partnerNotificationRoutes);
 router.use("/help", partnerHelpRoutes);

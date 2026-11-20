@@ -31,6 +31,9 @@ test('convite é limitado à rede e exige permissão ainda válida no aceite',()
 test('pagamento de plano pago exige confirmação auditada e não libera automaticamente',()=>{
  const s=src('modules/admin-workspaces/workspace.routes.js');
  assert.match(s,/PAYMENT_CONFIRMATION_REQUIRED/);
- assert.match(s,/network\.partner\.payment_confirmed/);
+ assert.match(s,/confirmPendingContractFromWorkspace/);
+ const ledger=src('modules/network-finance/finance.service.js');
+ assert.match(ledger,/network\.finance\.charge\.paid/);
+ assert.match(ledger,/method:'manual'/);
  assert.match(s,/network:billing:write/);
 });

@@ -129,7 +129,7 @@ export const requirePartnerRole = (req, _res, next) => {
 export function portalPermissionGate(req,_res,next){
  if(req.method==='GET'&&req.path==='/me')return next();
  const first=req.path.split('/').filter(Boolean)[0]||'dashboard';
- const aliases={'me':'dashboard','overview':'dashboard','summary':'dashboard','server-monitor':'monitor','servers':'providers','service-plan':'dashboard','commercial':'commerce','portal-sales':'network','credit-ledger':'credits','downloads':'downloads','app-downloads':'downloads','mac':'devices','license-activation':'licenses','payments':'billing','invoices':'billing','quality':'monitor'};
+ const aliases={'me':'dashboard','overview':'dashboard','summary':'dashboard','server-monitor':'monitor','servers':'providers','service-plan':'dashboard','commercial':'commerce','portal-sales':'network','credit-ledger':'credits','downloads':'downloads','app-downloads':'downloads','mac':'devices','license-activation':'licenses','payments':'billing','invoices':'billing','network-charges':'billing','quality':'monitor'};
  const area=aliases[first]||first, action=['GET','HEAD','OPTIONS'].includes(req.method)?'read':'write';
  if(!can(req.user,`partner:${area}:${action}`))throw new AppError(403,'FORBIDDEN','Seu papel não permite esta ação no portal.');next();
 }

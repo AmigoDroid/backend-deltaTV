@@ -9,6 +9,7 @@ export const NETWORK_PERMISSIONS = Object.freeze([
   "network:members:read", "network:members:write",
   "network:resources:read", "network:resources:write", "network:devices:read", "network:devices:write",
   "network:billing:read", "network:billing:write",
+  "network:gateways:read", "network:gateways:write",
   "network:audit:read",
 ]);
 export function normalizeNetworkPermissions(value) {

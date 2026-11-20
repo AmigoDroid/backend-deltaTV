@@ -1,5 +1,6 @@
 import adminPaymentGateways from "./payment-gateways/admin.routes.js";
 import workspaces from "./admin-workspaces/workspace.routes.js";
+import { superadminFinance } from "./network-finance/finance.routes.js";
 import { AppError } from "../shared/errors.js";
 import servicePackages from "./service-packages/package.routes.js";
 import globalConfig from "./platform-config/config.routes.js";
@@ -47,6 +48,7 @@ router.use((req, _res, next) => {
   next();
 });
 router.use("/workspace", workspaces);
+router.use("/finance-networks",superadminFinance);
 router.use("/payment-gateways",adminPaymentGateways);
 router.use("/service-packages",servicePackages);
 router.use("/global-config",globalConfig);
