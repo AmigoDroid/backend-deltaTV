@@ -70,8 +70,9 @@ export async function resolveAdminClaims(payload) {
        (session.audience === 'content_partner' && !['content','both'].includes(partner.kind)) ||
        (session.audience === 'partner' && portalAdmin && !['reseller','both'].includes(partner.kind)))
       throw new AppError(401,'INVALID_TOKEN','Conta operacional indisponível.');
+    // Usa a parceria já validada no mesmo escopo léxico, sem ReferenceError.
+    renewalOnly = isNetworkRenewalOnlyPartner(partner);
   }
-  if (actualContext === 'partner') renewalOnly = isNetworkRenewalOnlyPartner(partner);
   payload.resolvedContext=actualContext;
  } else if (!payload.imp) {
    // Tokens antigos sem uma sessão não ganham privilégio de portal nem de Admin.
