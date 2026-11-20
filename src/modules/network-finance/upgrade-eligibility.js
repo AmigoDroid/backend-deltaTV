@@ -1,24 +1,10 @@
 import { createHash } from 'node:crypto';
-/** Não confundir ordem de exibição com nível do plano: aumento real de preço e benefícios preservados. */
+/** Um plano é upgrade quando custa mais que o plano atual, sem considerar ordem ou recursos. */
 export function isSelfServiceUpgrade(current, target) {
   if (!current || !target || current.key === target.key || !target.active || target.deletedAt || target.hiddenFromNetwork) return false;
-  if (!Number.isSafeInteger(current.monthlyPriceCents) || !Number.isSafeInteger(target.monthlyPriceCents) ||
-      target.monthlyPriceCents <= current.monthlyPriceCents) return false;
-  // null representa "sem limite". Nenhum limite ou validade pode diminuir.
-  for (const key of ['maxServers', 'activationLimit']) {
-    const before = current[key] == null ? Infinity : current[key];
-    const after = target[key] == null ? Infinity : target[key];
-    if (!Number.isFinite(before) && Number.isFinite(after) || after < before) return false;
-  }
-  if (target.validityDays < current.validityDays) return false;
-  for (const key of ['autoFailover', 'autoPriority', 'emailAlerts', 'detailedHistory']) {
-    if (current[key] && !target[key]) return false;
-  }
-  // Permissões comerciais/financeiras exigem autorização do Master, mesmo em planos mais caros.
-  for (const key of ['canResellPanel', 'canCreateSubmasters', 'canViewFinance', 'canManageGateways']) {
-    if (Boolean(current[key]) !== Boolean(target[key])) return false;
-  }
-  return true;
+  return Number.isSafeInteger(current.monthlyPriceCents) &&
+    Number.isSafeInteger(target.monthlyPriceCents) &&
+    target.monthlyPriceCents > current.monthlyPriceCents;
 }
 
 /** Contratos personalizados não devem ser sobrescritos por autoatendimento. */

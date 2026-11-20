@@ -9,24 +9,27 @@ const starter={key:'starter',active:true,deletedAt:null,hiddenFromNetwork:false,
   canViewFinance:false,canManageGateways:false};
 const premium={...starter,key:'premium',monthlyPriceCents:8000,maxServers:4,activationLimit:20,autoFailover:true};
 const src=path=>readFileSync(new URL(`../../src/${path}`,import.meta.url),'utf8');
-test('somente plano mais caro e sem redução dos benefícios é upgrade',()=>{
+test('upgrade depende apenas do preço superior e da publicação do plano',()=>{
  assert.equal(isSelfServiceUpgrade(starter,premium),true);
  assert.equal(isSelfServiceUpgrade(premium,starter),false);
  assert.equal(isSelfServiceUpgrade(starter,{...premium,monthlyPriceCents:5000}),false);
- assert.equal(isSelfServiceUpgrade(starter,{...premium,maxServers:1}),false);
- assert.equal(isSelfServiceUpgrade(starter,{...premium,activationLimit:9}),false);
- assert.equal(isSelfServiceUpgrade(starter,{...premium,validityDays:20}),false);
+ assert.equal(isSelfServiceUpgrade(starter,{...premium,monthlyPriceCents:4999}),false);
+ assert.equal(isSelfServiceUpgrade(starter,{...premium,maxServers:1}),true);
+ assert.equal(isSelfServiceUpgrade(starter,{...premium,activationLimit:9}),true);
+ assert.equal(isSelfServiceUpgrade(starter,{...premium,validityDays:20}),true);
  assert.equal(isSelfServiceUpgrade(starter,{...premium,hiddenFromNetwork:true}),false);
  assert.equal(isSelfServiceUpgrade(starter,{...premium,active:false}),false);
  assert.equal(isSelfServiceUpgrade(starter,{...premium,deletedAt:new Date()}),false);
  assert.equal(isSelfServiceUpgrade(starter,{...starter}),false);
 });
-test('sem limite não pode ser convertido em limite; plano superior pode ampliar a capacidade',()=>{
- assert.equal(isSelfServiceUpgrade({...starter,maxServers:null},premium),false);
- assert.equal(isSelfServiceUpgrade(starter,{...premium,maxServers:null,activationLimit:null}),true);
- assert.equal(isSelfServiceUpgrade({...starter,autoFailover:true},{...premium,autoFailover:false}),false);
- assert.equal(isSelfServiceUpgrade({...starter,canResellPanel:true},{...premium,canResellPanel:false}),false);
- assert.equal(isSelfServiceUpgrade(starter,{...premium,canResellPanel:true}),false);
+test('plano de R$ 15.000 é upgrade por preço, mesmo com diferenças de recursos',()=>{
+ const target={...premium,key:'upgrade-15000',monthlyPriceCents:1500000,maxServers:1,
+  activationLimit:5,validityDays:15,autoFailover:false,canResellPanel:true};
+ assert.equal(isSelfServiceUpgrade(starter,target),true);
+ assert.equal(isSelfServiceUpgrade({...starter,maxServers:null,autoFailover:true,canResellPanel:true},target),true);
+ assert.equal(isSelfServiceUpgrade(starter,{...target,monthlyPriceCents:NaN}),false);
+ assert.equal(isSelfServiceUpgrade(starter,{...target,monthlyPriceCents:1500000.5}),false);
+ assert.equal(isSelfServiceUpgrade({...starter,monthlyPriceCents:1500000},target),false);
 });
 test('mudança de preço ou recurso invalida condições congeladas da cobrança',()=>{
  const digest=upgradePlanSignature(premium);
