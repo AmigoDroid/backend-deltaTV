@@ -749,22 +749,26 @@ r.patch(
             transaction,
             lock: transaction.LOCK.UPDATE,
           });
-          for (const a of activations) {
-            const sessions = await DeviceSession.findAll({
-              where: { activationId: a.id, revokedAt: null },
-              transaction,
-              lock: transaction.LOCK.UPDATE,
-            });
-            const ids = sessionsToRevoke(
-              sessions.map((s) => s.toJSON()),
-              b.maxSessionsPerActivation + 1,
-            );
-            if (ids.length)
-              await DeviceSession.update(
-                { revokedAt: new Date() },
-                { where: { id: { [Op.in]: ids } }, transaction },
-              );
+          // Uma leitura para as ativações desta licença; o bloqueio de linhas e a
+          // transação continuam protegendo a atualização contra edições concorrentes.
+          const sessions = activations.length ? await DeviceSession.findAll({
+            where: { activationId: { [Op.in]: activations.map(a => a.id) }, revokedAt: null },
+            transaction,
+            lock: transaction.LOCK.UPDATE,
+          }) : [];
+          const byActivation = new Map();
+          for (const session of sessions) {
+            const group = byActivation.get(session.activationId) || [];
+            group.push(session.toJSON());
+            byActivation.set(session.activationId, group);
           }
+          const ids = activations.flatMap(a => sessionsToRevoke(
+            byActivation.get(a.id) || [], b.maxSessionsPerActivation + 1,
+          ));
+          if (ids.length) await DeviceSession.update(
+            { revokedAt: new Date() },
+            { where: { id: { [Op.in]: ids } }, transaction },
+          );
         }
       }
       await l.update(changes, { transaction });
