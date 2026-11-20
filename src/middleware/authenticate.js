@@ -70,9 +70,8 @@ export async function resolveAdminClaims(payload) {
        (session.audience === 'content_partner' && !['content','both'].includes(partner.kind)) ||
        (session.audience === 'partner' && portalAdmin && !['reseller','both'].includes(partner.kind)))
       throw new AppError(401,'INVALID_TOKEN','Conta operacional indisponível.');
-    // Usa a parceria já validada no mesmo escopo léxico, sem ReferenceError.
-    renewalOnly = isNetworkRenewalOnlyPartner(partner);
   }
+  if (actualContext === 'partner') renewalOnly = isNetworkRenewalOnlyPartner(partner);
   payload.resolvedContext=actualContext;
  } else if (!payload.imp) {
    // Tokens antigos sem uma sessão não ganham privilégio de portal nem de Admin.
@@ -110,6 +109,8 @@ export async function authenticate(req, _res, next) {
     const allowed = req.method === 'GET' && [
       '/api/v1/partner/network-charges',
       '/api/v1/partner/network-charges/pricing',
+      '/api/v1/partner/network-charges/master',
+      '/api/v1/partner/network-charges/upgrade-options',
     ].includes(pathname);
     if (!allowed) throw new AppError(403,'RENEWAL_ONLY','Contrato vencido: somente Meu plano e pagamentos estão disponíveis.');
   }

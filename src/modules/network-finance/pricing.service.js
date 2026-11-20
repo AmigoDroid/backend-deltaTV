@@ -4,6 +4,7 @@ import { sequelize, Partner, PartnerServicePlan, ServicePlanCatalog } from '../.
 import { effectivePartnerStatus } from '../access/access.policy.js';
 import { audit } from '../../shared/audit.js';
 import {assertPublicPlan,isHiddenNetworkPlan} from '../service-plans/network-plan-visibility.js';
+import { isSelfServiceUpgrade, hasCustomPlanOverrides, upgradePlanSignature } from './upgrade-eligibility.js';
 import { AppError } from '../../shared/errors.js';
 import { calculateChargePricing, DEFAULT_CAPS, DEFAULT_SETTINGS, localDate, validateSettings } from './charge-pricing.js';
 const sql=(statement,replacements={},transaction)=>sequelize.query(statement,{type:QueryTypes.SELECT,replacements,...(transaction?{transaction}:{})});
@@ -66,13 +67,21 @@ export async function quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDi
    ServicePlanCatalog.findOne({where:{key:planTo,ownerAdminId:adminId,active:true,deletedAt:null},transaction}),
    PartnerServicePlan.findByPk(partnerId,{transaction}),getSettings(adminId,transaction),
  ]);
- if(source==='partner')assertPublicPlan(plan);
- if(!plan||(plan.audience!=='both'&&plan.audience!==partner.kind))fail(422,'PLAN_NOT_IN_NETWORK','Plano incompatível ou fora desta rede.');
+ if(source==='partner'){
+   if(kind==='upgrade'&&effectivePartnerStatus(partner,now)!=='active')
+     fail(403,'SELF_UPGRADE_UNAVAILABLE','Para alterar um contrato indisponível, fale com seu Master.');
+   assertPublicPlan(plan);
+ }
+ if(!plan)fail(422,'PLAN_NOT_IN_NETWORK','Plano indisponível ou fora desta rede.');
  if(kind==='renewal'&&current?.tier&&current.tier!==planTo)fail(422,'PLAN_MISMATCH','Renovação exige o plano atual.');
  if(kind==='upgrade'&&current?.tier===planTo)fail(422,'NOT_AN_UPGRADE','Selecione outro plano.');
  if(!Number.isInteger(plan.monthlyPriceCents)||plan.monthlyPriceCents<=0)fail(422,'FREE_PLAN','Plano gratuito não gera cobrança.');
  const old= current?.tier? await ServicePlanCatalog.findOne({where:{key:current.tier,ownerAdminId:adminId},transaction}):null;
  if(kind==='upgrade'&&!old)fail(422,'CURRENT_PLAN_MISSING','Não foi possível calcular a base proporcional sem o plano antigo.');
+ if(source==='partner'&&kind==='upgrade'&&hasCustomPlanOverrides(current,old))
+   fail(409,'CUSTOM_PLAN_REQUIRES_MASTER','Seu contrato possui condições personalizadas. Solicite o upgrade ao Master.');
+ if(source==='partner'&&kind==='upgrade'&&!isSelfServiceUpgrade(old,plan))
+   fail(422,'DOWNGRADE_FORBIDDEN','Somente upgrade para plano superior é permitido. Para mudar para um plano inferior, fale com seu Master.');
  const manual=manualDiscount?{...manualDiscount,actorId:actor?.id||null}:null;
  const forgiven=waiver?{...waiver,actorId:actor?.id||null}:null;
  const effective=effectivePartnerStatus(partner,now);
@@ -81,6 +90,7 @@ export async function quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDi
    validityDays:plan.validityDays,endsAt:partner.endsAt,effectiveStatus:effective,planKey:planTo,
    now,settings,caps,manual,waiver:forgiven});}
  catch(e){fail(422,'INVALID_CHARGE_PRICING',e.message)}
+ if(source==='partner'&&kind==='upgrade'){breakdown.selfServiceUpgrade=true;breakdown.upgradePlanSignature=upgradePlanSignature(plan);}
  const stable={...breakdown};delete stable.chargedAt;
  const previewFingerprint=fingerprint({partnerId,kind,planTo,endsAt:partner.endsAt?.toISOString?.()||String(partner.endsAt),
    status:partner.status,day:localDate(now),breakdown:stable});
@@ -98,7 +108,7 @@ export async function partnerPricingInfo(partnerId){
  const {settings,caps}=await getSettings(partner.ownerAdminId);
  const currentCatalog=await ServicePlanCatalog.findOne({where:{key:current.tier,ownerAdminId:partner.ownerAdminId},attributes:['name','hiddenFromNetwork','active']});
  if(isHiddenNetworkPlan(currentCatalog))return {planName:currentCatalog.name,renewalAvailable:false,
-   reason:'Plano concedido pela administração. A renovação é realizada apenas pelo administrador.',
+   reason:'Plano concedido pelo Master. A renovação é realizada diretamente com ele.',
    conditions:conditionsText({settings,caps})};
  const quote=await quoteNetworkCharge(partner.ownerAdminId,{partnerId,kind:'renewal',planTo:current.tier}, {},{source:'partner'});
  // A data da campanha não é necessariamente o próprio vencimento: um mínimo
@@ -113,4 +123,28 @@ export async function partnerPricingInfo(partnerId){
    lateFeeCents:b.lateFeeCents,interestCents:b.interestCents,
    daysLate:b.daysLate,totalCents:b.totalCents},conditions:conditionsText({settings,caps}),
    earlyDiscountDeadline};
+}
+
+/** Catálogo público, filtrado pelo proprietário e pela regra de upgrade no servidor. */
+export async function partnerUpgradeOptions(partnerId) {
+ const partner=await Partner.findByPk(partnerId,{attributes:['id','ownerAdminId','status','endsAt']});
+ if(!partner?.ownerAdminId)return {current:null,plans:[],available:false};
+ const service=await PartnerServicePlan.findByPk(partnerId);
+ if(!service?.tier)return {current:null,plans:[],available:false};
+ const [current,publicPlans]=await Promise.all([
+  ServicePlanCatalog.findOne({where:{key:service.tier,ownerAdminId:partner.ownerAdminId}}),
+  ServicePlanCatalog.findAll({where:{ownerAdminId:partner.ownerAdminId,active:true,deletedAt:null,hiddenFromNetwork:false},order:[['monthlyPriceCents','ASC'],['name','ASC']]})
+ ]);
+ if(!current)return {current:null,plans:[],available:false};
+ const present=p=>({key:p.key,name:p.name,description:p.description,monthlyPriceCents:p.monthlyPriceCents,
+  maxServers:p.maxServers,activationLimit:p.activationLimit,validityDays:p.validityDays,
+  autoFailover:p.autoFailover,autoPriority:p.autoPriority,emailAlerts:p.emailAlerts,detailedHistory:p.detailedHistory});
+ const available=effectivePartnerStatus(partner)==='active'&&!hasCustomPlanOverrides(service,current);
+ return {current:present(current),plans:available?publicPlans.filter(p=>isSelfServiceUpgrade(current,p)).map(present):[],available};
+}
+
+export async function quotePartnerUpgrade(partnerId,planTo) {
+ const partner=await Partner.findByPk(partnerId,{attributes:['ownerAdminId']});
+ if(!partner?.ownerAdminId)fail(404,'NETWORK_MISSING','Nenhuma rede de Master vinculada.');
+ return quoteNetworkCharge(partner.ownerAdminId,{partnerId,kind:'upgrade',planTo},{},{source:'partner'});
 }
