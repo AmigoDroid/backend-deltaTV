@@ -18,7 +18,7 @@ test('ofertas públicas pertencem somente ao Master do parceiro e excluem planos
 test('catálogo retorna todos os planos públicos, mas só oferece upgrade permitido',()=>{
  assert.match(fn,/plans:publicPlans\.map\(p=>/);
  assert.match(fn,/isCurrent:p\.key===current\?\.key/);
- assert.match(fn,/canUpgrade:available&&isSelfServiceUpgrade\(current,p\)/);
+ assert.match(fn,/canUpgrade:available&&isSelfServiceUpgrade\(baseline,p\)/);
  assert.equal(isSelfServiceUpgrade(base,{...base,key:'higher',monthlyPriceCents:7500,maxServers:4}),true);
  assert.equal(isSelfServiceUpgrade(base,{...base,key:'lower',monthlyPriceCents:3000}),false);
  assert.equal(isSelfServiceUpgrade(base,{...base,key:'hidden',hiddenFromNetwork:true,monthlyPriceCents:7500}),false);
@@ -26,7 +26,7 @@ test('catálogo retorna todos os planos públicos, mas só oferece upgrade permi
 
 test('não confunde recursos do plano com os limites e preços da DeltaTV central',()=>{
  assert.match(fn,/terms\?\.mode!=='credits'/);
- assert.match(fn,/contractPriceCents:partner\.billingModel==='fixed'/);
+ assert.match(fn,/contractPriceCents:baseline\.monthlyPriceCents/);
  assert.match(fn,/canResellPanel:p\.canResellPanel/);
  assert.match(fn,/canManageGateways:p\.canManageGateways/);
  assert.match(fn,/emailAlerts:p\.emailAlerts/);

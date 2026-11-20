@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { pixExpiry,requiredSettlementCents } from './charge-pricing.js';
 import { quoteNetworkCharge } from './pricing.service.js';
-import { isSelfServiceUpgrade, hasCustomPlanOverrides, upgradePlanSignature } from './upgrade-eligibility.js';
+import { isSelfServiceUpgrade, upgradePriceBaseline, upgradePlanSignature } from './upgrade-eligibility.js';
 import { oneOffQuote } from './one-off.js';
 import { verifyNetworkPaymentMatch, infinitePayWebhookReference } from './policy.js';
 import { QueryTypes, Op } from 'sequelize';
@@ -240,10 +240,13 @@ async function settleCharge(id,verify,actor) {
       ? await Activation.count({where:{partnerId:partner.id,status:{[Op.ne]:'revoked'}},transaction:t}) : 0;
     const original=charge.breakdown?.selfServiceUpgrade===true && current?.tier
       ? await ServicePlanCatalog.findOne({where:{key:current.tier,ownerAdminId:charge.owner_admin_id},transaction:t}) : null;
+    const baseline=charge.breakdown?.selfServiceUpgrade===true
+      ? upgradePriceBaseline(partner,current,original) : null;
     const blocked=charge.kind==='upgrade' && (
       (terms?.mode==='credits') || (plan?.activationLimit!=null && used>plan.activationLimit) ||
-      (charge.breakdown?.selfServiceUpgrade===true && (hasCustomPlanOverrides(current,original) ||
-        !isSelfServiceUpgrade(original,plan) ||
+      (charge.breakdown?.selfServiceUpgrade===true && (
+        !isSelfServiceUpgrade(baseline,plan) ||
+        baseline.monthlyPriceCents!==charge.breakdown.oldPlanPriceCents ||
         charge.breakdown.upgradePlanSignature!==upgradePlanSignature(plan))));
     const nextStatus=(stale||blocked)?'needs_review':'paid';
     await query(`UPDATE admin_network_charges SET status=:status,paid_at=now(),transaction_nsu=:transaction,

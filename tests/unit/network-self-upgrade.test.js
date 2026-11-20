@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
-import {isSelfServiceUpgrade,hasCustomPlanOverrides,upgradePlanSignature} from '../../src/modules/network-finance/upgrade-eligibility.js';
+import {isSelfServiceUpgrade,hasCustomPlanOverrides,upgradePlanSignature,upgradePriceBaseline} from '../../src/modules/network-finance/upgrade-eligibility.js';
 
 const starter={key:'starter',active:true,deletedAt:null,hiddenFromNetwork:false,monthlyPriceCents:5000,
   maxServers:2,activationLimit:10,validityDays:30,autoFailover:false,autoPriority:false,
@@ -63,4 +63,35 @@ test('personalizações de recursos obrigam contato com o Master',()=>{
  assert.equal(hasCustomPlanOverrides({maxServersOverride:null,autoFailoverOverride:null},starter),false);
  assert.equal(hasCustomPlanOverrides({maxServersOverride:10},starter),true);
  assert.equal(hasCustomPlanOverrides({autoFailoverOverride:true},starter),true);
+});
+
+test('contrato ilimitado gratuito, mesmo legado sem catálogo do Master, pode comprar plano de R$ 16.000',()=>{
+ const contract={billingModel:'fixed',monthlyFeeCents:0};
+ const assignment={tier:'partner_professional',maxServersOverride:null};
+ const base=upgradePriceBaseline(contract,assignment,null);
+ const paid={...premium,key:'ilimitado-16000',monthlyPriceCents:1600000,maxServers:null,activationLimit:null};
+ assert.equal(base.monthlyPriceCents,0);
+ assert.equal(base.key,assignment.tier);
+ assert.equal(isSelfServiceUpgrade(base,paid),true);
+ assert.equal(isSelfServiceUpgrade(base,{...paid,monthlyPriceCents:0}),false);
+ assert.equal(isSelfServiceUpgrade(base,{...paid,hiddenFromNetwork:true}),false);
+ // O preço efetivamente contratado, não o preço de tabela, decide o upgrade.
+ assert.equal(upgradePriceBaseline(contract,assignment,{...premium,monthlyPriceCents:2000000}).monthlyPriceCents,0);
+ assert.equal(isSelfServiceUpgrade(upgradePriceBaseline(contract,assignment,{...premium,monthlyPriceCents:2000000}),paid),true);
+});
+test('contrato pago legado sem catálogo não tem preço confiável: não liberar cobrança',()=>{
+ assert.equal(upgradePriceBaseline({billingModel:'fixed',monthlyFeeCents:5000},{tier:'legacy'},null),null);
+ assert.equal(upgradePriceBaseline({billingModel:'credits',monthlyFeeCents:0},{tier:'legacy'},null),null);
+ assert.equal(upgradePriceBaseline({billingModel:'fixed',monthlyFeeCents:0},null,null).monthlyPriceCents,0);
+});
+test('catálogo, prévia e liquidação usam a mesma base gratuita e preservam validação do pagamento',()=>{
+ const pricing=src('modules/network-finance/pricing.service.js');
+ const settlement=src('modules/network-finance/finance.service.js');
+ assert.match(pricing,/const baseline=upgradePriceBaseline\(partner,service,current\)/);
+ assert.match(pricing,/const baseline=kind==='upgrade'\?upgradePriceBaseline\(partner,current,old\)/);
+ assert.match(pricing,/oldPlanPriceCents:kind==='upgrade'\?baseline\.monthlyPriceCents/);
+ assert.match(settlement,/upgradePriceBaseline\(partner,current,original\)/);
+ assert.match(settlement,/baseline\.monthlyPriceCents!==charge\.breakdown\.oldPlanPriceCents/);
+ assert.match(settlement,/upgradePlanSignature!==upgradePlanSignature/);
+ assert.match(settlement,/PROVIDER_CONFIRMATION_REQUIRED/);
 });

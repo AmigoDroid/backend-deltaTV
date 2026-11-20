@@ -7,6 +7,16 @@ export function isSelfServiceUpgrade(current, target) {
     target.monthlyPriceCents > current.monthlyPriceCents;
 }
 
+/** Compara o valor efetivo do contrato. Contas gratuitas legadas podem não ter catálogo do Master. */
+export function upgradePriceBaseline(partner, assignment, catalog) {
+  const contractPrice=partner?.billingModel==='fixed' && Number.isSafeInteger(partner.monthlyFeeCents) && partner.monthlyFeeCents>=0
+    ? partner.monthlyFeeCents : null;
+  if (catalog) return {key:catalog.key,monthlyPriceCents:contractPrice??catalog.monthlyPriceCents};
+  if (contractPrice===0) return {key:assignment?.tier||'',name:'Plano gratuito atual',
+    description:'Contrato gratuito já existente',monthlyPriceCents:0};
+  return null;
+}
+
 /** Contratos personalizados não devem ser sobrescritos por autoatendimento. */
 export function hasCustomPlanOverrides(assignment, catalog) {
  if (!assignment || !catalog) return true;

@@ -4,7 +4,7 @@ import { sequelize, Partner, PartnerServicePlan, ServicePlanCatalog, ContentPart
 import { effectivePartnerStatus } from '../access/access.policy.js';
 import { audit } from '../../shared/audit.js';
 import {assertPublicPlan,isHiddenNetworkPlan} from '../service-plans/network-plan-visibility.js';
-import { isSelfServiceUpgrade, hasCustomPlanOverrides, upgradePlanSignature } from './upgrade-eligibility.js';
+import { isSelfServiceUpgrade, upgradePriceBaseline, upgradePlanSignature } from './upgrade-eligibility.js';
 import { AppError } from '../../shared/errors.js';
 import { calculateChargePricing, DEFAULT_CAPS, DEFAULT_SETTINGS, localDate, validateSettings } from './charge-pricing.js';
 const sql=(statement,replacements={},transaction)=>sequelize.query(statement,{type:QueryTypes.SELECT,replacements,...(transaction?{transaction}:{})});
@@ -77,20 +77,19 @@ export async function quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDi
  if(kind==='upgrade'&&current?.tier===planTo)fail(422,'NOT_AN_UPGRADE','Selecione outro plano.');
  if(!Number.isInteger(plan.monthlyPriceCents)||plan.monthlyPriceCents<=0)fail(422,'FREE_PLAN','Plano gratuito não gera cobrança.');
  const old= current?.tier? await ServicePlanCatalog.findOne({where:{key:current.tier,ownerAdminId:adminId},transaction}):null;
- if(kind==='upgrade'&&!old)fail(422,'CURRENT_PLAN_MISSING','Não foi possível calcular a base proporcional sem o plano antigo.');
+ const baseline=kind==='upgrade'?upgradePriceBaseline(partner,current,old):null;
+ if(kind==='upgrade'&&!baseline)fail(422,'CURRENT_PLAN_MISSING','Não foi possível identificar o preço do contrato atual. Fale com seu Master.');
  if(source==='partner'&&kind==='upgrade'&&partner.kind!=='reseller') {
   const terms=await ContentPartnerTerms.findByPk(partnerId,{transaction});
   if(terms?.mode==='credits')fail(409,'CREDIT_PLAN_REQUIRES_MASTER','Contratos por créditos exigem mudança de plano pelo Master.');
  }
- if(source==='partner'&&kind==='upgrade'&&hasCustomPlanOverrides(current,old))
-   fail(409,'CUSTOM_PLAN_REQUIRES_MASTER','Seu contrato possui condições personalizadas. Solicite o upgrade ao Master.');
- if(source==='partner'&&kind==='upgrade'&&!isSelfServiceUpgrade(old,plan))
+ if(source==='partner'&&kind==='upgrade'&&!isSelfServiceUpgrade(baseline,plan))
    fail(422,'DOWNGRADE_FORBIDDEN','Somente upgrade para plano superior é permitido. Para mudar para um plano inferior, fale com seu Master.');
  const manual=manualDiscount?{...manualDiscount,actorId:actor?.id||null}:null;
  const forgiven=waiver?{...waiver,actorId:actor?.id||null}:null;
  const effective=effectivePartnerStatus(partner,now);
  let breakdown;
- try{breakdown=calculateChargePricing({kind,planPriceCents:plan.monthlyPriceCents,oldPlanPriceCents:partner.monthlyFeeCents||old?.monthlyPriceCents||0,
+ try{breakdown=calculateChargePricing({kind,planPriceCents:plan.monthlyPriceCents,oldPlanPriceCents:kind==='upgrade'?baseline.monthlyPriceCents:(partner.monthlyFeeCents??old?.monthlyPriceCents??0),
    validityDays:plan.validityDays,endsAt:partner.endsAt,effectiveStatus:effective,planKey:planTo,
    now,settings,caps,manual,waiver:forgiven});}
  catch(e){fail(422,'INVALID_CHARGE_PRICING',e.message)}
@@ -144,10 +143,14 @@ export async function partnerUpgradeOptions(partnerId) {
   autoFailover:p.autoFailover,autoPriority:p.autoPriority,emailAlerts:p.emailAlerts,detailedHistory:p.detailedHistory,
   canResellPanel:p.canResellPanel,canCreateSubmasters:p.canCreateSubmasters,
   canViewFinance:p.canViewFinance,canManageGateways:p.canManageGateways});
- const available=!!current&&effectivePartnerStatus(partner)==='active'&&terms?.mode!=='credits'&&!hasCustomPlanOverrides(service,current);
- return {current:current?{...present(current),contractPriceCents:partner.billingModel==='fixed'&&Number.isSafeInteger(partner.monthlyFeeCents)?partner.monthlyFeeCents:null}:null,
+ const baseline=upgradePriceBaseline(partner,service,current);
+ const available=!!baseline&&effectivePartnerStatus(partner)==='active'&&terms?.mode!=='credits';
+ const reason=!baseline?'Não foi possível identificar o preço atual deste contrato. Fale com seu Master.'
+  :effectivePartnerStatus(partner)!=='active'?'O contrato precisa estar ativo para fazer upgrade automático.'
+  :terms?.mode==='credits'?'Contratos por créditos exigem atendimento do Master.':null;
+ return {current:baseline?{...(current?present(current):baseline),contractPriceCents:baseline.monthlyPriceCents}:null,
   plans:publicPlans.map(p=>({...present(p),isCurrent:p.key===current?.key,
-   canUpgrade:available&&isSelfServiceUpgrade(current,p)})),available};
+   canUpgrade:available&&isSelfServiceUpgrade(baseline,p)})),available,reason};
 }
 
 export async function quotePartnerUpgrade(partnerId,planTo) {
