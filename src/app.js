@@ -82,7 +82,13 @@ export function createApp() {
         const segments = req.path.split("/").filter(Boolean);
         const area = completesPartnerInvite ? "partners" : segments[3] || "data";  // /api/v1/admin/devices => devices
         const topic = area === "app-downloads" ? "downloads" : area;
-        // Em operações administrativas, apenas administradores recebem atualização global.
+        // Ações de um Admin delegado nunca anunciam mudanças a outras redes.
+        // `networkOwnerId` vem da sessão, não de parâmetros da requisição.
+        if (req.user?.role === "admin" && area === "workspace") {
+          broadcastChange({ ownerAdminId: req.networkOwnerId, topic: segments[4] === "devices" ? "devices" : "workspace" });
+          return;
+        }
+        // Em operações da plataforma, apenas administradores recebem atualização global.
         // Parceiros só recebem eventos associados ao seu próprio cadastro.
         const modifiedPartner = !isPartner && area === "partners" &&
           /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(segments[4] || "") ? segments[4] : null;

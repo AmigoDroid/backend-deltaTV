@@ -33,6 +33,8 @@ export async function listActivations({ q, status, showRemoved = false, licenseI
   if (licenseId) where.licenseId = licenseId;
   const effectivePartner = scope.partnerId ?? partnerId;
   if (effectivePartner) where.partnerId = effectivePartner;
+  if (scope.deviceId) where.deviceId = scope.deviceId;
+  const scopedInclude = scope.ownerAdminId === undefined ? include : include.map(entry => entry.model === Partner ? { ...entry, required: true, where: { ownerAdminId: scope.ownerAdminId } } : entry);
   // Busca parcial por MAC, com ou sem ":" ("aabb" acha AA:BB:...). Texto sem nenhum caractere hexadecimal não acha nada.
   const and = [];
   if (q) and.push(sequelize.literal(macSearchSql("Activation", q, (v) => sequelize.escape(v))));
@@ -51,17 +53,22 @@ export async function listActivations({ q, status, showRemoved = false, licenseI
   }
   if (and.length) where[Op.and] = and;
   const { rows, count } = await Activation.findAndCountAll({
-    where, include, order: [["activatedAt", "DESC"]], ...pageOf({ page, pageSize }), distinct: true,
+    where, include: scopedInclude, order: [["activatedAt", "DESC"]], ...pageOf({ page, pageSize }), distinct: true,
   });
   // O modo efetivo (proxy/redirect) é informação de operação: só o painel admin recebe (o portal do parceiro vem com scope).
   return paged(rows.map((a) => serialize(a, { delivery: !scope.partnerId })), count, { page, pageSize });
 }
 
 /** Pagina aparelhos antes de carregar os vínculos: cada MAC ocupa exatamente uma linha. */
-export async function listDevices({ q, status, showRemoved = false, online, page, pageSize }) {
+export async function listDevices({ q, status, showRemoved = false, online, page, pageSize }, scope = {}) {
+  // Com a sessão delegada, até os contadores e parceiros de um MAC compartilhado
+  // devem considerar somente ativações pertencentes à rede.
+  const scoped = scope.ownerAdminId !== undefined;
+  const ownerCondition = !scoped ? "" : ` AND EXISTS (SELECT 1 FROM partners p WHERE p.id=a.partner_id AND p.owner_admin_id ${scope.ownerAdminId === null ? "IS NULL" : `= ${sequelize.escape(scope.ownerAdminId)}`})`;
   const conditions = [sequelize.literal('"Device"."mac" IS NOT NULL')];
   if (q) conditions.push(sequelize.literal(macSearchSql("Device", q, value => sequelize.escape(value))));
-  const exists = clause => `EXISTS (SELECT 1 FROM activations a WHERE a.device_id = "Device".id ${clause})`;
+  const exists = clause => `EXISTS (SELECT 1 FROM activations a WHERE a.device_id = "Device".id ${clause}${ownerCondition})`;
+  if (scoped) conditions.push(sequelize.literal(exists("")));
   if (!status && !showRemoved) conditions.push(sequelize.literal(exists("AND a.status IN ('active','blocked')")));
   if (status === "active") conditions.push(sequelize.literal(exists("AND a.status = 'active'")));
   if (status === "blocked") conditions.push(sequelize.literal(`NOT (${exists("AND a.status = 'active'")}) AND ${exists("AND a.status = 'blocked'")}`));
@@ -72,13 +79,16 @@ export async function listDevices({ q, status, showRemoved = false, online, page
     const recent = `"Device".last_seen_at >= now() - (${Math.trunc(env.presenceWindowSeconds)} * interval '1 second')`;
     conditions.push(sequelize.literal(online === "true" ? recent : `("Device".last_seen_at IS NULL OR NOT (${recent}))`));
   }
-  const total = state => `(SELECT count(*) FROM activations a WHERE a.device_id = "Device".id AND a.status = '${state}')`;
+  const restorable = `(SELECT count(*) FROM activations a WHERE a.device_id = "Device".id AND a.status = 'revoked'
+    AND (a.license_id IS NOT NULL OR a.credentials_enc IS NOT NULL OR a.recovery_credentials_enc IS NOT NULL)${ownerCondition})`;
+  const total = state => `(SELECT count(*) FROM activations a WHERE a.device_id = "Device".id AND a.status = '${state}'${ownerCondition})`;
   const { rows, count } = await Device.findAndCountAll({
     where: conditions.length ? { [Op.and]: conditions } : {},
-    attributes: { include: [[sequelize.literal(total("active")), "activeCount"], [sequelize.literal(total("blocked")), "blockedCount"], [sequelize.literal(total("revoked")), "removedCount"]] },
+    attributes: { include: [[sequelize.literal(total("active")), "activeCount"], [sequelize.literal(total("blocked")), "blockedCount"], [sequelize.literal(total("revoked")), "removedCount"], [sequelize.literal(restorable), "restorableCount"]] },
     order: [["updatedAt", "DESC"], ["id", "DESC"]], ...pageOf({ page, pageSize }),
   });
-  const activations = rows.length ? await Activation.findAll({ where: { deviceId: { [Op.in]: rows.map(d => d.id) }, status: { [Op.ne]: "revoked" } }, include, order: [["activatedAt", "DESC"]] }) : [];
+  const activations = rows.length ? await Activation.findAll({ where: { deviceId: { [Op.in]: rows.map(d => d.id) }, status: { [Op.ne]: "revoked" } },
+    include: scoped ? include.map(entry => entry.model === Partner ? { ...entry, required:true, where:{ ownerAdminId:scope.ownerAdminId } } : entry) : include, order: [["activatedAt", "DESC"]] }) : [];
   const grouped = new Map();
   for (const a of activations) { if (!grouped.has(a.deviceId)) grouped.set(a.deviceId, []); grouped.get(a.deviceId).push(a); }
   return paged(rows.map(device => {
@@ -86,9 +96,10 @@ export async function listDevices({ q, status, showRemoved = false, online, page
     const activeCount = Number(d.activeCount || 0), blockedCount = Number(d.blockedCount || 0), removedCount = Number(d.removedCount || 0);
     const current = grouped.get(d.id) || [];
     return { id: d.id, deviceId: d.id, mac: d.mac, platform: d.platform, ...presenceOf(d.id, d.lastSeenAt),
-      createdAt: d.createdAt, updatedAt: d.updatedAt, activeCount, blockedCount, removedCount, currentCount: activeCount + blockedCount,
+      createdAt: d.createdAt, updatedAt: d.updatedAt, activeCount, blockedCount, removedCount, currentCount: activeCount + blockedCount, restorableCount: Number(d.restorableCount || 0),
       status: activeCount ? "active" : blockedCount ? "blocked" : removedCount ? "revoked" : "unlinked",
-      live: current.map(a => liveForDevice(a.id)).find(x => x.playback) || current.map(a => liveForDevice(a.id)).find(x => x.online) || null,
+      // A telemetria da TV física pode ser compartilhada; nunca revelar IP/título de outra rede.
+      live: scoped ? null : (current.map(a => liveForDevice(a.id)).find(x => x.playback) || current.map(a => liveForDevice(a.id)).find(x => x.online) || null),
       partners: [...new Set(current.map(a => a.Partner?.name).filter(Boolean))],
     };
   }), count, { page, pageSize });
@@ -104,6 +115,7 @@ const serialize = (a, { delivery = false } = {}) => ({
   access: accessOf(a),
   id: a.id, deviceId: a.deviceId, live: liveForDevice(a.id), mac: a.mac, platform: a.Device?.platform ?? null, ...presenceOf(a.deviceId, a.Device?.lastSeenAt), status: a.status, statusReason: a.statusReason, blockedBy: a.blockedBy,
   activatedAt: a.activatedAt, revokedAt: a.revokedAt, claimPending: a.claimPending,
+  restorable: a.status === "revoked" && !!(a.licenseId || a.credentialsEnc || a.recoveryCredentialsEnc),
   licenseId: a.licenseId, partnerId: a.partnerId,
   license: a.License ? { id: a.License.id, status: a.License.status, expiresAt: a.License.expiresAt, codeLast4: a.License.codeLast4, isTrial: a.License.isTrial, customer: a.License.Customer ? { name: a.License.Customer.name, email: a.License.Customer.email } : null } : null,
   // Licença vendida pelo código do revendedor (estoque): o vencimento é dela. remainingDays = dias inteiros que ainda restam.
@@ -118,27 +130,31 @@ const serialize = (a, { delivery = false } = {}) => ({
 export async function getActivation(id, scope = {}) {
   const where = { id };
   if (scope.partnerId) where.partnerId = scope.partnerId;
-  const a = await Activation.findOne({ where, include });
+  const a = await Activation.findOne({ where, include: scope.ownerAdminId === undefined ? include : include.map(entry => entry.model === Partner ? { ...entry, required:true, where:{ownerAdminId:scope.ownerAdminId} } : entry) });
   if (!a) throw notFound("Ativação"); // 404 também para ativações de outro parceiro (sem vazar existência)
   const { decision } = await checkActivation(a.id);
   return { ...serialize(a, { delivery: !scope.partnerId }), access: { allowed: decision.allowed, code: decision.code } };
 }
 
 // Histórico completo do MAC: todas as ativações (inclusive revogadas) + trilha de auditoria.
-export async function deviceHistory(mac, { page = 1, pageSize = 20 } = {}) {
+export async function deviceHistory(mac, { page = 1, pageSize = 20 } = {}, scope = {}) {
   const norm = normalizeMac(mac);
   if (!norm) throw new AppError(400, "INVALID_MAC", "Endereço MAC inválido.");
   const device = await Device.findOne({ where: { mac: norm } });
   if (!device) throw notFound("Dispositivo");
-  const activations = await Activation.findAll({ where: { deviceId: device.id }, include, order: [["activatedAt", "DESC"], ["id", "DESC"]] });
+  const scoped = scope.ownerAdminId !== undefined;
+  const activations = await Activation.findAll({ where: { deviceId: device.id },
+    include: scoped ? include.map(entry => entry.model === Partner ? { ...entry, required:true, where:{ ownerAdminId:scope.ownerAdminId } } : entry) : include,
+    order: [["activatedAt", "DESC"], ["id", "DESC"]], limit: scoped ? 500 : undefined });
+  if (scoped && !activations.length) throw notFound("Dispositivo");
   const ids = activations.map(a => String(a.id));
-  const webAccesses = await WebAccess.findAll({ where: { deviceId: device.id }, attributes: ["id"] });
+  const webAccesses = scoped ? [] : await WebAccess.findAll({ where: { deviceId: device.id }, attributes: ["id"] });
   const where = { action: { [Op.notIn]: ["device.register", "device.lookup", "web_access.login"] }, [Op.or]: [
     ...(ids.length ? [{ entityType: "activation", entityId: { [Op.in]: ids } }] : []),
-    { entityType: "device", entityId: String(device.id) },
+    ...(!scoped ? [{ entityType: "device", entityId: String(device.id) }] : []),
     ...(webAccesses.length ? [{ entityType: "web_access", entityId: { [Op.in]: webAccesses.map(w => String(w.id)) } }] : []),
     // Mantém eventos de ativações excluídas e ciclos anteriores do mesmo MAC.
-    sequelize.where(sequelize.literal("metadata ->> 'mac'"), norm),
+    ...(!scoped ? [sequelize.where(sequelize.literal("metadata ->> 'mac'"), norm)] : []),
   ] };
   const { rows: events, count } = await AuditLog.findAndCountAll({ where, order: [["createdAt", "DESC"], ["id", "DESC"]], ...pageOf({ page, pageSize }) });
   const peopleIds = [...new Set(events.filter(e => ["admin", "partner"].includes(e.actorType) && /^[0-9a-f-]{36}$/i.test(e.actorId || "")).map(e => e.actorId))];
@@ -155,7 +171,7 @@ const ACTIONS = {
   block: { from: ["active"], to: "blocked" },
   unblock: { from: ["blocked"], to: "active" },
   revoke: { from: ["active", "blocked"], to: "revoked" },
-  restore: { from: ["revoked"], to: "active" }, // só superadmin (rota exige a permissão "override")
+  restore: { from: ["revoked"], to: "active" }, // rota global exige override; workspace exige proprietário + write
 };
 
 /**
@@ -171,12 +187,16 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
     if (scope.partnerId) where.partnerId = scope.partnerId;
     const a = await Activation.findOne({ where, transaction: t, lock: t.LOCK.UPDATE });
     if (!a) throw notFound("Ativação");
+    if (scope.ownerAdminId !== undefined) {
+      const owned = await Partner.findOne({where:{id:a.partnerId, ownerAdminId:scope.ownerAdminId},attributes:["id"],transaction:t});
+      if (!owned) throw notFound("Ativação");
+    }
     if (!rule.from.includes(a.status)) {
       throw new AppError(409, "INVALID_STATE", "Esta ação não está disponível para o estado atual da ativação. Atualize a lista e tente novamente.");
     }
     if (action === "block" && !reason) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo do bloqueio.");
     // Remover apaga as credenciais do provedor: sem elas (e sem lista/licença própria) restaurar devolveria uma ativação que não toca nada.
-    if (action === "restore" && !a.licenseId && !a.credentialsEnc) {
+    if (action === "restore" && !a.licenseId && !a.credentialsEnc && !a.recoveryCredentialsEnc) {
       throw new AppError(409, "RESTORE_NOT_POSSIBLE", "As credenciais desta lista foram apagadas quando ela foi removida. Configure a lista de novo (Adicionar parceiro).");
     }
     // O revendedor não joga fora tempo pago: com licença em vigor, a saída é Transferir para outro MAC (o admin da plataforma pode remover).
@@ -190,8 +210,12 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
     const patch = { status: rule.to };
     if (action === "block") Object.assign(patch, { statusReason: reason, blockedBy });
     if (action === "unblock") Object.assign(patch, { statusReason: null, blockedBy: null });
-    if (action === "revoke") Object.assign(patch, { revokedAt: new Date(), statusReason: reason ?? "Removida pelo administrador", credentialsEnc: null });
-    if (action === "restore") Object.assign(patch, { revokedAt: null, statusReason: null, blockedBy: null });
+    if (action === "revoke") Object.assign(patch, { revokedAt: new Date(), statusReason: reason ?? "Removida pelo administrador", credentialsEnc: null,
+      // Não expor as credenciais ao painel; restauração reusa a cifra preexistente.
+      // Revogações globais/da revenda preservam seu comportamento anterior: apagamento definitivo.
+      ...(scope.ownerAdminId !== undefined ? { recoveryCredentialsEnc: a.credentialsEnc } : { recoveryCredentialsEnc: null }) });
+    if (action === "restore") Object.assign(patch, { revokedAt: null, statusReason: null, blockedBy: null,
+      ...(a.recoveryCredentialsEnc ? { credentialsEnc: a.recoveryCredentialsEnc, recoveryCredentialsEnc: null } : {}) });
     const before = a.status;
     try {
       await a.update(patch, { transaction: t });
@@ -208,7 +232,7 @@ export async function changeActivation(id, action, { reason, actor, scope = {}, 
     return a;
   });
   dropMirrorAuth(changed.id); // bloquear/desbloquear/remover valem já para o espelho (depois do commit)
-  if (action === "revoke") {
+  if (action === "revoke" || action === "restore") {
     const { notifyScopedDeviceChange } = await import("../admin-deletion.service.js");
     await notifyScopedDeviceChange(changed.partnerId);
   }
@@ -291,14 +315,18 @@ export async function removeListByAdmin(deviceId, { activationId, reason }, acto
 /** Proveniência de cada ativação/lista, baseada em auditoria histórica.
  * Não atribui a uma pessoa ações anônimas ou realizadas pelo próprio aparelho.
  */
-export async function deviceAttribution(deviceId) {
+export async function deviceAttribution(deviceId, scope = {}) {
   const device = await Device.findByPk(deviceId);
   if (!device) throw notFound("Dispositivo");
-  const activations = await Activation.findAll({ where: { deviceId }, attributes: ["id", "activatedAt", "playlistName", "partnerId", "licenseId", "status"], order: [["activatedAt", "DESC"]] });
+  const scoped = scope.ownerAdminId !== undefined;
+  const activations = await Activation.findAll({ where: { deviceId }, attributes: ["id", "activatedAt", "playlistName", "partnerId", "licenseId", "status"],
+    ...(scoped ? {include:[{model:Partner,attributes:[],required:true,where:{ownerAdminId:scope.ownerAdminId}}]} : {}),
+    order: [["activatedAt", "DESC"]], limit: scoped ? 500 : undefined });
+  if (scoped && !activations.length) throw notFound("Dispositivo");
   const ids = activations.map(row => String(row.id));
   const events = await AuditLog.findAll({
     where: { [Op.or]: [
-      { entityType: "device", entityId: String(deviceId) },
+      ...(!scoped ? [{ entityType: "device", entityId: String(deviceId) }] : []),
       ...(ids.length ? [{ entityType: "activation", entityId: { [Op.in]: ids } }] : []),
     ] }, order: [["createdAt", "ASC"], ["id", "ASC"]],
     attributes: ["id", "actorType", "actorId", "action", "entityType", "entityId", "metadata", "createdAt"],

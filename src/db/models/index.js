@@ -245,6 +245,8 @@ export const Activation = def("Activation", "activations", {
   deviceId: { type: T.UUID, allowNull: false }, mac: { type: T.CHAR(17) },
   installationId: str(100), licenseId: { type: T.UUID }, partnerId: { type: T.UUID },
   partnerCodeId: { type: T.UUID }, providerId: { type: T.UUID }, credentialsEnc: T.TEXT,
+  // Somente revogações do Admin delegado guardam cópia criptografada para restauração.
+  recoveryCredentialsEnc: { type: T.TEXT },
   playlistName: str(160), playlistUrlEnc: T.TEXT,
   status: str(20, { allowNull: false, defaultValue: "active" }),
   statusReason: str(500), blockedBy: str(20), activatedAt: { ...ts(), allowNull: false, defaultValue: T.NOW },

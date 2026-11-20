@@ -54,9 +54,11 @@ async function summarizeActivation(activationId) {
 }
 
 /** Todas as listas (ativações vivas) do dispositivo, da mais recente para a mais antiga. */
-export async function listsOfDevice(deviceId) {
+export async function listsOfDevice(deviceId, scope = {}) {
   const rows = await Activation.findAll({
-    where: { deviceId, status: live }, attributes: ["id"], order: [["activatedAt", "DESC"], ["id", "ASC"]],
+    where: { deviceId, status: live }, attributes: ["id"],
+    ...(scope.ownerAdminId !== undefined ? {include:[{model:Partner,required:true,attributes:[],where:{ownerAdminId:scope.ownerAdminId}}]} : {}),
+    order: [["activatedAt", "DESC"], ["id", "ASC"]],
   });
   return Promise.all(rows.map((r) => summarizeActivation(r.id)));
 }
@@ -65,10 +67,10 @@ export async function listsOfDevice(deviceId) {
  * Estado do dispositivo. Os campos de nível superior descrevem a lista PRINCIPAL (compatível com quem só conhece uma lista);
  * `activations` traz todas as listas vivas — um MAC pode estar associado a vários parceiros.
  */
-async function stateOf(device) {
-  const lists = await listsOfDevice(device.id);
+async function stateOf(device, scope = {}) {
+  const lists = await listsOfDevice(device.id, scope);
   let primary = pickPrimaryList(lists);
-  if (!primary) {
+  if (!primary && scope.ownerAdminId === undefined) {
     // Sem vínculo vivo: mostra a ativação revogada mais recente (estado "deactivated"), se houver.
     const last = await Activation.findOne({ where: { deviceId: device.id }, attributes: ["id"], order: [["updatedAt", "DESC"]] });
     primary = last ? await summarizeActivation(last.id) : null;
@@ -329,10 +331,11 @@ export async function findRegisteredDevices({ q, page = 1, pageSize = 20 }) {
   };
 }
 
-export async function registeredDeviceById(deviceId) {
+export async function registeredDeviceById(deviceId, scope = {}) {
   const device = await Device.findByPk(deviceId);
   if (!device) throw notFound("Dispositivo");
-  return stateOf(device);
+  if (scope.ownerAdminId !== undefined && !(await Activation.findOne({where:{deviceId},attributes:["id"],include:[{model:Partner,attributes:[],required:true,where:{ownerAdminId:scope.ownerAdminId}}]}))) throw notFound("Dispositivo");
+  return stateOf(device, scope);
 }
 
 /**
@@ -344,7 +347,7 @@ export async function registeredDeviceById(deviceId) {
  * Para trocar de parceiro, remova a lista do antigo (remove-list/revoke) e adicione o novo.
  * Modo "playlist" (lista própria) usa a ativação por licença do MAC, que é independente das ativações por parceiro.
  */
-export async function configureDeviceByAdmin(deviceId, input, actor) {
+export async function configureDeviceByAdmin(deviceId, input, actor, scope = {}) {
   const device = await Device.findByPk(deviceId);
   if (!device) throw notFound("Dispositivo");
   if (!input.confirm) {
@@ -354,14 +357,18 @@ export async function configureDeviceByAdmin(deviceId, input, actor) {
     });
     return { cancelled: true, message: "Alteração cancelada; nenhuma configuração foi aplicada." };
   }
-  if (input.mode === "partner") return configurePartnerList(device, input, actor);
+  if (scope.ownerAdminId !== undefined && input.mode !== "partner")
+    throw new AppError(403,"NETWORK_PARTNER_MODE_ONLY","O Admin só pode configurar listas das parcerias de sua rede.");
+  if (input.mode === "partner") return configurePartnerList(device, input, actor, scope);
   if (input.mode !== "playlist") throw new AppError(422, "INVALID_MODE", "Modo de configuração inválido.");
   return configurePlaylistList(device, input, actor);
 }
 
-async function configurePartnerList(device, input, actor) {
+async function configurePartnerList(device, input, actor, scope = {}) {
   // Valida código + usuário/senha no provedor (rede) e identifica o parceiro. Sem travas.
   const prepared = await preparePartnerActivation({ ...input, web: device.platform === "web" });
+  if (scope.ownerAdminId !== undefined && String(prepared.partner.ownerAdminId) !== String(scope.ownerAdminId))
+    throw notFound("Parceiro da rede");
   const existing = await Activation.findOne({
     where: { deviceId: device.id, partnerId: prepared.partner.id, status: live },
   });
@@ -375,7 +382,7 @@ async function configurePartnerList(device, input, actor) {
       actor, action: "device.configuration.confirm", entityType: "device", entityId: device.id,
       metadata: { mac: device.mac, activationId: activated.activation.id, mode: "partner", partnerId: activated.activation.partnerId, added: true },
     });
-    return { ...(await stateOf(device)), activationId: activated.activation.id, confirmedAt: new Date().toISOString(), administratorId: actor.id };
+    return { ...(await stateOf(device, scope)), activationId: activated.activation.id, confirmedAt: new Date().toISOString(), administratorId: actor.id };
   }
 
   const updated = await sequelize.transaction(async (transaction) => {
@@ -431,7 +438,7 @@ async function configurePartnerList(device, input, actor) {
     return lockedActivation;
   });
   dropMirrorAuth(updated.id);
-  return { ...(await stateOf(device)), activationId: updated.id, confirmedAt: new Date().toISOString(), administratorId: actor.id };
+  return { ...(await stateOf(device, scope)), activationId: updated.id, confirmedAt: new Date().toISOString(), administratorId: actor.id };
 }
 
 async function configurePlaylistList(device, input, actor) {

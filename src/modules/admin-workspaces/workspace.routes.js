@@ -9,7 +9,10 @@ import { validate } from "../../shared/validate.js";
 import * as codesService from "../partners/partner.service.js";
 import * as providerService from "../providers/provider.service.js";
 import { DEFAULT_TEMPLATE } from "../providers/playlist-url.js";
-import {listActivations,changeActivation,getActivation} from "../devices/device.service.js";
+import {listActivations,changeActivation,getActivation,listDevices,deviceHistory,deviceAttribution} from "../devices/device.service.js";
+import {registeredDeviceById,configureDeviceByAdmin} from "../devices/registration.service.js";
+import {registerDeviceFromPanel} from "../devices/unlinked.service.js";
+import {ownedDevice,ownedActivation,scopedCode,deviceDeletionPreviewScoped,scopedDeviceAction,bulkScopedDevices} from "../devices/scoped-device.service.js";
 import {generateInvoice} from "../billing/billing.service.js";
 import { AppError } from "../../shared/errors.js";
 import { actorOf, audit } from "../../shared/audit.js";
@@ -618,6 +621,72 @@ router.delete("/partners/:id/providers/:providerId",requireScope("network:resour
   const provider=await PartnerProvider.findOne({where:{id:req.valid.params.providerId,partnerId:p.id,deletedAt:null}});
   if(!provider)throw new AppError(404,"NOT_FOUND","Servidor não encontrado.");
   res.json(await deleteProviderOperational(p.id,req.valid.params.providerId,{...req.valid.body,confirmation:provider.name},actorOf(req)));
+});
+// A mesma API lógica de Devices.jsx, mas limitada pelo proprietário da sessão.
+// Nunca usa o cadastro global como autorização: MACs podem ser compartilhados.
+const scopedDeviceFilter = pagination.extend({
+  q:z.string().trim().max(40).optional(), status:z.enum(["active","blocked","revoked","unlinked"]).optional(),
+  online:z.enum(["true","false"]).optional(),showRemoved:z.enum(["true","false"]).transform(v=>v==="true").optional(),
+});
+const scopedDeviceActionBody = z.object({reason:z.string().trim().max(500).optional().default("")}).strict();
+const scopedDeviceDeleteBody = z.object({confirmMac:z.string().trim().min(11).max(30),reason:z.string().trim().min(3).max(500)}).strict();
+router.get("/devices/by-mac",requireScope("network:devices:read"),validate({query:scopedDeviceFilter}),async(req,res)=>
+  res.json(await listDevices(req.valid.query,{ownerAdminId:tenant(req)})));
+router.get("/devices/history",requireScope("network:devices:read"),validate({query:pagination.extend({mac:z.string().trim().min(11).max(20)})}),async(req,res)=>
+  res.json(await deviceHistory(req.valid.query.mac,req.valid.query,{ownerAdminId:tenant(req)})));
+router.get("/devices/registrations/:id",requireScope("network:devices:read"),validate({params:ident}),async(req,res)=>
+  res.json(await registeredDeviceById(req.valid.params.id,{ownerAdminId:tenant(req)})));
+router.get("/devices/registrations/:id/attribution",requireScope("network:devices:read"),validate({params:ident}),async(req,res)=>
+  res.json(await deviceAttribution(req.valid.params.id,{ownerAdminId:tenant(req)})));
+router.get("/devices/registrations/:id/deletion-preview",requireScope("network:devices:write"),validate({params:ident}),async(req,res)=>
+  res.json(await deviceDeletionPreviewScoped(req.valid.params.id,tenant(req))));
+router.post("/devices/register",requireScope("network:devices:write"),validate({body:z.object({
+  mac:z.string().trim().min(11).max(20),code:z.string().trim().regex(/^[A-Za-z0-9]{4,12}$/),
+  username:z.string().trim().min(1).max(128),password:z.string().min(1).max(128),
+}).strict()}),async(req,res)=>{
+  await scopedCode(req.valid.body.code,tenant(req));
+  res.status(201).json(await registerDeviceFromPanel(req.valid.body,actorOf(req),{ownerAdminId:tenant(req)}));
+});
+router.post("/devices/registrations/:id/configuration",requireScope("network:devices:write"),validate({params:ident,body:z.object({
+  mode:z.literal("partner"),confirm:z.literal(true),code:z.string().trim().regex(/^[A-Za-z0-9]{4,12}$/),
+  username:z.string().trim().min(1).max(128),password:z.string().min(1).max(128),
+}).strict()}),async(req,res)=>{
+  await ownedDevice(req.valid.params.id,tenant(req));
+  await scopedCode(req.valid.body.code,tenant(req));
+  res.json(await configureDeviceByAdmin(req.valid.params.id,req.valid.body,actorOf(req),{ownerAdminId:tenant(req)}));
+});
+router.post("/devices/activations/:id/:action",requireScope("network:devices:write"),validate({
+  params:z.object({id:z.string().uuid(),action:z.enum(["block","unblock","revoke","restore"])}),body:scopedDeviceActionBody,
+}),async(req,res)=>{
+  const a=await ownedActivation(req.valid.params.id,tenant(req));
+  await changeActivation(a.id,req.valid.params.action,{reason:req.valid.body.reason,actor:actorOf(req),
+    scope:{partnerId:a.partnerId,ownerAdminId:tenant(req)},blockedBy:"partner"});
+  res.json(await getActivation(a.id,{partnerId:a.partnerId,ownerAdminId:tenant(req)}));
+});
+router.delete("/devices/activations/:id",requireScope("network:devices:write"),validate({params:ident,body:scopedDeviceDeleteBody}),async(req,res)=>{
+  const a=await ownedActivation(req.valid.params.id,tenant(req));
+  res.json(await deleteScopedActivation(a.id,req.valid.body,actorOf(req),{partnerId:a.partnerId,ownerAdminId:tenant(req)}));
+});
+router.get("/devices/activations/:id/deletion-preview",requireScope("network:devices:write"),validate({params:ident}),async(req,res)=>{
+  const a=await ownedActivation(req.valid.params.id,tenant(req));
+  const otherActivations=await Activation.count({where:{deviceId:a.deviceId,id:{[Op.ne]:a.id}},
+    include:[{model:Partner,attributes:[],required:true,where:{ownerAdminId:tenant(req)}}]});
+  res.json({id:a.id,mac:a.mac,status:a.status,otherActivations});
+});
+for (const action of ["block","unblock","revoke","restore"]) router.post(`/devices/registrations/:id/${action}`,
+  requireScope("network:devices:write"),validate({params:ident,body:scopedDeviceActionBody}),async(req,res)=>{
+    res.json(await scopedDeviceAction(req.valid.params.id,action,req.valid.body,actorOf(req),tenant(req)));
+  });
+router.delete("/devices/registrations/:id",requireScope("network:devices:write"),validate({params:ident,body:scopedDeviceDeleteBody}),async(req,res)=>{
+  res.json(await scopedDeviceAction(req.valid.params.id,"delete",req.valid.body,actorOf(req),tenant(req)));
+});
+router.post("/devices/bulk-action",requireScope("network:devices:write"),validate({body:z.object({
+  ids:z.array(z.string().uuid()).min(1).max(25),action:z.enum(["block","unblock","revoke","restore","delete"]),
+  reason:z.string().trim().max(500).optional().default(""),confirmation:z.literal("EXCLUIR").optional(),
+}).strict()}),async(req,res)=>{
+  const {ids,action,reason,confirmation}=req.valid.body;
+  if(action==="delete" && confirmation!=="EXCLUIR")throw new AppError(422,"CONFIRMATION_REQUIRED","Digite EXCLUIR.");
+  res.json(await bulkScopedDevices(action,ids,{reason},actorOf(req),tenant(req)));
 });
 router.get("/partners/:id/devices",requireScope("network:devices:read"),validate({params:ident,query:pagination.extend({q:z.string().trim().max(40).optional(),status:z.enum(["active","blocked","revoked"]).optional(),showRemoved:z.enum(["true","false"]).transform(v=>v==="true").optional()})}),async(req,res)=>{
   const p=await ownedPartner(tenant(req),req.valid.params.id);

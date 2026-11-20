@@ -166,7 +166,7 @@ export async function deleteActivationAsSuper(id, { confirmMac, reason, force = 
 /** Exclui APENAS o vínculo autorizado, nunca o cadastro global do MAC.
  * Uma transação isolada por ID permite lotes com sucesso parcial.
  */
-export async function deleteScopedActivation(id, { confirmMac, reason, force = false, bulkQuantity = 1 } = {}, actor, { partnerId } = {}) {
+export async function deleteScopedActivation(id, { confirmMac, reason, force = false, bulkQuantity = 1 } = {}, actor, { partnerId, ownerAdminId } = {}) {
   if (!reason?.trim() || reason.trim().length < 3)
     throw new AppError(422, "REASON_REQUIRED", "Informe o motivo da exclusão (mínimo 3 caracteres).");
   if (force && actor?.role !== "superadmin")
@@ -179,6 +179,7 @@ export async function deleteScopedActivation(id, { confirmMac, reason, force = f
       return { id, ok: true, alreadyRemoved: true, code: "ALREADY_REMOVED", message: "Vínculo já excluído." };
     }
     if (partnerId && String(a.partnerId) !== String(partnerId)) throw notFound("Ativação");
+    if (ownerAdminId !== undefined && !(await Partner.findOne({where:{id:a.partnerId,ownerAdminId},attributes:["id"],transaction}))) throw notFound("Ativação");
     if (!confirmMac || a.mac?.trim() !== confirmMac.trim())
       throw new AppError(422, "CONFIRMATION_MISMATCH", "Digite exatamente o MAC do dispositivo.");
     const licenseIds = [a.licenseId, a.grantedLicenseId].filter(Boolean);

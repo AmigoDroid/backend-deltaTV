@@ -98,7 +98,7 @@ const partnerConfiguration = ({ code, username, password }) => ({ mode: "partner
  * intactas); se esse parceiro já está no MAC, o acesso dele é atualizado (regra de configureDeviceByAdmin). Se o aparelho foi criado agora e a ativação
  * falha (senha errada, provedor fora do ar...), o registro é descartado para não deixar lixo na lista de "sem vínculo".
  */
-export async function registerDeviceFromPanel({ mac: macInput, ...credentials }, actor) {
+export async function registerDeviceFromPanel({ mac: macInput, ...credentials }, actor, scope = {}) {
   const mac = normalizeMac(macInput);
   if (!mac) throw new AppError(400, "INVALID_MAC", "Endereço MAC inválido.");
 
@@ -109,12 +109,12 @@ export async function registerDeviceFromPanel({ mac: macInput, ...credentials },
 
   let state;
   try {
-    state = await configureDeviceByAdmin(device.id, partnerConfiguration(credentials), actor);
+    state = await configureDeviceByAdmin(device.id, partnerConfiguration(credentials), actor, scope);
   } catch (e) {
     if (created) await discardIfUnused(device.id);
     throw e;
   }
-  await grantNewDeviceTrial(device, created);
+  if (scope.ownerAdminId === undefined) await grantNewDeviceTrial(device, created);
   await audit({ actor, action: "device.register.admin", entityType: "device", entityId: device.id, metadata: { mac, created } });
   return { created, ...state };
 }
