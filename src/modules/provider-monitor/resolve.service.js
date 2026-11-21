@@ -87,6 +87,20 @@ export async function resolveForActivation(activation, original, credentials) {
       WHERE activation_id=:aid AND expires_at>now() LIMIT 1`,
       { replacements:{aid:activation.id},type:QueryTypes.SELECT });
     const avoidId = request?.avoid_provider_id || null;
+    // Preferência emergencial só durante o prazo e apenas para o código da TV.
+    // Um erro reportado pela própria TV (avoidId) ou autenticação inválida permite
+    // seguir para o failover automático, mesmo durante a emergência.
+    const [emergency] = await sequelize.query(`SELECT provider_id AS "providerId"
+      FROM code_dns_emergencies WHERE code_id=:codeId AND expires_at>now() LIMIT 1`,
+      {replacements:{codeId:code.id},type:QueryTypes.SELECT});
+    const forced=servers.find(s=>s.id===emergency?.providerId && s.status==='active');
+    if(forced && forced.id!==avoidId && states.get(forced.id)?.state!=='down') {
+      // A emergência foi autorizada pelo operador após sondagem + amostra Xtream.
+      // Não executar 3.000 autenticações HTTP concorrentes na VPS: as TVs
+      // validam o streaming, e um erro real registra avoidId para o failover.
+      await rememberSelectedProvider(activation.id,forced.id).catch(()=>{});
+      return {provider:forced,verified:true};
+    }
     const now=Date.now();
     const freshMs = (await freshnessWindowSeconds()) * 1000;
     const ranked=servers.filter(s=>s.id!==avoidId && s.status==="active" && ["healthy", "slow"].includes(states.get(s.id)?.state)

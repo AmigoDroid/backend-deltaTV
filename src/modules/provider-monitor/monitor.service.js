@@ -130,6 +130,9 @@ export async function monitorOnce() {
       ORDER BY CASE WHEN active.provider_id IS NULL THEN 1 ELSE 0 END,
         h.last_checked_at ASC NULLS FIRST, pp.id ASC
       LIMIT :limit`, { replacements: { limit: MAX_PER_CYCLE }, type: QueryTypes.SELECT });
+    // Expiração de DNS emergencial precisa acordar TVs mesmo sem queda do monitor.
+    const { notifyExpiredEmergencies } = await import('./emergency.service.js');
+    await notifyExpiredEmergencies().catch(e=>console.warn('[provider-monitor] expiração DNS',e.message));
     if (!providers.length) return;
     const changedPartnerIds = new Set();
     const newlyDown = new Set();

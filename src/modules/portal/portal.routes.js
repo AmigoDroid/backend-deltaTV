@@ -1,3 +1,4 @@
+import { emergencyRoutes } from "../provider-monitor/emergency.routes.js";
 import { AppError } from "../../shared/errors.js";
 import { partnerNetworkCharges } from "../network-finance/finance.routes.js";
 import { deleteScopedActivation, bulkScopedActivation } from "../admin-deletion.service.js";
@@ -62,6 +63,7 @@ router.use(networkResourceGuard);
 router.use("/notifications", partnerNotificationRoutes);
 router.use("/help", partnerHelpRoutes);
 router.use("/server-monitor", resellerServerMonitor);
+router.use("/emergency-dns",emergencyRoutes(req=>req.user.partnerId));
 router.get("/service-plan",async(req,res)=>res.set("Cache-Control","no-store").json(await getServicePlan(req.user.partnerId)));
 router.use("/pix", pixRoutes);
 router.use("/credits", creditRoutes);

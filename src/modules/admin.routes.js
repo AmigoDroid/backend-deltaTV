@@ -1,3 +1,6 @@
+import { emergencyRoutes } from "./provider-monitor/emergency.routes.js";
+import { requirePermission } from "../middleware/authenticate.js";
+import { Partner } from "../db/models/index.js";
 import adminPaymentGateways from "./payment-gateways/admin.routes.js";
 import workspaces from "./admin-workspaces/workspace.routes.js";
 import { superadminFinance } from "./network-finance/finance.routes.js";
@@ -48,6 +51,13 @@ router.use((req, _res, next) => {
   next();
 });
 router.use("/workspace", workspaces);
+// Superadmin pode atuar em qualquer parceria; nunca aceita um ID de fora da rota validada.
+router.use('/partners/:id/emergency-dns',requirePermission('partners:write'),
+  emergencyRoutes(async req=>{
+    const p=await Partner.findByPk(req.params.id,{attributes:['id','status']});
+    if(!p||p.status==='deleted')throw new AppError(404,'NOT_FOUND','Parceiro não encontrado.');
+    return p.id;
+  }));
 router.use("/finance-networks",superadminFinance);
 router.use("/payment-gateways",adminPaymentGateways);
 router.use("/service-packages",servicePackages);

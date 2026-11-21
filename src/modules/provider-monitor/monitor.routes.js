@@ -1,3 +1,4 @@
+import { emergencyRoutes } from "./emergency.routes.js";
 import {partnerPortalSales} from "../partner-portal-sales/sales.routes.js";
 import {contentPortalAccessGuard} from "../partner-portal-sales/sales.service.js";
 import { networkResourceGuard } from "../distribution/network.resources.js";
@@ -46,6 +47,7 @@ r.use(async(req,_res,next)=>{
 });
 r.use(networkResourceGuard);
 r.use("/portal-sales",partnerPortalSales);
+r.use("/emergency-dns",emergencyRoutes(req=>req.user.partnerId));
 r.use((req,res,next)=>{
   if (["POST","PUT","PATCH","DELETE"].includes(req.method)) res.on("finish",()=>{
     if (res.statusCode >= 200 && res.statusCode < 300) {

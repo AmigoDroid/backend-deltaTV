@@ -33,7 +33,11 @@ async function connect() {
       if (msg.activationId != null && !/^[0-9a-f-]{36}$/i.test(msg.activationId)) return;
       if (msg.partnerId != null && !/^[0-9a-f-]{36}$/i.test(msg.partnerId)) return;
       if (msg.providerId != null && (msg.topic !== 'dns-failover' || !/^[0-9a-f-]{36}$/i.test(msg.providerId))) return;
+      if (msg.codeId != null && (!['dns-emergency','dns-emergency-end'].includes(msg.topic) || !/^[0-9a-f-]{36}$/i.test(msg.codeId))) return;
+      if (msg.message != null && (typeof msg.message !== 'string' || msg.message.length > 300)) return;
+      if (msg.expiresAt != null && (typeof msg.expiresAt !== 'string' || !Number.isFinite(Date.parse(msg.expiresAt)))) return;
       onEvent?.({ providerId: msg.topic === 'dns-failover' ? msg.providerId ?? null : null, topic: msg.topic, activationId: msg.activationId ?? null,
+        codeId: msg.codeId ?? null, message:msg.message ?? null, expiresAt:msg.expiresAt ?? null,
         partnerId: msg.partnerId ?? null,
         priority: msg.priority === 'targeted' ? 'targeted' : 'global' });
     } catch { /* malformed notifications ignored */ }
@@ -53,10 +57,13 @@ async function connect() {
   try { await client.connect(); await client.query(`LISTEN ${CHANNEL}`); retryMs = 3000; }
   catch (err) { console.warn('[device-change-bus] LISTEN unavailable:', err.message); lost(); }
 }
-export function publishDeviceChange({ topic, activationId = null, partnerId = null, providerId = null, priority = 'global' }) {
+export function publishDeviceChange({ topic, activationId = null, partnerId = null, providerId = null, codeId = null, message = null, expiresAt = null, priority = 'global' }) {
   if (closed) return;
   const payload = JSON.stringify({ origin, topic: String(topic).slice(0, 32),
     activationId, partnerId, providerId: topic === 'dns-failover' ? providerId : null,
+    codeId: ['dns-emergency','dns-emergency-end'].includes(topic) ? codeId : null,
+    message: topic === 'dns-emergency' ? String(message || '').slice(0,300) : null,
+    expiresAt: topic === 'dns-emergency' ? expiresAt : null,
     priority: priority === 'targeted' ? 'targeted' : 'global' });
   const op = sequelize.query('SELECT pg_notify(:channel, :payload)',
     { replacements: { channel: CHANNEL, payload } })
