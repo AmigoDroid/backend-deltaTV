@@ -90,10 +90,20 @@ export async function resolveForActivation(activation, original, credentials) {
     // Preferência emergencial só durante o prazo e apenas para o código da TV.
     // Um erro reportado pela própria TV (avoidId) ou autenticação inválida permite
     // seguir para o failover automático, mesmo durante a emergência.
-    const [emergency] = await sequelize.query(`SELECT provider_id AS "providerId"
-      FROM code_dns_emergencies WHERE code_id=:codeId AND expires_at>now() LIMIT 1`,
-      {replacements:{codeId:code.id},type:QueryTypes.SELECT});
-    const forced=servers.find(s=>s.id===emergency?.providerId && s.status==='active');
+    // Uma consulta para as duas prioridades (sem adicionar outro round-trip ao PostgreSQL).
+    const [preferences] = await sequelize.query(`SELECT
+      (SELECT provider_id FROM device_dns_overrides WHERE activation_id=:aid AND expires_at>now()) AS "deviceProviderId",
+      (SELECT provider_id FROM code_dns_emergencies WHERE code_id=:codeId AND expires_at>now()) AS "codeProviderId"`,
+      {replacements:{aid:activation.id,codeId:code.id},type:QueryTypes.SELECT});
+    // Precedência: override da ativação > emergência por código > seleção automática.
+    // Não sobrepor erro relatado pelo aparelho ou DNS confirmada como down.
+    const deviceForced=servers.find(s=>s.id===preferences?.deviceProviderId && s.status==='active');
+    if(deviceForced && deviceForced.id!==avoidId && states.get(deviceForced.id)?.state!=='down' &&
+      (deviceForced.id===original?.id || await verifyAlternative(deviceForced,credentials.username,credentials.password))) {
+      await rememberSelectedProvider(activation.id,deviceForced.id).catch(()=>{});
+      return {provider:deviceForced,verified:deviceForced.id!==original?.id};
+    }
+    const forced=servers.find(s=>s.id===preferences?.codeProviderId && s.status==='active');
     if(forced && forced.id!==avoidId && states.get(forced.id)?.state!=='down') {
       // A emergência foi autorizada pelo operador após sondagem + amostra Xtream.
       // Não executar 3.000 autenticações HTTP concorrentes na VPS: as TVs

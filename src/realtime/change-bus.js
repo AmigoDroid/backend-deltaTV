@@ -62,8 +62,8 @@ export function publishDeviceChange({ topic, activationId = null, partnerId = nu
   const payload = JSON.stringify({ origin, topic: String(topic).slice(0, 32),
     activationId, partnerId, providerId: topic === 'dns-failover' ? providerId : null,
     codeId: ['dns-emergency','dns-emergency-end'].includes(topic) ? codeId : null,
-    message: topic === 'dns-emergency' ? String(message || '').slice(0,300) : null,
-    expiresAt: topic === 'dns-emergency' ? expiresAt : null,
+    message: ['dns-emergency','dns-device'].includes(topic) ? String(message || '').slice(0,300) : null,
+    expiresAt: ['dns-emergency','dns-device'].includes(topic) ? expiresAt : null,
     priority: priority === 'targeted' ? 'targeted' : 'global' });
   const op = sequelize.query('SELECT pg_notify(:channel, :payload)',
     { replacements: { channel: CHANNEL, payload } })

@@ -11,6 +11,7 @@ import { serversForCode, invalidateServerPools } from './code-pool.service.js';
 import { clearResolutionCache } from './resolve.service.js';
 import { broadcastDeviceHint } from '../../realtime/device-channel.js';
 import { probeCredentials } from '../providers/provider.service.js';
+import { notifyExpiredDeviceDns } from './device-dns.service.js';
 import { decryptSecret } from '../../shared/crypto.js';
 
 const select = (sql,replacements={})=>sequelize.query(sql,{replacements,type:QueryTypes.SELECT});
@@ -180,8 +181,7 @@ export async function notifyExpiredEmergencies() {
   const rows=await select(`UPDATE code_dns_emergencies e SET notified_at=now()
     FROM partner_codes c WHERE e.code_id=c.id AND e.expires_at<=now() AND e.notified_at IS NULL
     RETURNING e.code_id AS "codeId",c.partner_id AS "partnerId"`);
-  if (!rows.length)return 0;
-  clearResolutionCache();
+  if (rows.length)clearResolutionCache();
   for(const item of rows)broadcastDeviceHint({topic:'dns-emergency-end',partnerId:item.partnerId,codeId:item.codeId});
-  return rows.length;
+  return rows.length + await notifyExpiredDeviceDns();
 }

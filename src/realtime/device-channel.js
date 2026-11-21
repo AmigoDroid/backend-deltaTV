@@ -83,7 +83,7 @@ function hintPacket(hint) {
   return { type: hint.topic === 'remote-command' ? 'command-ready' : 'check-status',
     topic: hint.topic, scope: hint.priority === 'targeted' ? 'targeted' : 'global',
     ...(hint.topic === 'dns-failover' && hint.providerId ? { providerId: hint.providerId } : {}),
-    ...(hint.topic === 'dns-emergency' ? { message: hint.message ?? '', expiresAt: hint.expiresAt ?? '' } : {}) };
+    ...(['dns-emergency','dns-device'].includes(hint.topic) ? { message: hint.message ?? '', expiresAt: hint.expiresAt ?? '' } : {}) };
 }
 function readHints(since, aid, partnerId, codeId) {
   const from = Number.isSafeInteger(since) && since >= 0 ? since : 0;
@@ -98,8 +98,8 @@ export function broadcastDeviceHint({ topic = 'devices', activationId = null, pa
   const hint = { seq: sequence, topic: String(topic).slice(0, 32), activationId, partnerId,
     providerId: topic === 'dns-failover' ? providerId : null,
     codeId: ['dns-emergency','dns-emergency-end'].includes(topic) ? codeId : null,
-    message: topic === 'dns-emergency' ? String(message || '').slice(0,300) : null,
-    expiresAt: topic === 'dns-emergency' ? expiresAt : null,
+    message: ['dns-emergency','dns-device'].includes(topic) ? String(message || '').slice(0,300) : null,
+    expiresAt: ['dns-emergency','dns-device'].includes(topic) ? expiresAt : null,
     priority: priority || (activationId ? 'targeted' : 'global') };
   recent.push(hint);
   if (recent.length > 256) recent.shift();
