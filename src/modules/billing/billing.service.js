@@ -305,21 +305,9 @@ export async function sweepDelinquency(actor = SYSTEM) {
     { where: { status: { [Op.in]: ["open", "partial"] }, dueDate: { [Op.lt]: today } } },
   );
   const partners = await Partner.findAll({ where: { status: "active", suspendPolicy: "auto_after_grace" } });
-  const overdueByPartner = new Map();
-  // A primeira leitura é apenas um filtro: o pagamento é rechecado dentro da
-  // transação, após o lock. Limitar os IDs evita consultas/parametrizações gigantes.
-  for (let offset = 0; offset < partners.length; offset += 250) {
-    const ids = partners.slice(offset, offset + 250).map(p => p.id);
-    const [rows] = await sequelize.query(`SELECT partner_id,
-        to_char(MIN(due_date), 'YYYY-MM-DD') AS d FROM invoices
-        WHERE partner_id IN (:ids) AND status IN ('open','partial','overdue')
-          AND due_date < (now() AT TIME ZONE 'UTC')::date
-        GROUP BY partner_id`, { replacements: { ids } });
-    for (const row of rows) overdueByPartner.set(row.partner_id, row.d);
-  }
   const suspended = [];
   for (const p of partners) {
-    const overdueSince = overdueByPartner.get(p.id) ?? null;
+    const overdueSince = await overdueSinceFor(p.id);
     if (!isDelinquent(p, overdueSince)) continue;
     await sequelize.transaction(async (t) => {
       const fresh = await Partner.findByPk(p.id, { transaction: t, lock: t.LOCK.UPDATE });

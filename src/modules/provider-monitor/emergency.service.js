@@ -42,8 +42,8 @@ async function validateAccess(partnerId, codeIds) {
     throw new AppError(422,'EMERGENCY_CODE_LIMIT','Selecione de 1 a 500 códigos, sem repetições.');
   const codes=await PartnerCode.findAll({where:{id:{[Op.in]:codeIds},partnerId,deletedAt:null,status:'active'},raw:true});
   if (codes.length!==codeIds.length) throw new AppError(404,'CODE_NOT_IN_SCOPE','Um ou mais códigos não pertencem à sua rede.');
+  // Troca manual é recurso padrão. autoFailover controla apenas a seleção automática.
   const plan=await getServicePlan(partnerId,{fresh:true});
-  if (!plan.features.autoFailover) throw new AppError(403,'PLAN_FAILOVER_DISABLED','O plano precisa permitir failover para a troca emergencial.');
   return {codes,plan};
 }
 
@@ -115,7 +115,6 @@ export async function launchEmergency(partnerId, input, actor, userId) {
     const owner=await Partner.findByPk(partnerId,{transaction,lock:transaction.LOCK.UPDATE});
     if(!owner)throw new AppError(404,'PARTNER_NOT_FOUND','Parceria indisponível.');
     const freshPlan=await getServicePlan(partnerId,{fresh:true});
-    if(!freshPlan.features.autoFailover)throw new AppError(403,'PLAN_FAILOVER_DISABLED','Failover não habilitado.');
     const current=await PartnerCode.findAll({where:{id:{[Op.in]:codes.map(c=>c.id)},partnerId,status:'active',deletedAt:null},
       transaction,lock:transaction.LOCK.UPDATE,raw:true});
     if(current.length!==codes.length)throw new AppError(409,'CODE_CHANGED','Os códigos foram alterados. Confira novamente.');
@@ -131,7 +130,8 @@ export async function launchEmergency(partnerId, input, actor, userId) {
       // que a DNS nova não seja ocultada pelo limite de servidores do resolvedor.
       const currentIds=before.size?[...before]:code.providerId?[code.providerId]:preferredOldIds;
       const desired=unique([...currentIds,provider.id]);
-      const limit=freshPlan.features.maxServers;
+      // Mesmo um plano sem failover precisa de uma vaga durante a emergência.
+      const limit=freshPlan.features.maxServers===null?null:Math.max(1,freshPlan.features.maxServers);
       const removedIds=[];
       while(limit!==null && desired.length>limit){
         const alternatives=desired.filter(id=>id!==provider.id);

@@ -18,7 +18,7 @@ const fields=z.object({
   emailAlerts:z.boolean(),detailedHistory:z.boolean(),
   canResellPanel:z.boolean().default(false),canCreateSubmasters:z.boolean().default(false),
   canViewFinance:z.boolean().default(false),canManageGateways:z.boolean().default(false),
-  sortOrder:z.number().int().min(0).max(9999),hiddenFromNetwork:z.boolean().default(false),
+  sortOrder:z.number().int().min(0).max(9999),
 }).strict();
 // Zod v3: refine() retorna ZodEffects, que não suporta extend().
 // Estenda o objeto antes de aplicar a regra cruzada em cada operação.

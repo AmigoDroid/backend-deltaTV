@@ -10,7 +10,6 @@ import {hashPassword} from '../../shared/crypto.js';
 import {normalizeNetworkPermissions,normalizeNetworkLimits} from './permissions.js';
 import {provisionNetworkAccount,scopedPlan,lockNetworkOwner,checkPlanCaps} from './account-provisioning.js';
 import {planFingerprint} from './plan-entitlements.js';
-import {assertPublicPlan} from '../service-plans/network-plan-visibility.js';
 import {invalidatePlan} from '../service-plans/plan.service.js';
 import {clearContractAccessCache} from '../access/access.service.js';
 import {invalidateServerPools} from '../provider-monitor/code-pool.service.js';
@@ -40,7 +39,7 @@ router.post('/verify',inviteVerifyLimiter,validate({body:z.object({token}).stric
  const r=await AdminNetworkInvitation.findOne({where:{tokenHash:HASH(req.valid.body.token)}});
  assertValid(r);
  await ownerAllowed(r);
- const plan=assertPublicPlan(await scopedPlan(r.ownerAdminId,r.planKey,r.kind));
+ const plan=await scopedPlan(r.ownerAdminId,r.planKey,r.kind);
  if(r.planFingerprint!==planFingerprint(plan))throw new AppError(409,'PLAN_CHANGED','Este plano foi alterado; solicite novo convite.');
  res.set('Cache-Control','no-store').json({email:r.email||null,kind:r.kind,remainingUses:remainingUses(r),planName:plan.name,monthlyFeeCents:plan.monthlyPriceCents,
    maxDns:plan.maxServers,activationLimit:plan.activationLimit,expiresAt:r.expiresAt});
@@ -54,7 +53,7 @@ router.post('/complete',inviteCompleteLimiter,validate({body:z.object({token,nam
   // Evita duas conclusões concorrentes e serializa cadastros na rede.
   await lockNetworkOwner(r.ownerAdminId,t);
   const owner=await ownerAllowed(r,t);
-  const plan=assertPublicPlan(await scopedPlan(r.ownerAdminId,r.planKey,r.kind,t));
+  const plan=await scopedPlan(r.ownerAdminId,r.planKey,r.kind,t);
   if(planFingerprint(plan)!==r.planFingerprint)throw new AppError(409,'PLAN_CHANGED','Plano alterado após o convite. Peça outro link.');
   const email=inviteRecipient(r,b.email);
   if(!email || !z.string().email().max(200).safeParse(email).success)

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Op } from "sequelize";
-import { sequelize, AdminUser, Partner, ServicePlanCatalog, LoginHistory, AuthSession } from "../../db/models/index.js";
+import { sequelize, AdminUser, Partner, ServicePlanCatalog, LoginHistory } from "../../db/models/index.js";
 import { validate } from "../../shared/validate.js";
 import { pageQuery, pageOf, paged } from "../../shared/pagination.js";
 import { AppError, notFound } from "../../shared/errors.js";
@@ -130,55 +130,6 @@ router.post("/:id/send-password-reset", passwordResetSendLimiter, validate({ par
   if (!target) throw notFound("Usuário");
   if (req.userScope === "partner" && target.role !== "partner") throw forbiddenRole();
   res.set("Cache-Control", "no-store").status(202).json(await sendPasswordResetToUser(target.id, actorOf(req)));
-});
-
-// As operações de sessão carregam sempre a identidade alvo no backend.
-// O Admin delegado não consulta usuários de outros proprietários por ID.
-const loadTarget = async req => {
- const target = await AdminUser.findByPk(req.valid.params.id);
- if(!target || target.deletedAt) throw notFound('Usuário');
- if(req.userScope === "partner" && target.role !== "partner") throw forbiddenRole();
- if(req.userScope === 'partner') {
-   const owned = target.partnerId && await Partner.findOne({where:{id:target.partnerId,ownerAdminId:req.user.id,status:{[Op.ne]:'deleted'}},attributes:['id']});
-   if(!owned)throw notFound('Usuário');
- }
- return target;
-};
-router.get("/:id/sessions",validate({params:id,query:z.object({page:z.coerce.number().int().min(1).default(1),pageSize:z.coerce.number().int().min(1).max(100).default(20)})}),async(req,res)=>{
- const target=await loadTarget(req);
- const {page,pageSize}=req.valid.query;
- const {rows,count}=await AuthSession.findAndCountAll({where:{adminUserId:target.id,revokedAt:null,expiresAt:{[Op.gt]:new Date()}},
-  attributes:['id','audience','ip','userAgent','createdAt','expiresAt'],order:[['createdAt','DESC']],limit:pageSize,offset:(page-1)*pageSize});
- res.set('Cache-Control','private,no-store').json({data:rows,meta:{page,pageSize,total:count,totalPages:Math.ceil(count/pageSize)}});
-});
-router.delete("/:id/sessions/:sessionId",validate({params:id.extend({sessionId:z.string().uuid()})}),async(req,res)=>{
- const target=await loadTarget(req);
- const sessionId=req.valid.params.sessionId;
- await sequelize.transaction(async transaction=>{
-   const record=await AuthSession.findOne({where: { id: sessionId, adminUserId: target.id, revokedAt: null },transaction,lock:transaction.LOCK.UPDATE});
-   if(!record)throw notFound('Sessão');
-   await record.update({revokedAt:new Date()},{transaction});
-   await audit({actor:actorOf(req),action:"user.session.revoke",entityType:'admin_user',entityId:target.id,metadata:{sessionId},transaction});
-   transaction.afterCommit(()=>disconnectAdminUser(target.id));
- });
- res.json({ok:true});
-});
-router.delete("/:id/sessions",validate({params:id}),async(req,res)=>{
- const target=await loadTarget(req);
- await sequelize.transaction(async transaction=>{
-  await revokeAllSessions(target.id,transaction);
-  await audit({actor:actorOf(req),action:"user.session.revoke_all",entityType:'admin_user',entityId:target.id,transaction});
-  transaction.afterCommit(()=>disconnectAdminUser(target.id));
- });
- res.json({ok:true});
-});
-router.post("/:id/unlock",validate({params:id}),async(req,res)=>{
- const target=await loadTarget(req);
- await sequelize.transaction(async transaction=>{
-  await target.update({failedLogins: 0, lockedUntil: null},{transaction});
-  await audit({actor:actorOf(req),action:"user.unlock",entityType:'admin_user',entityId:target.id,transaction});
- });
- res.json({ok:true});
 });
 
 router.patch(

@@ -56,6 +56,8 @@ export function validateSettings(settings={},caps=DEFAULT_CAPS){
   if(s.earlyDiscountType==='percent')percentBp(s.earlyDiscountValue,'desconto antecipado');
   else cents(s.earlyDiscountValue,'desconto antecipado');
   if(!Array.isArray(s.earlyPlanKeys)||s.earlyPlanKeys.length>200||s.earlyPlanKeys.some(x=>typeof x!=='string'||x.length>32))throw new RangeError('Planos inválidos.');
+  if(!Number.isInteger(s.defaultDiscountDays)||s.defaultDiscountDays<0||s.defaultDiscountDays>3660)throw new RangeError('Dias de desconto inválidos.');
+  if(!Number.isInteger(s.shortCycleDays)||s.shortCycleDays<0||s.shortCycleDays>3660)throw new RangeError('Ciclo curto inválido.');
   if(cents(s.minChargeCents,'cobrança mínima')<1)throw new RangeError('Cobrança mínima deve ser positiva.');
   if(s.earlyStartsAt&&s.earlyEndsAt&&new Date(s.earlyStartsAt)>new Date(s.earlyEndsAt))throw new RangeError('Agenda de desconto inválida.');
   return s;

@@ -73,7 +73,40 @@ export async function resolveForActivation(activation, original, credentials) {
     const code=await PartnerCode.findByPk(activation.partnerCodeId,{attributes:["id","partnerId","providerId","status","expiresAt"]});
     if(!code || code.partnerId!==activation.partnerId || code.status!=="active" || (code.expiresAt && code.expiresAt<=new Date()))return {provider:original,verified:false};
     const plan=await getServicePlan(code.partnerId);
-    if(!plan.features.autoFailover)return {provider:original,verified:false};
+    if(!plan.features.autoFailover){
+      // Prioridades manuais funcionam para planos sem failover, sem habilitar
+      // a seleção automática de servidores como benefício permanente.
+      const [preferences]=await sequelize.query(`SELECT
+        (SELECT provider_id FROM device_dns_overrides WHERE activation_id=:aid AND expires_at>now()) AS "deviceProviderId",
+        (SELECT provider_id FROM code_dns_emergencies WHERE code_id=:codeId AND expires_at>now()) AS "codeProviderId",
+        (SELECT avoid_provider_id FROM device_failover_requests WHERE activation_id=:aid AND expires_at>now()) AS "avoidProviderId"`,
+        {replacements:{aid:activation.id,codeId:code.id},type:QueryTypes.SELECT});
+      if(!preferences?.deviceProviderId && !preferences?.codeProviderId){
+        // Após uma emergência que substituiu a única vaga do código, a DNS
+        // autorizada continua válida; não ressuscitar a origem antiga removida.
+        const current=(await serversForCode(code,{bypassCache:true,emergency:true})).map(server=>webProvider(server,activation));
+        if(current.some(s=>s.id===original?.id))return {provider:original,verified:false};
+        const next=current.find(s=>s.status==='active');
+        if(next && await verifyAlternative(next,credentials.username,credentials.password)){
+          await rememberSelectedProvider(activation.id,next.id).catch(()=>{});
+          return {provider:next,verified:true};
+        }
+        return {provider:original,verified:false};
+      }
+      const permitted=(await serversForCode(code,{bypassCache:true,emergency:true})).map(server=>webProvider(server,activation));
+      const health=await statesOf(permitted);
+      for(const providerId of [preferences.deviceProviderId,preferences.codeProviderId]){
+        const forced=permitted.find(s=>s.id===providerId && s.status==='active');
+        if(!forced || forced.id===preferences.avoidProviderId || health.get(forced.id)?.state==='down')continue;
+        // A troca individual valida as credenciais dessa TV; a troca por código
+        // já validou amostras antes de publicar o evento para a rede.
+        if(providerId===preferences.deviceProviderId && forced.id!==original?.id &&
+           !(await verifyAlternative(forced,credentials.username,credentials.password)))continue;
+        await rememberSelectedProvider(activation.id,forced.id).catch(()=>{});
+        return {provider:forced,verified:forced.id!==original?.id};
+      }
+      return {provider:original,verified:false};
+    }
     const servers=(await serversForCode(code)).map(server => webProvider(server, activation));
     if(!servers.length)return {provider:original,verified:false};
     // Se o parceiro removeu explicitamente a origem antiga do pool, ela NÃO pode ser entregue novamente.

@@ -9,7 +9,7 @@ test('preferência individual tem prazo e chave de ativação; não altera pool 
   assert.match(migration,/activation_id:.*primaryKey:true/);
   assert.match(migration,/expires_at/);
   assert.match(service,/Activation\.findOne\(\{where:\{id:activationId,partnerId,status:'active'\}/);
-  assert.match(service,/serversForCode\(code,\{bypassCache:true\}\)/);
+  assert.match(service,/serversForCode\(code,\{bypassCache:true,emergency:true\}\)/);
   assert.match(service,/probeCredentials\(provider,credentials\)/);
   assert.doesNotMatch(service,/CodeServerPool\.(?:create|bulkCreate|destroy|update)/);
   assert.match(resolver,/FROM device_dns_overrides WHERE activation_id=:aid AND expires_at>now\(\)/);
@@ -36,4 +36,11 @@ test('aviso WSS somente à ativação, sem credenciais e com expiração',()=>{
   assert.match(bus,/activationId, partnerId/);
   assert.doesNotMatch(bus,/password:|baseUrl:/);
   assert.match(service,/notifyExpiredDeviceDns/);
+});
+
+
+test('troca manual individual também independe do plano autoFailover',()=>{
+ const service=read('../../src/modules/provider-monitor/device-dns.service.js');
+ assert.doesNotMatch(service,/PLAN_FAILOVER_DISABLED/);
+ assert.match(service,/serversForCode\(code,\{bypassCache:true,emergency:true\}\)/);
 });

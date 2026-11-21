@@ -4,7 +4,6 @@ import { Activation, PartnerCode, ProviderHealth, sequelize } from '../../db/mod
 import { AppError } from '../../shared/errors.js';
 import { audit } from '../../shared/audit.js';
 import { decryptSecret } from '../../shared/crypto.js';
-import { getServicePlan } from '../service-plans/plan.service.js';
 import { serversForCode } from './code-pool.service.js';
 import { clearResolutionCache } from './resolve.service.js';
 import { probeCredentials } from '../providers/provider.service.js';
@@ -22,9 +21,8 @@ async function eligibleDevice(partnerId, activationId) {
     throw new AppError(409,'DEVICE_DNS_NOT_SUPPORTED','Esta TV não utiliza uma lista Xtream associada a um código com DNS gerenciadas.');
   const code=await PartnerCode.findOne({where:{id:a.partnerCodeId,partnerId,status:'active',deletedAt:null},raw:true});
   if(!code)throw new AppError(409,'CODE_INACTIVE','O código desta TV não está ativo.');
-  const plan=await getServicePlan(partnerId,{fresh:true});
-  if(!plan.features.autoFailover)throw new AppError(403,'PLAN_FAILOVER_DISABLED','O plano não permite failover.');
-  const servers=await serversForCode(code,{bypassCache:true});
+  // Prioridade manual individual não depende da opção comercial de failover automático.
+  const servers=await serversForCode(code,{bypassCache:true,emergency:true});
   if(!servers.length)throw new AppError(409,'EMPTY_SERVER_POOL','Nenhuma DNS permitida para este código.');
   return {activation:a,code,servers};
 }

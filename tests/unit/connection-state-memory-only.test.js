@@ -5,8 +5,8 @@ const content = p => readFileSync(new URL(`../../src/${p}`,import.meta.url), 'ut
 test('conexão atual não persiste auditoria no Postgres nem executa limpeza de histórico', () => {
   const service=content('modules/connection-audit/service.js');
   assert.doesNotMatch(service, /INSERT INTO device_connection_|DELETE FROM device_connection_|setInterval\(\(\) => \{ void cleanupAudit/);
-  assert.doesNotMatch(service,/const snapshots = new Map\(\)|MAX_SNAPSHOTS = 30000/);
-  assert.match(service,/storage:'disabled'/);
+  assert.match(service,/const snapshots = new Map\(\)/);
+  assert.match(service,/MAX_SNAPSHOTS = 30000/);
 });
 test('qualidade e failover não consultam tabelas removidas', () => {
   const quality=content('modules/provider-monitor/quality.service.js');

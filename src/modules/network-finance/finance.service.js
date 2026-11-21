@@ -1,11 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { pixExpiry,requiredSettlementCents } from './charge-pricing.js';
 import { quoteNetworkCharge } from './pricing.service.js';
-import { isSelfServiceUpgrade, upgradePriceBaseline, upgradePlanSignature } from './upgrade-eligibility.js';
-import { oneOffQuote } from './one-off.js';
-import { verifyNetworkPaymentMatch, infinitePayWebhookReference } from './policy.js';
+import { verifyNetworkPaymentMatch } from './policy.js';
 import { QueryTypes, Op } from 'sequelize';
-import { sequelize, Partner, AdminUser, AdminUserProfile, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms, Activation } from '../../db/models/index.js';
+import { sequelize, Partner, AdminUser, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms, Activation } from '../../db/models/index.js';
 import { encryptSecret, decryptSecret } from '../../shared/crypto.js';
 import { AppError } from '../../shared/errors.js';
 import { audit } from '../../shared/audit.js';
@@ -13,14 +11,12 @@ import { clearContractAccessCache } from '../access/access.service.js';
 import { invalidatePlan } from '../service-plans/plan.service.js';
 import { createMercadoPago, verifySignature } from '../pix/providers/mercadopago.js';
 import { createInfinitePay, HANDLE_RE, normalizeHandle } from '../distribution/gateways/infinitepay.js';
-import { inspectCreatingCharge } from './provider-lookup.js';
 import { canActivateGateway, csvSafe, fingerprint, maskAccountRef } from './policy.js';
 import { env } from '../../config/env.js';
 
 const fail = (status,code,message) => {throw new AppError(status,code,message)};
 const query = (sql, params={},transaction) => sequelize.query(sql, {type:QueryTypes.SELECT,replacements:params,...(transaction?{transaction}:{})});
 const asOwner = id => id || '00000000-0000-0000-0000-000000000000';
-const quoteDescription=row=>String(row?.breakdown?.description||'Cobrança avulsa DeltaTV').slice(0,200);
 const GATEWAY_COLS='admin_user_id,provider,credentials_enc,webhook_secret_enc,account_ref,credential_fingerprint,tested_fingerprint,tested_at,active';
 const rowFor = async (adminId,provider,transaction) => (await query(`SELECT ${GATEWAY_COLS} FROM admin_network_gateways WHERE admin_user_id=CAST(:adminId AS uuid) AND provider=:provider`,{adminId,provider},transaction))[0];
 const noSecret = row => ({provider:row.provider,configured:true,active:row.active,tested:canActivateGateway(row),accountRefMasked:maskAccountRef(row.account_ref),testedAt:row.tested_at});
@@ -122,27 +118,15 @@ export async function expireCharges() {
     WHERE status='pending' AND expires_at<=now()`);
 }
 
-/** Prévia obrigatória também para avulsas; o Admin define o valor, nunca o pagador. */
-export async function previewOneOffCharge(adminId,input) {
-  await owned(adminId,input.partnerId);
-  return oneOffQuote({...input,adminId});
-}
-export async function createOneOffCharge(adminId,input,actor) {
-  return createCharge(adminId,{...input,kind:'one_off',planTo:null},actor);
-}
-
-/** Renovação/upgrade usam o catálogo; cobrança avulsa tem valor definido pela administração. */
-export async function createCharge(adminId,{partnerId,kind,planTo,method='automatic',previewFingerprint,manualDiscount=null,waiver=null,
-  amountCents=null,description=null},actor,{skipPreview=false,source='admin'}={}) {
+/** O preço é sempre extraído do plano desta rede no banco, jamais de parâmetros da requisição. */
+export async function createCharge(adminId,{partnerId,kind,planTo,method='automatic',previewFingerprint,manualDiscount=null,waiver=null},actor,{skipPreview=false}={}) {
   await expireCharges();
   const charge=await sequelize.transaction(async t=>{
     await query('SELECT id FROM admin_users WHERE id=CAST(:adminId AS uuid) FOR UPDATE',{adminId},t);
     const p=await owned(adminId,partnerId,t);
     // Trava o contrato para a criação e prévia terem a mesma referência.
     await query('SELECT id FROM partners WHERE id=CAST(:partnerId AS uuid) FOR UPDATE',{partnerId},t);
-    const quote=kind==='one_off'
-      ? oneOffQuote({adminId,partnerId,amountCents,description,method})
-      : await quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDiscount,waiver},actor,{transaction:t,source});
+    const quote=await quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDiscount,waiver},actor,{transaction:t});
     if(!skipPreview && (!previewFingerprint||previewFingerprint!==quote.previewFingerprint))
       throw new AppError(409,'PRICING_CHANGED','O valor da prévia mudou. Confirme o cálculo atualizado.',{quote});
     const gateway=method==='automatic'?(await query(`SELECT provider FROM admin_network_gateways WHERE admin_user_id=CAST(:adminId AS uuid) AND active=true`,{adminId},t))[0]:null;
@@ -151,10 +135,10 @@ export async function createCharge(adminId,{partnerId,kind,planTo,method='automa
     if(expiresAt.getTime()<=Date.now()+1000)fail(409,'PRICING_DAY_END','O dia está virando; recalcule o pagamento.');
     const [row]=await query(`INSERT INTO admin_network_charges(owner_admin_id,partner_id,kind,plan_from,plan_to,amount_cents,status,provider,method,expires_at,breakdown)
       VALUES(CAST(:adminId AS uuid),CAST(:partnerId AS uuid),:kind,:planFrom,:planTo,:amount,'creating',:provider,:method,:expiresAt,CAST(:breakdown AS jsonb)) RETURNING *`,
-      {adminId,partnerId,kind,planFrom:quote.planFrom,planTo:quote.planTo,amount:quote.amountCents,provider:gateway?.provider||null,
+      {adminId,partnerId,kind,planFrom:quote.planFrom,planTo,amount:quote.amountCents,provider:gateway?.provider||null,
         method,expiresAt,breakdown:JSON.stringify(quote.breakdown)},t);
     await audit({actor,action:'network.finance.charge.create',entityType:'network_charge',entityId:row.id,
-      metadata:{partnerId,provider:row.provider,kind,planTo:quote.planTo,amountCents:row.amount_cents,description:kind==='one_off'?quote.description:null},transaction:t});
+      metadata:{partnerId,provider:row.provider,kind,planTo,amountCents:row.amount_cents},transaction:t});
     if(manualDiscount)await audit({actor,action:'network.finance.charge.manual_discount',entityType:'network_charge',entityId:row.id,
       metadata:{discount:quote.breakdown.manual,amountCents:quote.breakdown.manualDiscountCents},transaction:t});
     if(waiver)await audit({actor,action:'network.finance.charge.waiver',entityType:'network_charge',entityId:row.id,
@@ -176,14 +160,14 @@ export async function createCharge(adminId,{partnerId,kind,planTo,method='automa
       const payerEmail=charge.partner.contactEmail||partnerLogin?.email;
       if(!payerEmail)fail(422,'PAYER_EMAIL_REQUIRED','Cadastre o e-mail de contato do parceiro antes de cobrar via Pix.');
       const payment=await createMercadoPago({accessToken:credential,webhookSecret:decryptSecret(gateway.webhook_secret_enc)}).createCharge({
-        id:row.id,amountCents:Number(row.amount_cents),description:kind==='one_off'?quoteDescription(row):`DeltaTV ${kind==='renewal'?'renovação':'upgrade'} - ${charge.partner.name}`,
+        id:row.id,amountCents:Number(row.amount_cents),description:`DeltaTV ${kind==='renewal'?'renovação':'upgrade'} - ${charge.partner.name}`,
         payer:{email:payerEmail,name:charge.partner.name},expiresAt:new Date(row.expires_at),
         notificationUrl:`${env.publicBaseUrl}/api/v1/webhooks/network-finance/mercadopago/${row.id}`,
       });
       providerRef=payment.providerRef;pixCode=payment.qrCode;expiresAt=new Date(Math.min(new Date(payment.expiresAt||row.expires_at).getTime(),new Date(row.expires_at).getTime()));
     } else {
       const payment=await createInfinitePay({handle:gateway.account_ref,apiKey:credential}).createLink({
-        orderNsu:row.id,amountCents:Number(row.amount_cents),description:kind==='one_off'?quoteDescription(row):`DeltaTV ${kind==='renewal'?'renovação':'upgrade'}`,
+        orderNsu:row.id,amountCents:Number(row.amount_cents),description:`DeltaTV ${kind==='renewal'?'renovação':'upgrade'}`,
         redirectUrl:env.partnerPortalUrl,
         webhookUrl:`${env.publicBaseUrl}/api/v1/webhooks/network-finance/infinitepay/${row.id}`,
         validUntil:new Date(row.expires_at),singlePayment:true,
@@ -195,10 +179,7 @@ export async function createCharge(adminId,{partnerId,kind,planTo,method='automa
       {id:row.id,providerRef,checkoutUrl,pixEnc:pixCode?encryptSecret(pixCode):null,expiresAt});
     return {id:row.id,status:'pending',method:'automatic'};
   } catch(error) {
-    // Falha da resposta NÃO prova que o provedor deixou de criar o Pix.
-    // Manter o vínculo em 'creating' impede emitir outra cobrança até a conciliação.
-    await query(`UPDATE admin_network_charges SET review_reason='PROVIDER_CREATE_RESPONSE_UNKNOWN',
-      updated_at=now() WHERE id=CAST(:id AS uuid) AND status='creating'`,{id:row.id});
+    await query(`UPDATE admin_network_charges SET status='failed',updated_at=now() WHERE id=CAST(:id AS uuid) AND status='creating'`,{id:row.id});
     throw error;
   }
 }
@@ -218,17 +199,6 @@ async function settleCharge(id,verify,actor) {
     // Expirar o QR não invalida um pagamento comprovado do valor integral.
     const partner=await Partner.findOne({where:{id:charge.partner_id,ownerAdminId:charge.owner_admin_id},transaction:t,lock:t.LOCK.UPDATE});
     if(!partner)fail(409,'PARTNER_OWNER_CHANGED','Titularidade da parceria mudou. Cobrança requer conferência.');
-    if(charge.kind==='one_off') {
-      await query(`UPDATE admin_network_charges SET status='paid',paid_at=now(),transaction_nsu=:transaction,
-        payment_slug=:slug,manual_reference=:reference,paid_amount_cents=:paidAmount,updated_at=now()
-        WHERE id=CAST(:id AS uuid)`,
-        {id,transaction:verify?.transactionNsu||null,slug:verify?.slug||null,reference:verify?.reference||null,
-          paidAmount:verify?.amountCents??Number(charge.amount_cents)},t);
-      await audit({actor,action:'network.finance.one_off.paid',entityType:'network_charge',entityId:id,
-        metadata:{ownerAdminId:charge.owner_admin_id,partnerId:charge.partner_id,method:charge.method,
-          provider:charge.provider,manualWithoutProviderProof:charge.method==='manual',applied:false},transaction:t});
-      return {id,status:'paid',applied:false};
-    }
     const current=await PartnerServicePlan.findByPk(charge.partner_id,{transaction:t});
     const plan=await ServicePlanCatalog.findOne({where:{key:charge.plan_to,ownerAdminId:charge.owner_admin_id},transaction:t});
     const stale=!plan || (!!charge.plan_from && current?.tier!==charge.plan_from);
@@ -238,16 +208,8 @@ async function settleCharge(id,verify,actor) {
       ? await ContentPartnerTerms.findByPk(partner.id,{transaction:t,lock:t.LOCK.UPDATE}) : null;
     const used=charge.kind==='upgrade' && plan?.activationLimit!=null
       ? await Activation.count({where:{partnerId:partner.id,status:{[Op.ne]:'revoked'}},transaction:t}) : 0;
-    const original=charge.breakdown?.selfServiceUpgrade===true && current?.tier
-      ? await ServicePlanCatalog.findOne({where:{key:current.tier,ownerAdminId:charge.owner_admin_id},transaction:t}) : null;
-    const baseline=charge.breakdown?.selfServiceUpgrade===true
-      ? upgradePriceBaseline(partner,current,original) : null;
     const blocked=charge.kind==='upgrade' && (
-      (terms?.mode==='credits') || (plan?.activationLimit!=null && used>plan.activationLimit) ||
-      (charge.breakdown?.selfServiceUpgrade===true && (
-        !isSelfServiceUpgrade(baseline,plan) ||
-        baseline.monthlyPriceCents!==charge.breakdown.oldPlanPriceCents ||
-        charge.breakdown.upgradePlanSignature!==upgradePlanSignature(plan))));
+      (terms?.mode==='credits') || (plan?.activationLimit!=null && used>plan.activationLimit));
     const nextStatus=(stale||blocked)?'needs_review':'paid';
     await query(`UPDATE admin_network_charges SET status=:status,paid_at=now(),transaction_nsu=:transaction,
       payment_slug=:slug,manual_reference=:reference,paid_amount_cents=:paidAmount,updated_at=now() WHERE id=CAST(:id AS uuid)`,
@@ -266,10 +228,7 @@ async function settleCharge(id,verify,actor) {
         changes.monthlyFeeCents=plan.monthlyPriceCents;
         changes.billingModel='fixed';
         await PartnerServicePlan.upsert({partnerId:partner.id,tier:charge.plan_to,
-          ...(charge.breakdown?.selfServiceUpgrade===true ? {
-            maxServersOverride:null,autoFailoverOverride:null,autoPriorityOverride:null,
-            emailAlertsOverride:null,detailedHistoryOverride:null,
-          } : {maxServersOverride:plan.maxServers})},{transaction:t});
+          maxServersOverride:plan.maxServers},{transaction:t});
         if(partner.kind!=='reseller'){
           const updatedTerms={mode:plan.activationLimit==null?'fixed_unlimited':'fixed_limited',
             fixedFeeCents:plan.monthlyPriceCents,activationLimit:plan.activationLimit,
@@ -300,14 +259,6 @@ export async function confirmManualCharge(adminId,id,{reference},actor){
   return settleCharge(id,{reference},actor);
 }
 
-/** Superadmin pode conferir manualmente SOMENTE avulsas das redes, sempre auditado. */
-export async function confirmOneOffManualAsSuper(id,{reference},actor) {
-  const [row]=await query(`SELECT owner_admin_id,kind FROM admin_network_charges WHERE id=CAST(:id AS uuid)`,{id});
-  if(!row)fail(404,'NOT_FOUND','Cobrança não encontrada.');
-  if(row.kind!=='one_off')fail(403,'ONE_OFF_ONLY','Use o fluxo contratual de confirmação para planos.');
-  return confirmManualCharge(row.owner_admin_id,id,{reference},actor);
-}
-
 /** Compatibilidade com a ficha antiga: o pagamento manual também entra no razão da rede. */
 export async function confirmPendingContractFromWorkspace(adminId,partnerId,reference,actor){
   const partner=await owned(adminId,partnerId);
@@ -319,32 +270,19 @@ export async function confirmPendingContractFromWorkspace(adminId,partnerId,refe
   return confirmManualCharge(adminId,charge.id,{reference},actor);
 }
 
-async function needsReview(id,reason,amount,actor,{onlyCreating=false}={}){
+async function needsReview(id,reason,amount,actor){
   return sequelize.transaction(async t=>{
     const [charge]=await query(`SELECT status FROM admin_network_charges WHERE id=CAST(:id AS uuid) FOR UPDATE`,{id},t);
     if(!charge)return {ignored:true};
-    if(onlyCreating && charge.status!=='creating')return {id,status:charge.status,ignored:true};
     if(charge.status==='paid')return {id,status:'paid',alreadyPaid:true};
     if(charge.status==='needs_review')return {id,status:'needs_review',alreadyReviewed:true};
-    await query(`UPDATE admin_network_charges SET status='needs_review',
-      paid_at=CASE WHEN :amount IS NOT NULL THEN now() ELSE paid_at END,
+    await query(`UPDATE admin_network_charges SET status='needs_review',paid_at=now(),
       paid_amount_cents=:amount,review_reason=:reason,updated_at=now() WHERE id=CAST(:id AS uuid)`,
       {id,reason,amount:Number.isSafeInteger(amount)&&amount>=0?amount:null},t);
     await audit({actor,action:'network.finance.charge.needs_review',entityType:'network_charge',entityId:id,
       metadata:{reason,amountCents:amount},transaction:t});
     return {id,status:'needs_review'};
   });
-}
-
-/** URL fixa cadastrável no painel Mercado Pago. A referência identifica o gateway correto,
- * mas a assinatura e o pagamento são revalidados pelo mesmo reconciliador da rota por cobrança. */
-export async function reconcileMercadoPagoNotification(req){
-  const paymentId=String(req.query?.['data.id']||req.body?.data?.id||'');
-  if(!/^\d{1,20}$/.test(paymentId))return {ignored:true};
-  const [charge]=await query(`SELECT id FROM admin_network_charges WHERE provider='mercadopago'
-    AND provider_ref=:paymentId LIMIT 1`,{paymentId});
-  if(!charge)return {ignored:true};
-  return reconcileProviderCharge(charge.id,'mercadopago',req);
 }
 
 export async function reconcileProviderCharge(id,provider,req) {
@@ -364,14 +302,14 @@ export async function reconcileProviderCharge(id,provider,req) {
     if(payment.status!=='paid')return {ignored:true};
     const owed=new Date(charge.expires_at)<new Date()?requiredSettlementCents(charge.breakdown,new Date(),Number(charge.amount_cents)):Number(charge.amount_cents);
     const receipt={confirmed:true,externalReference:payment.externalReference,providerRef:reported,
-      amountCents:payment.amountCents,currency:payment.currency,paymentMethod:payment.paymentMethod,collectorId:payment.collectorId};
+      amountCents:payment.amountCents,currency:payment.currency||'BRL',paymentMethod:payment.paymentMethod||'pix',collectorId:payment.collectorId};
     if(!verifyNetworkPaymentMatch({...charge,amount_cents:owed},receipt,gateway.account_ref))
       return needsReview(id,'PAYMENT_MISMATCH',payment.amountCents,actor);
     return settleCharge(id,{providerConfirmed:true,amountCents:payment.amountCents},actor);
   }
-  const reference=infinitePayWebhookReference(req.body);
-  if(!reference)return {ignored:true};
-  const {transactionNsu,slug}=reference;
+  const transactionNsu=String(req.body?.transaction_nsu||req.body?.transactionNsu||'');
+  const slug=String(req.body?.slug||'');
+  if(!/^[\w-]{1,160}$/.test(transactionNsu)|| !/^[\w-]{1,160}$/.test(slug))return {ignored:true};
   const payment=await createInfinitePay({handle:gateway.account_ref,apiKey:credential}).paymentCheck({orderNsu:charge.id,transactionNsu,slug});
   if(!payment.paid)return {ignored:true};
   const amount=payment.paidAmountCents??payment.amountCents;
@@ -414,7 +352,7 @@ const FILTERS=`FROM admin_network_charges c
    AND (:fromDate IS NULL OR c.created_at >= (CAST(:fromDate AS date)::timestamp AT TIME ZONE 'America/Sao_Paulo'))
    AND (:toDate IS NULL OR c.created_at < ((CAST(:toDate AS date)+1)::timestamp AT TIME ZONE 'America/Sao_Paulo'))`;
 const FIELDS=`c.id,c.owner_admin_id AS "adminId",a.name AS "adminName",c.partner_id AS "partnerId",p.name AS "partnerName",
- c.kind,c.plan_from AS "planFrom",c.plan_to AS "planTo",c.breakdown->>'description' AS "description",c.amount_cents AS "amountCents",c.breakdown,c.review_reason AS "reviewReason",c.status,c.provider,c.method,
+ c.kind,c.plan_from AS "planFrom",c.plan_to AS "planTo",c.amount_cents AS "amountCents",c.breakdown,c.review_reason AS "reviewReason",c.status,c.provider,c.method,
  c.created_at AS "createdAt",c.paid_at AS "paidAt",c.expires_at AS "expiresAt",
  CASE WHEN c.method='manual' THEN c.manual_reference ELSE c.provider_ref END AS reference,
  CASE WHEN c.method='manual' AND c.status IN ('paid','review','needs_review') THEN true ELSE false END AS "manualWithoutProviderProof"`;
@@ -461,7 +399,7 @@ export async function exportChargesCsv(filters,{superadmin=false,ownerAdminId=nu
   await expireCharges();
   const params=filtered(filters,superadmin?null:asOwner(ownerAdminId));
   const rows=await query(`SELECT ${FIELDS} ${FILTERS} ORDER BY c.created_at DESC,c.id DESC LIMIT :limit`,{...params,limit});
-  const keys=['adminName','partnerName','kind','description','planFrom','planTo','amountCents','status','provider','method','createdAt','paidAt','reference','manualWithoutProviderProof',
+  const keys=['adminName','partnerName','kind','planFrom','planTo','amountCents','status','provider','method','createdAt','paidAt','reference','manualWithoutProviderProof',
     'lateFeeCents','interestCents','earlyDiscountCents','manualDiscountCents','waiverFeeCents','waiverInterestCents'];
   return [keys.join(','),...rows.map(row=>keys.map(k=>{const value=k in (row.breakdown||{})?row.breakdown[k]:row[k];return csvSafe(value instanceof Date?value.toISOString():value)}).join(','))].join('\r\n')+'\r\n';
 }
@@ -470,8 +408,7 @@ export async function partnerCharges(partnerId) {
   const rows=await query(`SELECT id,kind,plan_to,amount_cents,breakdown,status,method,checkout_url,pix_code_enc,expires_at,created_at
     FROM admin_network_charges WHERE partner_id=CAST(:partnerId AS uuid)
     ORDER BY created_at DESC LIMIT 30`,{partnerId});
-  return rows.map(r=>{const b=r.breakdown||{};return ({id:r.id,kind:r.kind,planTo:r.plan_to,
-    ...(r.kind==='one_off'?{description:String(b.description||'Cobrança avulsa').slice(0,200)}:{}),amountCents:r.amount_cents,
+  return rows.map(r=>{const b=r.breakdown||{};return ({id:r.id,kind:r.kind,planTo:r.plan_to,amountCents:r.amount_cents,
     // A conta do pagador nunca inclui identidade, motivo, tipo de desconto
     // manual ou configurações internas do Administrador.
     breakdown:b.totalCents?Object.fromEntries(['baseCents','earlyDiscountCents','manualDiscountCents',
@@ -492,92 +429,4 @@ export async function maskedAdminGatewaySummary() {
       WHERE admin_user_id=a.id ORDER BY active DESC,updated_at DESC LIMIT 1
     ) g ON true
     WHERE a.role='admin' AND a.deleted_at IS NULL ORDER BY a.name LIMIT 500`).then(rows=>rows.map(({accountRef,...r})=>({ ...r,configured:!!r.provider,accountRefMasked:maskAccountRef(accountRef)})));
-}
-
-/**
- * Worker de conciliação idempotente de cobranças presas em criação.
- * O claim usa SKIP LOCKED e CHECKED_AT para evitar a mesma cobrança em dois
- * workers; consultas de rede são feitas FORA de transações do PostgreSQL.
- * NUNCA cria nova cobrança. Provedores são consultados apenas por referência.
- */
-export async function recoverStaleCreatingCharges({now=new Date(),limit=25,staleMinutes=10,maxAttempts=3,
-  inspect=inspectCreatingCharge}={}) {
-  if(!Number.isInteger(limit)||limit<1||limit>100 || !Number.isInteger(staleMinutes)||staleMinutes<1||staleMinutes>1440
-      || !Number.isInteger(maxAttempts)||maxAttempts<1||maxAttempts>10)
-    throw new RangeError('Parâmetros de recuperação inválidos.');
-  const cutoff=new Date(new Date(now).getTime()-staleMinutes*60_000);
-  const rows=await sequelize.transaction(async transaction=>query(`WITH claimed AS (
-      SELECT id FROM admin_network_charges
-      WHERE status='creating' AND updated_at<=:cutoff
-        AND (recovery_checked_at IS NULL OR recovery_checked_at<=:cutoff)
-      ORDER BY updated_at ASC,id ASC LIMIT :limit FOR UPDATE SKIP LOCKED
-    )
-    UPDATE admin_network_charges c SET recovery_attempts=c.recovery_attempts+1,
-      recovery_checked_at=:now
-    FROM claimed WHERE c.id=claimed.id
-    RETURNING c.*`,{cutoff,now,limit},transaction));
-  const result={checked:rows.length,recovered:0,paid:0,needsReview:0,errors:0};
-  const actor={type:'system',id:null,role:'reconciliation'};
-  for(const charge of rows){
-    try {
-      const gateway=await rowFor(charge.owner_admin_id,charge.provider);
-      const outcome=await inspect(charge,{
-        accountRef:gateway?.account_ref,credential:gateway?.credentials_enc?decryptSecret(gateway.credentials_enc):null,
-      },{now});
-      if(outcome.kind==='paid') {
-        // Only persist the provider ID for this same locked owner+charge.
-        if(outcome.providerRef)await query(`UPDATE admin_network_charges
-          SET provider_ref=:ref,updated_at=now()
-          WHERE id=CAST(:id AS uuid) AND owner_admin_id=CAST(:owner AS uuid)
-            AND status='creating' AND (provider_ref IS NULL OR provider_ref=:ref)`,
-          {id:charge.id,owner:charge.owner_admin_id,ref:outcome.providerRef});
-        const settled=await settleCharge(charge.id,{providerConfirmed:true,
-          amountCents:outcome.amountCents,transactionNsu:outcome.transactionNsu,slug:outcome.slug},actor);
-        if(settled.status==='paid')result.paid++;
-        else if(settled.status==='needs_review')result.needsReview++;
-      } else if(outcome.kind==='pending' && outcome.providerRef) {
-        const updated=await query(`UPDATE admin_network_charges SET status='pending',provider_ref=:ref,
-          pix_code_enc=COALESCE(pix_code_enc,:pix),updated_at=now()
-          WHERE id=CAST(:id AS uuid) AND owner_admin_id=CAST(:owner AS uuid)
-            AND status='creating' AND (provider_ref IS NULL OR provider_ref=:ref)
-          RETURNING id`,{id:charge.id,owner:charge.owner_admin_id,
-          ref:outcome.providerRef,pix:outcome.qrCode?encryptSecret(outcome.qrCode):null});
-        if(updated.length)result.recovered++;
-      } else if(outcome.kind==='review') {
-        const reviewed=await needsReview(charge.id,outcome.reason,outcome.receivedCents??null,actor,{onlyCreating:true});
-        if(reviewed.status==='needs_review')result.needsReview++;
-      } else if(Number(charge.recovery_attempts)>=maxAttempts) {
-        const reviewed=await needsReview(charge.id,outcome.reason||'CREATING_UNVERIFIED',null,actor,{onlyCreating:true});
-        if(reviewed.status==='needs_review')result.needsReview++;
-      }
-    } catch(error) {
-      result.errors++;
-      // Provider downtime never becomes proof of payment. After bounded retries,
-      // stop the loop by requesting review (no contract extension).
-      if(Number(charge.recovery_attempts)>=maxAttempts){
-        const reviewed=await needsReview(charge.id,'PROVIDER_LOOKUP_UNAVAILABLE',null,actor,{onlyCreating:true});
-        if(reviewed.status==='needs_review')result.needsReview++;
-      }
-      // Never log credentials or provider response bodies.
-      console.warn(`[finance-recovery] consulta falhou para cobrança ${charge.id}: ${error.code||'LOOKUP_ERROR'}`);
-    }
-  }
-  return result;
-}
-
-
-/** Somente o titular autenticado, sem indicar partnerId ou preço, cria sua própria cobrança automática. */
-export async function createPartnerUpgradeCharge(partnerId,{planTo,previewFingerprint},actor) {
- const partner=await Partner.findByPk(partnerId,{attributes:['ownerAdminId']});
- if(!partner?.ownerAdminId)fail(404,'NETWORK_MISSING','Nenhuma rede de Master vinculada.');
- return createCharge(partner.ownerAdminId,{partnerId,kind:'upgrade',planTo,previewFingerprint,method:'automatic'},actor,{source:'partner'});
-}
-
-export async function getPartnerMasterContact(partnerId) {
- const partner=await Partner.findByPk(partnerId,{attributes:['ownerAdminId']});
- if(!partner?.ownerAdminId)return {name:'Master',phone:null};
- const master=await AdminUser.findOne({where:{id:partner.ownerAdminId,role:'admin',status:'active',deletedAt:null},attributes:['id','name']});
- if(!master)return {name:'Master',phone:null};
- const profile=await AdminUserProfile.findByPk(master.id,{attributes:['phone']});
- return {name:master.name||'Master',phone:profile?.phone?.trim()||null};
 }

@@ -30,7 +30,7 @@ export async function saveServicePackage(p,actor){admin(actor);
  if(p.autoPriority&&!p.autoFailover)fail(422,'PRIORITY_NEEDS_FAILOVER','Prioridade automática requer failover ativo.');
  return tx(async t=>{
   const tier=await one('SELECT key,audience,active FROM service_plan_catalogs WHERE key=:key',{key:p.tier},t);
-  if(!tier||!tier.active)fail(422,'BAD_PACKAGE_TIER','Escolha um modelo técnico ativo.');
+  if(!tier||!tier.active||!['content','both'].includes(tier.audience))fail(422,'BAD_PACKAGE_TIER','Escolha um modelo técnico ativo para parceiro.');
   const current=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:code FOR UPDATE',{code:p.code},t);
   const row=await one(`INSERT INTO partner_portal_sales_plans(code,name,wholesale_cents,min_resale_cents,active,service_tier,max_dns,
     activation_limit,auto_failover,auto_priority,email_alerts,detailed_history)

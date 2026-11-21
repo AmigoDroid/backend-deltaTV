@@ -97,7 +97,7 @@ export async function createInvitation({sellerPartnerId,invitedName,invitedEmail
       WHERE lower(invited_email)=:email AND status='pending'`,{email},t);
     if(pending)error(409,'PORTAL_INVITE_PENDING','Já existe convite comercial pendente para este e-mail.');
     const catalog=await one(`SELECT * FROM service_plan_catalogs
-      WHERE key=:planCode AND active=true AND hidden_from_network=false AND audience IN ('content','both')`,{planCode},t);
+      WHERE key=:planCode AND active=true AND audience IN ('content','both')`,{planCode},t);
     if(!catalog)error(409,'PLAN_INACTIVE','Este plano não está disponível para parceiros.');
     // A sale of a plan with resale rights adds a descendant to the hierarchy.
     if((catalog.can_resell_panel||inviteType==='submaster')&&!sellerPermission.permissions?.canCreateSubmasters)
@@ -194,9 +194,6 @@ export async function completeInvitation({token,companyName,password}){
     // Oferta já reservada pelo preço vigente na emissão: mudança posterior no piso/estado
     // comercial do plano NÃO invalida meses pré-pagos anteriormente comprometidos.
     if(!plan)error(409,'PORTAL_PLAN_NOT_FOUND','Plano comercial não encontrado.');
-    const hiddenTier=await one('SELECT hidden_from_network FROM service_plan_catalogs WHERE key=:key',
-      {key:plan.service_tier||row.plan_code},t);
-    if(hiddenTier?.hidden_from_network)error(403,'PLAN_HIDDEN','Plano reservado à administração.');
     const now=new Date();
     const expiresAt=addMonthsUtc(now,row.months);
     const slug=`parceiro-${crypto.randomBytes(7).toString('hex')}`;

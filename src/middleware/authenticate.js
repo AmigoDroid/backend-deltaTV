@@ -70,8 +70,8 @@ export async function resolveAdminClaims(payload) {
        (session.audience === 'content_partner' && !['content','both'].includes(partner.kind)) ||
        (session.audience === 'partner' && portalAdmin && !['reseller','both'].includes(partner.kind)))
       throw new AppError(401,'INVALID_TOKEN','Conta operacional indisponível.');
-    renewalOnly = isNetworkRenewalOnlyPartner(partner);
   }
+  if (actualContext === 'partner') renewalOnly = isNetworkRenewalOnlyPartner(partner);
   payload.resolvedContext=actualContext;
  } else if (!payload.imp) {
    // Tokens antigos sem uma sessão não ganham privilégio de portal nem de Admin.
@@ -109,8 +109,6 @@ export async function authenticate(req, _res, next) {
     const allowed = req.method === 'GET' && [
       '/api/v1/partner/network-charges',
       '/api/v1/partner/network-charges/pricing',
-      '/api/v1/partner/network-charges/master',
-      '/api/v1/partner/network-charges/upgrade-options',
     ].includes(pathname);
     if (!allowed) throw new AppError(403,'RENEWAL_ONLY','Contrato vencido: somente Meu plano e pagamentos estão disponíveis.');
   }
@@ -144,6 +142,9 @@ export const requirePartnerRole = (req, _res, next) => {
 export function portalPermissionGate(req,_res,next){
  if(req.method==='GET'&&req.path==='/me')return next();
  const first=req.path.split('/').filter(Boolean)[0]||'dashboard';
+ // Troca emergencial e individual de DNS: recurso padrão de toda parceria autenticada.
+ // Contrato, status e escopo dos códigos continuam validados pelas rotas e serviços.
+ if(first==='emergency-dns' && req.user?.role==='partner' && req.user.partnerId) return next();
  const aliases={'me':'dashboard','overview':'dashboard','summary':'dashboard','server-monitor':'monitor','servers':'providers','service-plan':'dashboard','commercial':'commerce','portal-sales':'network','credit-ledger':'credits','downloads':'downloads','app-downloads':'downloads','mac':'devices','license-activation':'licenses','payments':'billing','invoices':'billing','network-charges':'billing','quality':'monitor'};
  const area=aliases[first]||first, action=['GET','HEAD','OPTIONS'].includes(req.method)?'read':'write';
  if(!can(req.user,`partner:${area}:${action}`))throw new AppError(403,'FORBIDDEN','Seu papel não permite esta ação no portal.');next();

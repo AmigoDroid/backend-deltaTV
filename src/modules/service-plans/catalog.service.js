@@ -17,7 +17,7 @@ async function syncLegacyInvitationPlan(plan, t) {
     auto_failover=excluded.auto_failover,auto_priority=excluded.auto_priority,
     email_alerts=excluded.email_alerts,detailed_history=excluded.detailed_history,
     updated_at=now()`,{
-     replacements:{key:plan.key,name:plan.name,active:plan.active && !plan.hiddenFromNetwork,maxServers:plan.maxServers,
+     replacements:{key:plan.key,name:plan.name,active:plan.active,maxServers:plan.maxServers,
       autoFailover:plan.autoFailover,autoPriority:plan.autoPriority,
       emailAlerts:plan.emailAlerts,detailedHistory:plan.detailedHistory}, transaction:t
    });
@@ -83,9 +83,6 @@ export async function updateCatalogPlan(key, input, actor) {
     await validatePlanChanges(key, input, t);
     const before = record.toJSON();
     await record.update(input, {transaction:t});
-    if(before.hiddenFromNetwork!==record.hiddenFromNetwork)
-      await audit({actor,action:"service_plan.visibility",entityType:"service_plan",entityId:key,
-        metadata:{before:before.hiddenFromNetwork,after:record.hiddenFromNetwork},transaction:t});
     await syncLegacyInvitationPlan(record.toJSON(),t);
     await audit({ actor, action:"service_plan.updated", entityType:"service_plan", entityId:key,
       metadata:{before,after:record.toJSON()}, transaction:t });

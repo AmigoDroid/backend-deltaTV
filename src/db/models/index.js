@@ -185,7 +185,6 @@ export const ServicePlanCatalog = sequelize.define("ServicePlanCatalog", {
   canViewFinance:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   canManageGateways:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   active:{type:T.BOOLEAN,allowNull:false,defaultValue:true},
-  hiddenFromNetwork:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
   system:{type:T.BOOLEAN,allowNull:false,defaultValue:false},sortOrder:int(100),
   ownerAdminId: { type: T.UUID },
   deletedAt:{type:T.DATE,allowNull:true},

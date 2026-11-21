@@ -108,18 +108,6 @@ export function createMercadoPago({ accessToken, webhookSecret = "", fetchImpl =
       };
     },
 
-    /** Read-only search by our immutable charge ID; never creates another Pix. */
-    async searchByExternalReference(externalReference) {
-      const ref=String(externalReference||'');
-      if (!/^[0-9a-fA-F-]{36}$/.test(ref)) throw new AppError(422,'PIX_INVALID_REF','Referência inválida para conciliação.');
-      const params=new URLSearchParams({external_reference:ref,sort:'date_created',criteria:'desc',limit:'20',offset:'0'});
-      const result=await call(`/v1/payments/search?${params.toString()}`);
-      const results=Array.isArray(result?.results)?result.results:[];
-      // More than 20 is ambiguous as well; never silently settle a random payment.
-      return {ids:results.filter(p=>p?.id && p?.external_reference===ref).map(p=>String(p.id)),
-        total:Number(result?.paging?.total??results.length)};
-    },
-
     async getPayment(providerRef) {
       if (!/^\d{1,20}$/.test(String(providerRef))) throw new AppError(422, "PIX_INVALID_REF", "Identificador de pagamento inválido.");
       const p = await call(`/v1/payments/${providerRef}`);
@@ -133,7 +121,6 @@ export function createMercadoPago({ accessToken, webhookSecret = "", fetchImpl =
         paymentMethod: p.payment_method_id ?? null, currency: p.currency_id ?? null,
         refundedAmountCents: amountToCents(p.transaction_amount_refunded || 0),
         paidAt: p.date_approved ? new Date(p.date_approved) : null,
-        qrCode: p?.point_of_interaction?.transaction_data?.qr_code ?? null,
       };
     },
 

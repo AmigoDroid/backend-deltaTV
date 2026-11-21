@@ -39,3 +39,19 @@ test('monitor publica expiração e a API disponibiliza cancelamento',()=>{
  assert.match(route,/r\.delete\('\/'/);
  assert.match(route,/mergeParams:true/);
 });
+
+
+test('troca emergencial é direito padrão do parceiro, inclusive sem autoFailover',()=>{
+ const gate=read('../../src/middleware/authenticate.js');
+ const svc=read('../../src/modules/provider-monitor/emergency.service.js');
+ const resolve=read('../../src/modules/provider-monitor/resolve.service.js');
+ const pool=read('../../src/modules/provider-monitor/code-pool.service.js');
+ assert.match(gate,/first==='emergency-dns' && req\.user\?\.role==='partner'/);
+ assert.doesNotMatch(svc,/PLAN_FAILOVER_DISABLED/);
+ assert.match(svc,/Math\.max\(1,freshPlan\.features\.maxServers\)/);
+ assert.match(resolve,/if\(!plan\.features\.autoFailover\)\{/);
+ assert.match(resolve,/serversForCode\(code,\{bypassCache:true,emergency:true\}\)/);
+ assert.match(resolve,/não ressuscitar a origem antiga removida/);
+ assert.match(pool,/emergency = false/);
+ assert.match(svc,/c\.partner_id=:partnerId/);
+});

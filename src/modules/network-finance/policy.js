@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export const PROVIDERS = Object.freeze(['mercadopago','infinitepay']);
 export const CHARGE_STATUSES = Object.freeze(['creating','pending','paid','expired','cancelled','failed','review','needs_review']);
-export const CHARGE_KINDS = Object.freeze(['renewal','upgrade','one_off']);
+export const CHARGE_KINDS = Object.freeze(['renewal','upgrade']);
 export const maskAccountRef = value => {
   const str = String(value || '');
   return str ? (str.length <= 4 ? '*'.repeat(str.length) : `${'*'.repeat(Math.min(8, Math.max(4,str.length-4)))}${str.slice(-4)}`) : null;
@@ -27,12 +27,4 @@ export function verifyNetworkPaymentMatch(charge, receipt, expectedAccount){
     receipt.currency==='BRL' && receipt.paymentMethod==='pix' &&
     Number.isSafeInteger(receipt.amountCents) && receipt.amountCents>=Number(charge.amount_cents) &&
     String(receipt.collectorId||'')===String(expectedAccount||''));
-}
-
-/** Os webhooks da InfinitePay usam invoice_slug; slug é o nome no redirect. */
-export function infinitePayWebhookReference(body) {
-  const transactionNsu=String(body?.transaction_nsu||body?.transactionNsu||'');
-  const slug=String(body?.invoice_slug||body?.slug||'');
-  if(!/^[\w-]{1,160}$/.test(transactionNsu)||!/^[\w-]{1,160}$/.test(slug))return null;
-  return {transactionNsu,slug};
 }

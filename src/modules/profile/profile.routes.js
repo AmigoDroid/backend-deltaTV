@@ -30,9 +30,7 @@ r.get("/", async (req, res) => {
   if (!user || (req.user.role === "partner" && !partner)) throw new AppError(404, "NOT_FOUND", "Conta não encontrada.");
   // Perfil administrativo sem parceria; nenhuma conta de outro usuário é consultada.
   const workspace = partner || { id: null, name: "Administração DeltaTV", kind: "administration", status: "active", billingModel: null, endsAt: null };
-  res.json({ user: { ...publicUser(user,req.user.role),
-    ...(req.user.role === "admin" ? {delegatedPermissions: req.user.delegatedPermissions} : {}) },
-    profile: publicProfile(profile), partner: workspace });
+  res.json({ user: publicUser(user,req.user.role), profile: publicProfile(profile), partner: workspace });
 });
 
 // Upsert concorrente sem consultar/destravar registros de outro usuário.
