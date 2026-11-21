@@ -22,32 +22,16 @@ export async function selectedProviderForDevice(activationId) {
   return row?.providerId ?? null;
 }
 
-/** Quando um DNS cai, avisa TVs com rota atual apontando para ele.
- * A TV recolhe o comando 'refresh-catalog' via WSS/poll HTTPS; o resolver seleciona
- * alternativa saudável no pedido seguinte. Limite fixo por rodada, sem histórico de TV.
+/** Um sinal por rede quando um DNS cai (sem credenciais e sem fila SQL de 3.000 comandos).
+ * A TV confere o providerId contra a origem selecionada e busca a nova rota
+ * na API autenticada. WSS é imediato; Roku antigo usa o long-poll HTTPS existente.
  */
-export async function queueRefreshForDownProvider(providerId, limit=100) {
-  const { randomUUID } = await import('node:crypto');
+export async function queueRefreshForDownProvider(providerId) {
+  const [provider] = await sequelize.query(`SELECT partner_id AS "partnerId" FROM partner_providers
+    WHERE id=:providerId AND status='active' AND deleted_at IS NULL LIMIT 1`,
+    { replacements:{providerId}, type:QueryTypes.SELECT });
+  if (!provider?.partnerId) return 0;
   const { broadcastDeviceHint } = await import('../../realtime/device-channel.js');
-  // Seleção dos candidatos evita emitir comandos repetidos enquanto a TV não recolhe.
-  const rows = await sequelize.query(`SELECT r.activation_id AS "activationId", a.device_id AS "deviceId"
-    FROM device_provider_routes r JOIN activations a ON a.id=r.activation_id
-    WHERE r.provider_id=:providerId AND a.status <> 'revoked'
-      AND EXISTS (SELECT 1 FROM device_sessions s WHERE s.activation_id=a.id
-         AND s.revoked_at IS NULL AND s.expires_at>now())
-      AND NOT EXISTS (SELECT 1 FROM device_remote_commands c
-         WHERE c.activation_id=r.activation_id AND c.type='refresh-catalog'
-           AND c.created_at>now()-interval '3 minutes')
-    ORDER BY r.updated_at ASC LIMIT :limit`,
-    {replacements:{providerId,limit},type:QueryTypes.SELECT});
-  // Por lote pequeno. Failover de uma TV não pode causar avalanche de CPU no PostgreSQL.
-  let queued=0;
-  for(const r of rows){
-    const [result] = await sequelize.query(`INSERT INTO device_remote_commands
-      (id,activation_id,device_id,type,status,actor_type,actor_id,expires_at,created_at,updated_at)
-      VALUES (:id,:aid,:did,'refresh-catalog','pending','system','provider-monitor',now()+interval '3 minutes',now(),now())
-      RETURNING id`,{replacements:{id:randomUUID(),aid:r.activationId,did:r.deviceId},type:QueryTypes.SELECT});
-    if(result){queued++;broadcastDeviceHint({topic:'remote-command',activationId:r.activationId});}
-  }
-  return queued;
+  broadcastDeviceHint({topic:'dns-failover',partnerId:provider.partnerId,providerId});
+  return 1;
 }

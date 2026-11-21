@@ -19,10 +19,10 @@ import { isReachableHttpStatus, smoothLatency } from "./probe-policy.js";
 import { noteProbe, pruneAvailability, availabilityForIds } from "./availability.service.js";
 
 const int = (name, fallback, min, max) => Math.max(min,Math.min(max,Number(process.env[name])||fallback));
-const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",15,10,3600);
+const INTERVAL = int("PROVIDER_MONITOR_INTERVAL_SECONDS",10,10,3600);
 const SLOW = int("PROVIDER_MONITOR_SLOW_MS",1200,300,5000);
 const TIMEOUT = int("PROVIDER_MONITOR_TIMEOUT_MS",2000,800,10000);
-const CONCURRENCY = int("PROVIDER_MONITOR_CONCURRENCY",4,1,8);
+const CONCURRENCY = int("PROVIDER_MONITOR_CONCURRENCY",6,1,8);
 const MAX_PER_CYCLE = int("PROVIDER_MONITOR_MAX_PER_CYCLE",60,5,250);
 // Reaproveita sondagens de URLs idênticas entre parcerias, inclusive em lotes adjacentes.
 // TTL sempre menor que o intervalo, mesmo se o .env antigo ainda usar 60000 ms.
@@ -123,8 +123,12 @@ export async function monitorOnce() {
       SELECT pp.id, pp.base_url AS "baseUrl", pp.partner_id AS "partnerId"
       FROM partner_providers pp
       LEFT JOIN provider_health h ON h.provider_id = pp.id
+      LEFT JOIN (SELECT DISTINCT provider_id FROM device_provider_routes) active
+        ON active.provider_id = pp.id
       WHERE pp.status='active' AND pp.deleted_at IS NULL
-      ORDER BY h.last_checked_at ASC NULLS FIRST, pp.id ASC
+      -- Priorizar DNS efetivamente selecionados por TVs, sem perder justiça entre os demais.
+      ORDER BY CASE WHEN active.provider_id IS NULL THEN 1 ELSE 0 END,
+        h.last_checked_at ASC NULLS FIRST, pp.id ASC
       LIMIT :limit`, { replacements: { limit: MAX_PER_CYCLE }, type: QueryTypes.SELECT });
     if (!providers.length) return;
     const changedPartnerIds = new Set();
@@ -139,13 +143,10 @@ export async function monitorOnce() {
     // Revalidar caches de roteamento só quando muda a disponibilidade.
     // Uma oscilação de latência não precisa invalidar as sessões existentes.
     if (changedState) { clearMirrorAuth();clearResolutionCache(); }
-    // Quando uma origem cai, a seleção futura já a exclui; sinalizar TVs atualmente nela.
-    // Não bloqueia a próxima rodada de monitoramento por lentidão no comando remoto.
-    // Repetir lotes em ciclos seguintes para redes com mais de 100 TVs, sem
-    // executar uma consulta por heartbeat nem concentrar tudo num único ciclo.
-    const stillDown = await ProviderHealth.findAll({where:{state:'down',lastCheckedAt:{[Op.gt]:new Date(Date.now()-Math.max(INTERVAL*3000,180000))}},attributes:['providerId'],limit:5,raw:true});
-    for (const providerId of new Set([...newlyDown,...stillDown.map(p=>p.providerId)])) {
-      void queueRefreshForDownProvider(providerId).catch(e=>console.warn('[provider-monitor] atualização TVs',e.message));
+    // Uma notificação autenticada por rede/origem DOWN. Nunca criar uma fila SQL por TV.
+    // Quem perdeu a notificação refaz a seleção na próxima conexão WSS/HTTPS.
+    for (const providerId of newlyDown) {
+      void queueRefreshForDownProvider(providerId).catch(e=>console.warn('[provider-monitor] aviso DNS',e.message));
     }
     // Um único aviso por parceria e rodada, nunca um por TV nem por usuário.
     for (const partnerId of changedPartnerIds) {

@@ -1,7 +1,6 @@
 import { rememberSelectedProvider } from "./active-route.service.js";
 import { webActivationDefaults } from "../settings/platform-settings.service.js";
 import { webProvider } from "../web/web-https.js";
-import { selectHealthy } from "./ranking.js";
 import { xtreamApiUrl } from "./url-utils.js";
 import { freshnessWindowSeconds } from "./visibility.service.js";
 import { createHash } from "node:crypto";
@@ -15,14 +14,14 @@ import {getServicePlan} from "../service-plans/plan.service.js";
 // A seleção ocorre na abertura/atualização do catálogo, NUNCA em cada segmento de vídeo.
 // Sem fila de espera: sob pico, usa o servidor original para manter latência da API baixa.
 const enabled = () => process.env.PROVIDER_MONITOR_ENABLED === "true" && process.env.PROVIDER_SMART_RESOLVER !== "false";
-const PIN_MS = 120_000, HEALTH_MS = 20_000, VERIFY_OK_MS = 600_000, VERIFY_BAD_MS = 30_000;
-const MAX_PINS = 5000, MAX_CHECKS = 3500, MAX_HEALTH = 1000, MAX_SIMULTANEOUS = 6;
-const pins = new Map(), validations = new Map(), healthCache = new Map();
+const HEALTH_MS = 20_000, VERIFY_OK_MS = 600_000, VERIFY_BAD_MS = 30_000;
+const MAX_CHECKS = 3500, MAX_HEALTH = 1000, MAX_SIMULTANEOUS = 6;
+const validations = new Map(), healthCache = new Map();
 const inFlight = new Map();
 let verifying = 0;
 const put = (m,k,v,limit) => {m.delete(k);m.set(k,v);if(m.size>limit)m.delete(m.keys().next().value);};
 const keyOf = (p,username,password) => createHash("sha256").update(`${p.id}\0${p.baseUrl}\0${username}\0${password}`).digest("hex");
-export function clearResolutionCache() {pins.clear(); validations.clear(); healthCache.clear();}
+export function clearResolutionCache() { validations.clear(); healthCache.clear();}
 
 async function statesOf(servers) {
   const ids = servers.map(s=>s.id);
@@ -96,13 +95,11 @@ export async function resolveForActivation(activation, original, credentials) {
         || (states.get(a.id).latencyMs??99999)-(states.get(b.id).latencyMs??99999)
         || a.priority-b.priority);
     if(!ranked.length)return fallback;
-    const pinned = avoidId ? null : pins.get(activation.id);
-    // Para evitar flapping, só troca por ganho significativo (>=50 ms e >=15%).
-    const scored=ranked.map(s=>({...s,latencyMs:states.get(s.id)?.latencyMs??99999}));
-    const selected = pinned && states.get(pinned.providerId)?.state === "slow" &&
-      scored[0]?.id !== pinned.providerId && states.get(scored[0]?.id)?.state === "healthy"
-      ? scored[0] : selectHealthy(scored,pinned,now);
-    if(selected.id===original?.id){put(pins,activation.id,{providerId:selected.id,until:now+PIN_MS},MAX_PINS);
+    // Cada GET /client/xtream prioriza a menor latência saudável medida.
+    // O cache de 60s do Roku evita requisições repetitivas; o "pin" de 120s
+    // não pode sobrepor uma rota comprovadamente mais rápida na reconexão.
+    const selected = ranked[0];
+    if(selected.id===original?.id){
       await rememberSelectedProvider(activation.id, selected.id).catch(e=>console.warn("[smart-resolver] estado atual",e.message));
       return {provider:selected,verified:false};}
     // Tenta progressivamente alternativas saudáveis dentro do orçamento de latência.
@@ -112,7 +109,6 @@ export async function resolveForActivation(activation, original, credentials) {
     for (const candidate of candidates.slice(0, 4)) {
       if (Date.now() >= deadline) break;
       if (await verifyAlternative(candidate, credentials.username, credentials.password)) {
-        put(pins, activation.id, { providerId: candidate.id, until: now + PIN_MS }, MAX_PINS);
         await rememberSelectedProvider(activation.id,candidate.id).catch(e=>console.warn("[smart-resolver] estado atual",e.message));
         return { provider: candidate, verified: true };
       }

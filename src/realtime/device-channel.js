@@ -15,6 +15,7 @@ import { env } from '../config/env.js';
 import { publishDeviceChange } from './change-bus.js';
 import { deviceOnline, livePlayback } from './live-snapshot.js';
 import { isIP as checkIp } from 'node:net';
+import { normalizeDeviceAction, validDeviceAction, syncDeviceLists, executeDeviceAction } from './device-actions.service.js';
 
 // Cabeçalho de IP somente é confiável quando a conexão vem do Nginx local.
 function clientIp(req) {
@@ -68,36 +69,56 @@ let rechecking = false;
 let pendingAuth = 0;
 
 function safeSend(ws, payload) {
-  if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 16384) return false;
+  if (ws.readyState !== WebSocket.OPEN || ws.bufferedAmount > 262144) return false;
   ws.send(JSON.stringify(payload));
   return true;
 }
-function isRelevant(hint, activationId, partnerId) {
+function isRelevant(hint, activationId, partnerId, codeId) {
+  if (hint.codeId && String(hint.codeId) !== String(codeId)) return false;
   if (hint.activationId && String(hint.activationId) !== String(activationId)) return false;
   if (hint.partnerId && String(hint.partnerId) !== String(partnerId)) return false;
   return true;
 }
 function hintPacket(hint) {
   return { type: hint.topic === 'remote-command' ? 'command-ready' : 'check-status',
-    topic: hint.topic, scope: hint.priority === 'targeted' ? 'targeted' : 'global' };
+    topic: hint.topic, scope: hint.priority === 'targeted' ? 'targeted' : 'global',
+    ...(hint.topic === 'dns-failover' && hint.providerId ? { providerId: hint.providerId } : {}),
+    ...(hint.topic === 'dns-emergency' ? { message: hint.message ?? '', expiresAt: hint.expiresAt ?? '' } : {}) };
 }
-function readHints(since, aid, partnerId) {
+function readHints(since, aid, partnerId, codeId) {
   const from = Number.isSafeInteger(since) && since >= 0 ? since : 0;
   if (recent.length && from > 0 && from < recent[0].seq - 1) return [{ type: 'check-status', topic: 'reconnect', scope: 'targeted' }];
   if (from > sequence) return [{ type: 'check-status', topic: 'reconnect', scope: 'targeted' }];
-  return recent.filter(x => x.seq > from && isRelevant(x, aid, partnerId)).map(hintPacket);
+  return recent.filter(x => x.seq > from && isRelevant(x, aid, partnerId, codeId) && (!x.expiresAt || Date.parse(x.expiresAt) > Date.now())).map(hintPacket);
 }
 
-export function broadcastDeviceHint({ topic = 'devices', activationId = null, partnerId = null, priority = null } = {}, propagate = true) {
+export function broadcastDeviceHint({ topic = 'devices', activationId = null, partnerId = null, providerId = null, codeId = null, message = null, expiresAt = null, priority = null } = {}, propagate = true) {
   // The notification is a hint, never an authorization or a copy of a list.
   sequence++;
   const hint = { seq: sequence, topic: String(topic).slice(0, 32), activationId, partnerId,
+    providerId: topic === 'dns-failover' ? providerId : null,
+    codeId: ['dns-emergency','dns-emergency-end'].includes(topic) ? codeId : null,
+    message: topic === 'dns-emergency' ? String(message || '').slice(0,300) : null,
+    expiresAt: topic === 'dns-emergency' ? expiresAt : null,
     priority: priority || (activationId ? 'targeted' : 'global') };
   recent.push(hint);
   if (recent.length > 256) recent.shift();
-  for (const peer of peers) if (isRelevant(hint, peer.activationId, peer.partnerId)) safeSend(peer.ws, hintPacket(hint));
-  for (const waiter of [...waiting]) if (isRelevant(hint, waiter.activationId, waiter.partnerId)) waiter.finish();
+  for (const peer of peers) if (isRelevant(hint, peer.activationId, peer.partnerId, peer.codeId)) {
+    if (hint.topic === 'remote-command' && Number(peer.build) >= 66) void deliverCommands(peer);
+    else safeSend(peer.ws, hintPacket(hint));
+  }
+  for (const waiter of [...waiting]) if (isRelevant(hint, waiter.activationId, waiter.partnerId, waiter.codeId)) waiter.finish();
   if (propagate) publishDeviceChange(hint);
+}
+
+async function deliverCommands(peer) {
+  if (peer.fetchingCommands || peer.ws.readyState !== WebSocket.OPEN) return;
+  peer.fetchingCommands = true;
+  try {
+    const result = await executeDeviceAction(peer, {type:'commands-get'});
+    if (result.commands?.length) safeSend(peer.ws, result);
+  } catch (e) { console.warn('[device-ws] command delivery:', e.message); }
+  finally { peer.fetchingCommands = false; }
 }
 
 export function currentSequence() { return sequence; }
@@ -111,9 +132,9 @@ export async function authorizeDevice(token) {
     attributes: ['id', 'activationId', 'revokedAt', 'expiresAt'], raw: true,
   });
   if (!session || session.revokedAt || String(session.activationId) !== String(claims.aid) || new Date(session.expiresAt) <= new Date()) throw new Error('Revoked');
-  const activation = await Activation.findByPk(claims.aid, { attributes: ['id', 'deviceId', 'partnerId'], raw: true });
+  const activation = await Activation.findByPk(claims.aid, { attributes: ['id', 'deviceId', 'partnerId', 'partnerCodeId'], raw: true });
   if (!activation?.deviceId) throw new Error('Invalid activation');
-  return { sessionId: session.id, activationId: activation.id, deviceId: activation.deviceId, partnerId: activation.partnerId, tokenExp: claims.exp * 1000 };
+  return { sessionId: session.id, activationId: activation.id, deviceId: activation.deviceId, partnerId: activation.partnerId, codeId: activation.partnerCodeId, tokenExp: claims.exp * 1000 };
 }
 
 export function observeSocketEvent(peer, packet, ip) {
@@ -131,7 +152,7 @@ export function observeSocketEvent(peer, packet, ip) {
 
 /** Serviço WebSocket somente para aparelhos; /ws dos painéis permanece intacto. */
 export function createDeviceWebSocketServer() {
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 2048, perMessageDeflate: false, clientTracking: false });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 8192, perMessageDeflate: false, clientTracking: false });
   wss.on('connection', (ws, req) => {
     pendingAuth++;
     let peer = null;
@@ -142,14 +163,16 @@ export function createDeviceWebSocketServer() {
     ws.on('message', async (bytes, isBinary) => {
       if (isBinary) { ws.close(1003); return; }
       let msg;
-      try { msg = JSON.parse(String(bytes)); } catch { ws.close(1008, 'Invalid message'); return; }
+      try { msg = normalizeDeviceAction(JSON.parse(String(bytes))); } catch { ws.close(1008, 'Invalid message'); return; }
       if (!peer) {
         if (authenticating || msg?.type !== 'auth' || typeof msg.token !== 'string' || msg.token.length > 4096) { ws.close(1008, 'Auth required'); return; }
         authenticating = true;
         try {
           const auth = await authorizeDevice(msg.token);
           if (ws.readyState !== WebSocket.OPEN) return;
-          peer = { ...auth, ws, alive: true, lastSeen: Date.now(), build: String(msg.build || '').slice(0,16), lastProbe: 0, pendingProbe: null };
+          peer = { ...auth, ws, alive: true, lastSeen: Date.now(), build: String(msg.build || '').slice(0,16),
+            launchId: typeof (msg.launchId ?? msg.launchid) === 'string' && /^[0-9a-f-]{36}$/i.test(msg.launchId ?? msg.launchid) ? (msg.launchId ?? msg.launchid) : null,
+            lastProbe: 0, pendingProbe: null, pendingActions: 0, rateWindowAt: Date.now(), rateCount: 0, lastListsSync: 0, fetchingCommands: false };
           deviceOnline(peer.activationId, { ip: clientIp(req), launchId: msg.launchId, model: msg.model, osMajor: msg.osMajor });
           noteDeviceTransport(peer.activationId, 'wss', peer.build);
           peers.add(peer);
@@ -157,7 +180,8 @@ export function createDeviceWebSocketServer() {
           touchDevice(peer.deviceId);
           clearTimeout(timeout);
           safeSend(ws, { type: 'ready', transport: 'websocket', heartbeatSeconds: 45, sequence });
-          safeSend(ws, { type: 'command-ready' });
+          if (Number(peer.build) >= 66) void deliverCommands(peer);
+          else safeSend(ws, { type: 'command-ready' });
           safeSend(ws, { type: 'check-status', topic: 'reconnect', scope: 'targeted' });
         } catch { ws.close(1008, 'Unauthorized'); }
         return;
@@ -175,6 +199,31 @@ export function createDeviceWebSocketServer() {
           noteDeviceLatency(peer.activationId, Date.now() - peer.pendingProbe.sentAt);
           peer.pendingProbe = null;
         }
+      } else if (validDeviceAction(msg)) {
+        const now = Date.now();
+        if (now - peer.rateWindowAt > 10000) { peer.rateWindowAt = now; peer.rateCount = 0; }
+        peer.rateCount++;
+        if (peer.rateCount > 30) { ws.close(1008, 'Rate limit'); return; }
+        if (peer.pendingActions >= 3) {
+          safeSend(ws, {type: 'action-error', action: msg.type === 'action' ? msg.action : msg.type,
+            commandId: msg.commandId || null, code: 'BUSY'});
+          return;
+        }
+        if (msg.type === 'lists-sync' && Date.now() - peer.lastListsSync < 3000) {
+          safeSend(ws, {type: 'action-error', action: msg.type, code: 'RATE_LIMIT'}); return;
+        }
+        if (msg.type === 'lists-sync') peer.lastListsSync = Date.now();
+        peer.pendingActions++;
+        try {
+          const result = msg.type === 'lists-sync'
+            ? { type: 'lists-sync-result', ...(await syncDeviceLists(peer, msg, clientIp(req))) }
+            : await executeDeviceAction(peer, msg);
+          if (ws.readyState === WebSocket.OPEN) safeSend(ws, result);
+        } catch (e) {
+          const status = Number(e?.status || e?.statusCode || 500);
+          if (ws.readyState === WebSocket.OPEN) safeSend(ws, {type:'action-error', action: msg.type === 'action' ? msg.action : msg.type,
+            commandId: msg.commandId || null, code: status < 500 ? String(e.code || 'DENIED') : 'FAILED' });
+        } finally { peer.pendingActions--; }
       } else if (msg?.type !== 'ping') {
         ws.close(1008, 'Unsupported action');
       } else safeSend(ws, { type: 'pong' });
@@ -247,17 +296,17 @@ export async function legacyPoll(req, res) {
   deviceOnline(auth.activationId, { ip: req.ip, launchId: req.query.launchId, model: req.query.model, osMajor: Number(req.query.osMajor) });
   const requested = Number(req.query.since);
   const since = Number.isSafeInteger(requested) && requested >= 0 ? requested : 0;
-  const hints = readHints(since, auth.activationId, auth.partnerId);
+  const hints = readHints(since, auth.activationId, auth.partnerId, auth.codeId);
   res.set('Cache-Control', 'no-store, no-transform').set('X-Accel-Buffering', 'no');
   if (hints.length || waiting.size >= MAX_PENDING_POLLS) { res.json({ ok: true, sequence, hints }); return; }
   let done = false;
-  const waiter = { activationId: auth.activationId, partnerId: auth.partnerId, finish: null };
+  const waiter = { activationId: auth.activationId, partnerId: auth.partnerId, codeId:auth.codeId, finish: null };
   const finish = () => {
     if (done) return;
     done = true;
     clearTimeout(timer);
     waiting.delete(waiter);
-    if (!res.destroyed && !res.writableEnded) res.json({ ok: true, sequence, hints: readHints(since, auth.activationId, auth.partnerId) });
+    if (!res.destroyed && !res.writableEnded) res.json({ ok: true, sequence, hints: readHints(since, auth.activationId, auth.partnerId, auth.codeId) });
   };
   const timer = setTimeout(finish, POLL_MS);
   waiter.finish = finish;

@@ -193,6 +193,6 @@ export async function xtreamConfigFor(activation, { sessionId } = {}) {
 
   if (mode === "proxy" && !mirror) throw new AppError(401, "SESSION_REQUIRED", "Uma sessão ativa é necessária para usar o proxy.");
   const telemetryToken = sessionId ? signJwt({typ:'telemetry',aid:activation.id,sid:sessionId},2592000) : null;
-  if (mode === "proxy" && mirror) return { telemetryToken, ...mirror, userAgent: XTREAM_UA, account, mode, modes, mirror: true };
-  return { telemetryToken, baseUrl: cred.baseUrl, username: cred.username, password: cred.password, userAgent: XTREAM_UA, account, mode, modes, mirror };
+  if (mode === "proxy" && mirror) return { telemetryToken, selectedProviderId:cred.selectedProvider?.id ?? null, ...mirror, userAgent: XTREAM_UA, account, mode, modes, mirror: true };
+  return { telemetryToken, selectedProviderId:cred.selectedProvider?.id ?? null, baseUrl: cred.baseUrl, username: cred.username, password: cred.password, userAgent: XTREAM_UA, account, mode, modes, mirror };
 }

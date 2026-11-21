@@ -32,7 +32,8 @@ async function connect() {
       if (msg.origin === origin || typeof msg.topic !== 'string' || msg.topic.length > 32) return;
       if (msg.activationId != null && !/^[0-9a-f-]{36}$/i.test(msg.activationId)) return;
       if (msg.partnerId != null && !/^[0-9a-f-]{36}$/i.test(msg.partnerId)) return;
-      onEvent?.({ topic: msg.topic, activationId: msg.activationId ?? null,
+      if (msg.providerId != null && (msg.topic !== 'dns-failover' || !/^[0-9a-f-]{36}$/i.test(msg.providerId))) return;
+      onEvent?.({ providerId: msg.topic === 'dns-failover' ? msg.providerId ?? null : null, topic: msg.topic, activationId: msg.activationId ?? null,
         partnerId: msg.partnerId ?? null,
         priority: msg.priority === 'targeted' ? 'targeted' : 'global' });
     } catch { /* malformed notifications ignored */ }
@@ -52,10 +53,11 @@ async function connect() {
   try { await client.connect(); await client.query(`LISTEN ${CHANNEL}`); retryMs = 3000; }
   catch (err) { console.warn('[device-change-bus] LISTEN unavailable:', err.message); lost(); }
 }
-export function publishDeviceChange({ topic, activationId = null, partnerId = null, priority = 'global' }) {
+export function publishDeviceChange({ topic, activationId = null, partnerId = null, providerId = null, priority = 'global' }) {
   if (closed) return;
   const payload = JSON.stringify({ origin, topic: String(topic).slice(0, 32),
-    activationId, partnerId, priority: priority === 'targeted' ? 'targeted' : 'global' });
+    activationId, partnerId, providerId: topic === 'dns-failover' ? providerId : null,
+    priority: priority === 'targeted' ? 'targeted' : 'global' });
   const op = sequelize.query('SELECT pg_notify(:channel, :payload)',
     { replacements: { channel: CHANNEL, payload } })
     .catch(err => console.warn('[device-change-bus] NOTIFY unavailable:', err.message))

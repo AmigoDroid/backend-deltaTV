@@ -30,6 +30,7 @@ import * as deviceConfig from "../devices/registration.service.js";
 import { addListByUrl } from "../devices/playlist-by-url.service.js";
 import * as pix from "../pix/pix.service.js";
 import { clientRouter as webClientRoutes } from "../web/web.routes.js";
+import { kindOf, configurationStatusOf, statusOf } from "./client-status.js";
 import { sameInstallation, VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT } from "../devices/device-identity.js";
 
 /** API pública para os aplicativos/frontends clientes (prefixo /api/v1/client). */
@@ -85,22 +86,6 @@ const partnerBody = z.object({
   idempotencyKey: idem,
 });
 
-const kindOf = (a) => (a.licenseId ? "license" : "partner");
-const configurationStatusOf = (activation, decision) => {
-  if (activation.status === "revoked") return "deactivated";
-  if (activation.status === "blocked") return "disabled";
-  if (!decision.allowed)
-    return /EXPIRED/.test(decision.code ?? "") ? "expired" : "disabled";
-  if (activation.partnerId && !activation.providerId) return "error";
-  // Mesmo critério de registration.service: provedor desativado = "error" (em /xtream seria 503).
-  if (activation.partnerId && activation.PartnerProvider && activation.PartnerProvider.status !== "active" && !(process.env.PROVIDER_MONITOR_ENABLED==="true" && activation.partnerCodeId))
-    return "error";
-  if (activation.partnerId && activation.providerId)
-    return "configured_partner";
-  if (activation.licenseId && activation.playlistUrlEnc)
-    return "configured_playlist";
-  return "awaiting_configuration";
-};
 const activationResponse = (r) => ({
   activationId: r.activation.id,
   kind: kindOf(r.activation),
@@ -216,24 +201,8 @@ router.post(
 // copiar e editar o dispositivo, autenticado, em /api/v1/partner/mac/* (com auditoria de quem alterou).
 
 // Status/validação: respondem 200 com a decisão (o app decide a UI); recursos protegidos respondem 403.
-const statusOf = (req) => {
-  const { activation, decision } = req.device;
-  return {
-    activationId: activation.id,
-    configurationVersion: `${activation.updatedAt ? new Date(activation.updatedAt).toISOString() : ""}|${activation.PartnerProvider?.updatedAt ? new Date(activation.PartnerProvider.updatedAt).toISOString() : ""}`,
-    mac: activation.mac,
-    kind: kindOf(activation),
-    allowed: decision.allowed,
-    code: decision.code,
-    message: decision.message,
-    expiresAt: decision.expiresAt,
-    configurationStatus: configurationStatusOf(activation, decision),
-    listName: activation.playlistName ?? null,
-    trial: activation.License?.isTrial ? { active: !!decision.allowed, expiresAt: activation.License.expiresAt } : null,
-  };
-};
 router.get("/status", requireDevice("device", { enforce: false }), (req, res) =>
-  res.json(statusOf(req)),
+  res.json(statusOf(req.device.activation, req.device.decision)),
 );
 router.post(
   "/validate",
@@ -252,7 +221,7 @@ router.post(
         "Instalação não reconhecida.",
       );
     }
-    res.json(statusOf(req));
+    res.json(statusOf(req.device.activation, req.device.decision));
   },
 );
 
