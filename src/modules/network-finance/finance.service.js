@@ -324,7 +324,7 @@ export async function reconcileProviderCharge(id,provider,req) {
     return settleCharge(id,{providerConfirmed:true,amountCents:payment.amountCents},actor);
   }
   const transactionNsu=String(req.body?.transaction_nsu||req.body?.transactionNsu||'');
-  const slug=String(req.body?.slug||'');
+  const slug=String(req.body?.invoice_slug||req.body?.slug||'');
   if(!/^[\w-]{1,160}$/.test(transactionNsu)|| !/^[\w-]{1,160}$/.test(slug))return {ignored:true};
   const payment=await createInfinitePay({handle:gateway.account_ref,apiKey:credential}).paymentCheck({orderNsu:charge.id,transactionNsu,slug});
   if(!payment.paid)return {ignored:true};
