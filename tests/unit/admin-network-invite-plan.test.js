@@ -28,9 +28,10 @@ test('convite é limitado à rede e exige permissão ainda válida no aceite',()
  assert.match(admin,/tokenHash:HASH\(token\)/);
  assert.match(admin,/ownerAdminId:req\.networkOwnerId/);
 });
-test('pagamento de plano pago exige confirmação auditada e não libera automaticamente',()=>{
+test('plano pago nasce suspenso; admin ativa deliberadamente com auditoria e sem fingir pagamento',()=>{
  const s=src('modules/admin-workspaces/workspace.routes.js');
- assert.match(s,/PAYMENT_CONFIRMATION_REQUIRED/);
+ assert.doesNotMatch(s,/PAYMENT_CONFIRMATION_REQUIRED/);
+ assert.match(s,/activatedWithoutPayment:true/);
  assert.match(s,/confirmPendingContractFromWorkspace/);
  const ledger=src('modules/network-finance/finance.service.js');
  assert.match(ledger,/network\.finance\.charge\.paid/);

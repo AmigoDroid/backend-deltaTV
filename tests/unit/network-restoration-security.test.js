@@ -23,11 +23,14 @@ test('Restauração IDOR: dono é verificado antes e DENTRO do lock; 404 para co
  assert.match(route,/restorePartnerFromTrash\(p\.id,req\.valid\.body,actorOf\(req\),tenant\(req\)\)/);
  assert.doesNotMatch(route,/router\.delete\('\/trash\/.*permanent/);
 });
-test('Reativação da rede não força cancelado e não libera pagamento pendente',()=>{
+test('Reativação da rede não força cancelado; ativar conta sem pagamento é decisão do admin dono, auditada',()=>{
  const route=read('../../src/modules/admin-workspaces/workspace.routes.js');
  const service=read('../../src/modules/partners/partner.service.js');
  assert.match(route,/changePartnerStatus\(owned\.id,action,req\.valid\.body,actorOf\(req\),tenant\(req\)\)/);
- assert.match(service,/ownerAdminId !== undefined && action === "reactivate" && p\.statusReason === "awaiting_payment"/);
+ assert.match(service,/const unpaidActivation = ownerAdminId !== undefined && action === "reactivate" && p\.statusReason === "awaiting_payment"/);
+ assert.doesNotMatch(service,/PAYMENT_CONFIRMATION_REQUIRED/);
+ assert.match(service,/activatedWithoutPayment: true/);
+ assert.match(service,/where: \{ key: servicePlan\.tier, ownerAdminId \}/);
  assert.match(service,/if \(!rule\.from\.includes\(p\.status\) && !\(force && rule\.forceFrom\?\.includes\(p\.status\)\)\)/);
  assert.match(service,/where = ownerAdminId === undefined \? \{ id \} : \{ id, ownerAdminId \}/);
 });

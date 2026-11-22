@@ -2,7 +2,7 @@ import { markPartnerConfigured } from "./partner-onboarding.service.js";
 import { findAvatarOwners, avatarVersion } from "./partner-avatar.service.js";
 import { isPartnerConnected } from "../../realtime/socket.js";
 import { Op, UniqueConstraintError } from "sequelize";
-import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, Invoice, AdminUser, ContentPartnerTerms, PartnerServicePlan } from "../../db/models/index.js";
+import { sequelize, Partner, PartnerCode, PartnerProvider, CodeServerPool, Activation, Invoice, AdminUser, ContentPartnerTerms, PartnerServicePlan, ServicePlanCatalog } from "../../db/models/index.js";
 import { clearContractAccessCache } from "../access/access.service.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
@@ -215,18 +215,28 @@ export async function changePartnerStatus(id, action, { reason, force = false },
     const where = ownerAdminId === undefined ? { id } : { id, ownerAdminId };
     const p = await Partner.findOne({ where, transaction: t, lock: t.LOCK.UPDATE });
     if (!p) throw notFound("Parceiro");
-    // A permissão de reativar um contrato pago é conferida SOB o lock.
-    // Uma chamada concorrente não pode contornar a confirmação financeira.
-    if (ownerAdminId !== undefined && action === "reactivate" && p.statusReason === "awaiting_payment")
-      throw new AppError(409, "PAYMENT_CONFIRMATION_REQUIRED", "Confirme o pagamento antes de reativar.");
+    // O admin dono da rede pode ativar uma conta que aguarda pagamento (cortesia ou recebimento
+    // fora do sistema). A decisão é conferida SOB o lock e fica registrada na auditoria.
+    const unpaidActivation = ownerAdminId !== undefined && action === "reactivate" && p.statusReason === "awaiting_payment";
     if (!rule.from.includes(p.status) && !(force && rule.forceFrom?.includes(p.status))) {
       if (rule.forceFrom?.includes(p.status)) throw new AppError(403, "SUPERADMIN_ONLY", "Somente o superadmin pode reativar uma parceria cancelada.");
       throw new AppError(409, "INVALID_STATE", `Não é possível '${action}' uma parceria '${p.status}'.`);
     }
     if (rule.reason && !reason) throw new AppError(422, "REASON_REQUIRED", "Informe o motivo.");
     const previous = p.status;
-    await p.update({ status: rule.to, statusReason: action === "reactivate" ? null : reason ?? null }, { transaction: t });
-    await audit({ actor, action: `partner.${action}`, entityType: "partner", entityId: id, metadata: { from: previous, to: rule.to, reason, ...(previous === "cancelled" ? { forced: true } : {}) }, transaction: t });
+    // A conta nasceu no ato da criação; ao ativar sem pagamento a validade do plano conta a partir de hoje.
+    let period = {};
+    if (unpaidActivation) {
+      const servicePlan = await PartnerServicePlan.findByPk(p.id, { transaction: t });
+      const catalog = servicePlan?.tier
+        ? await ServicePlanCatalog.findOne({ where: { key: servicePlan.tier, ownerAdminId }, transaction: t }) : null;
+      if (catalog?.validityDays > 0) {
+        const now = new Date();
+        period = { startsAt: now, endsAt: new Date(now.getTime() + catalog.validityDays * 86400_000) };
+      }
+    }
+    await p.update({ status: rule.to, statusReason: action === "reactivate" ? null : reason ?? null, ...period }, { transaction: t });
+    await audit({ actor, action: `partner.${action}`, entityType: "partner", entityId: id, metadata: { from: previous, to: rule.to, reason, ...(previous === "cancelled" ? { forced: true } : {}), ...(unpaidActivation ? { activatedWithoutPayment: true } : {}) }, transaction: t });
     return p;
   });
   clearMirrorAuth(); // afeta todos os dispositivos da parceria: o espelho não pode seguir autorizando pelo cache

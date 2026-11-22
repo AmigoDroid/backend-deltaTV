@@ -43,10 +43,10 @@ async function gatewayPendingCount(adminId,provider,t) {
 
 /** Salva credenciais em AES-GCM, SEM ativar. Alterações bloqueadas enquanto há cobrança aberta. */
 export async function saveGateway(adminId,provider,input,actor) {
-  const credential=provider==='mercadopago'?input.accessToken:(input.apiKey||'');
+  let credential=provider==='mercadopago'?input.accessToken:(input.apiKey||'');
   const accountRef=provider==='mercadopago'?'pending':normalizeHandle(input.handle);
   if(provider==='infinitepay'&&(!HANDLE_RE.test(accountRef)||(credential&&!/^inchk_[\w-]{8,200}$/.test(credential))))
-    fail(422,'INVALID_GATEWAY_CREDENTIALS','Informe uma InfiniteTag válida. A API Key da InfinitePay é opcional, mas se informada deve começar com inchk_.');
+    fail(422,'INVALID_GATEWAY_CREDENTIALS','Confira os dados da conta InfinitePay.');
   if(provider==='mercadopago'&&(!/^APP_USR-[\w-]{10,}$/.test(credential||'')||!input.webhookSecret?.trim()))
     fail(422,'INVALID_GATEWAY_CREDENTIALS','Informe o Access Token de produção e o segredo da assinatura do webhook.');
   return sequelize.transaction(async t=>{
@@ -54,6 +54,10 @@ export async function saveGateway(adminId,provider,input,actor) {
     await query('SELECT id FROM admin_users WHERE id=CAST(:adminId AS uuid) FOR UPDATE',{adminId},t);
     if(await gatewayPendingCount(adminId,provider,t))
       fail(409,'GATEWAY_HAS_PENDING_CHARGES','Há cobranças abertas neste provedor. Preserve as credenciais até serem resolvidas.');
+    if(provider==='infinitepay' && input.apiKey===undefined) {
+      const existing=await rowFor(adminId,provider,t);
+      if(existing?.account_ref===accountRef) credential=decryptSecret(existing.credentials_enc);
+    }
     const fp=fingerprint({provider,credential,secret:input.webhookSecret||'',accountRef});
     await query(`INSERT INTO admin_network_gateways(admin_user_id,provider,credentials_enc,webhook_secret_enc,account_ref,credential_fingerprint)
       VALUES(CAST(:adminId AS uuid),:provider,:cred,:secret,:accountRef,:fp)

@@ -378,10 +378,18 @@ router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(
     (p.kind==='both'&&!adminHasNetworkPermission(req.user,'network:resellers:write')))
    throw new AppError(403,'NETWORK_PERMISSION_DENIED','Sem permissão para alterar a conta.');
   if(b.endsAt && b.endsAt<=p.startsAt)throw new AppError(422,'INVALID_PERIOD','Vencimento inválido.');
-  if(p.statusReason==='awaiting_payment' && b.status==='active')
-   throw new AppError(409,'PAYMENT_CONFIRMATION_REQUIRED','Confirme o pagamento na área financeira antes de ativar esta conta.');
+  // O admin dono da rede pode ativar uma conta que aguarda pagamento (cortesia ou recebimento fora do sistema).
+  const unpaidActivation=p.statusReason==='awaiting_payment' && b.status==='active';
   // O preço, a cota de DNS e as ativações não chegam do navegador: vêm do plano.
   let changes={...b};
+  if(unpaidActivation){
+   changes.statusReason=null;changes.startsAt=new Date();
+   if(b.endsAt===undefined){
+    const sp=await PartnerServicePlan.findByPk(p.id,{transaction:t});
+    const cat=sp?.tier?await ServicePlanCatalog.findOne({where:{key:sp.tier,ownerAdminId:root,deletedAt:null},transaction:t}):null;
+    if(cat?.validityDays>0)changes.endsAt=new Date(Date.now()+cat.validityDays*86400_000);
+   }
+  }
   if(b.planKey!==undefined){
    const current=await PartnerServicePlan.findByPk(p.id,{transaction:t,lock:t.LOCK.UPDATE});
    const plan=await scopedPlan(root,b.planKey,p.kind,t);
@@ -403,7 +411,7 @@ router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(
   delete changes.planKey;
   await p.update(changes,{transaction:t});
   await audit({actor:actorOf(req),action:'network.partner.update',entityType:'partner',entityId:p.id,
-    metadata:{fields:Object.keys(b),ownerAdminId:root},transaction:t});
+    metadata:{fields:Object.keys(b),ownerAdminId:root,...(unpaidActivation?{activatedWithoutPayment:true}:{})},transaction:t});
   return p;
  });
  invalidatePlan(updated.id);invalidateServerPools();clearResolutionCache();clearContractAccessCache();
@@ -419,16 +427,15 @@ for(const action of ["suspend","block","reactivate","cancel"]){
    if(!adminHasNetworkPermission(req.user,perm) ||
        (owned.kind==="both"&&!adminHasNetworkPermission(req.user,"network:resellers:write")))
      throw new AppError(403,"NETWORK_PERMISSION_DENIED","Sem permissão para alterar esta conta.");
-   if(action==="reactivate" && owned.statusReason==="awaiting_payment")
-     throw new AppError(409,"PAYMENT_CONFIRMATION_REQUIRED","Confirme o pagamento antes de reativar.");
    // Never allow a delegated admin to reactivate a cancelled account by forcing it.
    const updated=await codesService.changePartnerStatus(owned.id,action,req.valid.body,actorOf(req),tenant(req));
    clearContractAccessCache();invalidatePlan(updated.id);
    res.json({id:updated.id,status:updated.status,effectiveStatus:effectivePartnerStatus(updated)});
  });
 }
-// A conta de plano pago só ativa com confirmação deliberada do recebimento;
-// a auditoria não deve tratar criação de conta como pagamento.
+// A conta de plano pago nasce suspensa (awaiting_payment). O admin pode ativá-la deliberadamente
+// (reativar/editar status) ou confirmar o recebimento na área financeira; a ativação sem
+// pagamento é auditada com activatedWithoutPayment e nunca é tratada como pagamento.
 // Exclusão lógica da própria rede: valida proprietário, permissão e confirmação.
 // Registros financeiros e os dados de outros titulares não são apagados.
 function canDeleteOwned(req,p){
