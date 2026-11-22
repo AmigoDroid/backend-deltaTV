@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { pixExpiry,requiredSettlementCents } from './charge-pricing.js';
 import { quoteNetworkCharge } from './pricing.service.js';
+import { isSelfServiceUpgrade, upgradePriceBaseline, upgradePlanSignature } from './upgrade-eligibility.js';
 import { verifyNetworkPaymentMatch } from './policy.js';
 import { QueryTypes, Op } from 'sequelize';
-import { sequelize, Partner, AdminUser, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms, Activation } from '../../db/models/index.js';
+import { sequelize, Partner, AdminUser, AdminUserProfile, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms, Activation } from '../../db/models/index.js';
 import { encryptSecret, decryptSecret } from '../../shared/crypto.js';
 import { AppError } from '../../shared/errors.js';
 import { audit } from '../../shared/audit.js';
@@ -119,14 +120,14 @@ export async function expireCharges() {
 }
 
 /** O preço é sempre extraído do plano desta rede no banco, jamais de parâmetros da requisição. */
-export async function createCharge(adminId,{partnerId,kind,planTo,method='automatic',previewFingerprint,manualDiscount=null,waiver=null},actor,{skipPreview=false}={}) {
+export async function createCharge(adminId,{partnerId,kind,planTo,method='automatic',previewFingerprint,manualDiscount=null,waiver=null},actor,{skipPreview=false,source='admin'}={}) {
   await expireCharges();
   const charge=await sequelize.transaction(async t=>{
     await query('SELECT id FROM admin_users WHERE id=CAST(:adminId AS uuid) FOR UPDATE',{adminId},t);
     const p=await owned(adminId,partnerId,t);
     // Trava o contrato para a criação e prévia terem a mesma referência.
     await query('SELECT id FROM partners WHERE id=CAST(:partnerId AS uuid) FOR UPDATE',{partnerId},t);
-    const quote=await quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDiscount,waiver},actor,{transaction:t});
+    const quote=await quoteNetworkCharge(adminId,{partnerId,kind,planTo,manualDiscount,waiver},actor,{transaction:t,source});
     if(!skipPreview && (!previewFingerprint||previewFingerprint!==quote.previewFingerprint))
       throw new AppError(409,'PRICING_CHANGED','O valor da prévia mudou. Confirme o cálculo atualizado.',{quote});
     const gateway=method==='automatic'?(await query(`SELECT provider FROM admin_network_gateways WHERE admin_user_id=CAST(:adminId AS uuid) AND active=true`,{adminId},t))[0]:null;
@@ -208,8 +209,16 @@ async function settleCharge(id,verify,actor) {
       ? await ContentPartnerTerms.findByPk(partner.id,{transaction:t,lock:t.LOCK.UPDATE}) : null;
     const used=charge.kind==='upgrade' && plan?.activationLimit!=null
       ? await Activation.count({where:{partnerId:partner.id,status:{[Op.ne]:'revoked'}},transaction:t}) : 0;
+    const original=charge.breakdown?.selfServiceUpgrade===true && current?.tier
+      ? await ServicePlanCatalog.findOne({where:{key:current.tier,ownerAdminId:charge.owner_admin_id},transaction:t}) : null;
+    const baseline=charge.breakdown?.selfServiceUpgrade===true
+      ? upgradePriceBaseline(partner,current,original) : null;
     const blocked=charge.kind==='upgrade' && (
-      (terms?.mode==='credits') || (plan?.activationLimit!=null && used>plan.activationLimit));
+      (terms?.mode==='credits') || (plan?.activationLimit!=null && used>plan.activationLimit) ||
+      (charge.breakdown?.selfServiceUpgrade===true && (
+        !isSelfServiceUpgrade(baseline,plan) ||
+        baseline.monthlyPriceCents!==charge.breakdown.oldPlanPriceCents ||
+        charge.breakdown.upgradePlanSignature!==upgradePlanSignature(plan))));
     const nextStatus=(stale||blocked)?'needs_review':'paid';
     await query(`UPDATE admin_network_charges SET status=:status,paid_at=now(),transaction_nsu=:transaction,
       payment_slug=:slug,manual_reference=:reference,paid_amount_cents=:paidAmount,updated_at=now() WHERE id=CAST(:id AS uuid)`,
@@ -228,7 +237,10 @@ async function settleCharge(id,verify,actor) {
         changes.monthlyFeeCents=plan.monthlyPriceCents;
         changes.billingModel='fixed';
         await PartnerServicePlan.upsert({partnerId:partner.id,tier:charge.plan_to,
-          maxServersOverride:plan.maxServers},{transaction:t});
+          ...(charge.breakdown?.selfServiceUpgrade===true ? {
+            maxServersOverride:null,autoFailoverOverride:null,autoPriorityOverride:null,
+            emailAlertsOverride:null,detailedHistoryOverride:null,
+          } : {maxServersOverride:plan.maxServers})},{transaction:t});
         if(partner.kind!=='reseller'){
           const updatedTerms={mode:plan.activationLimit==null?'fixed_unlimited':'fixed_limited',
             fixedFeeCents:plan.monthlyPriceCents,activationLimit:plan.activationLimit,
@@ -429,4 +441,20 @@ export async function maskedAdminGatewaySummary() {
       WHERE admin_user_id=a.id ORDER BY active DESC,updated_at DESC LIMIT 1
     ) g ON true
     WHERE a.role='admin' AND a.deleted_at IS NULL ORDER BY a.name LIMIT 500`).then(rows=>rows.map(({accountRef,...r})=>({ ...r,configured:!!r.provider,accountRefMasked:maskAccountRef(accountRef)})));
+}
+
+/** Upgrade próprio sempre vinculado ao Master e liquidado apenas pelo gateway configurado. */
+export async function createPartnerUpgradeCharge(partnerId,{planTo,previewFingerprint},actor) {
+ const partner=await Partner.findByPk(partnerId,{attributes:['ownerAdminId']});
+ if(!partner?.ownerAdminId)fail(404,'NETWORK_MISSING','Nenhuma rede de Master vinculada.');
+ return createCharge(partner.ownerAdminId,{partnerId,kind:'upgrade',planTo,previewFingerprint,method:'automatic'},actor,{source:'partner'});
+}
+
+export async function getPartnerMasterContact(partnerId) {
+ const partner=await Partner.findByPk(partnerId,{attributes:['ownerAdminId']});
+ if(!partner?.ownerAdminId)return {name:'Master',phone:null};
+ const master=await AdminUser.findOne({where:{id:partner.ownerAdminId,role:'admin',status:'active',deletedAt:null},attributes:['id','name']});
+ if(!master)return {name:'Master',phone:null};
+ const profile=await AdminUserProfile.findByPk(master.id,{attributes:['phone']});
+ return {name:master.name||'Master',phone:profile?.phone?.trim()||null};
 }

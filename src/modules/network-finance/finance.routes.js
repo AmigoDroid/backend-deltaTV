@@ -88,6 +88,18 @@ superadminFinance.get('/export.csv',validate({query:page.omit({page:true,pageSiz
 superadminFinance.post('/charges/:id/cancel',validate({params:id,body:reasonBody}),async(req,res)=>res.json(await svc.cancelCharge(req.valid.params.id,req.valid.body.reason,actorOf(req),{superadmin:true})));
 
 export const partnerNetworkCharges=Router();
+const upgradeChoice=z.object({planTo:z.string().min(3).max(32)}).strict();
+partnerNetworkCharges.get('/master',async(req,res)=>res.set('Cache-Control','private,no-store').json(await svc.getPartnerMasterContact(req.user.partnerId)));
+partnerNetworkCharges.get('/upgrade-options',async(req,res)=>res.set('Cache-Control','private,no-store').json(await pricing.partnerUpgradeOptions(req.user.partnerId)));
+partnerNetworkCharges.post('/upgrade/preview',validate({body:upgradeChoice}),async(req,res)=>{
+ if(req.impersonator)throw new AppError(403,'SELF_UPGRADE_ONLY','Não é permitido emitir cobrança por impersonação.');
+ res.set('Cache-Control','private,no-store').json(await pricing.quotePartnerUpgrade(req.user.partnerId,req.valid.body.planTo));
+});
+partnerNetworkCharges.post('/upgrade',validate({body:upgradeChoice.extend({previewFingerprint:z.string().length(64)})}),async(req,res)=>{
+ if(req.impersonator)throw new AppError(403,'SELF_UPGRADE_ONLY','Não é permitido emitir cobrança por impersonação.');
+ res.status(201).json(await svc.createPartnerUpgradeCharge(req.user.partnerId,req.valid.body,actorOf(req)));
+});
+partnerNetworkCharges.post(['/','/preview'],(_req,_res)=>{throw new AppError(403,'PARTNER_CHARGE_FORBIDDEN','Cobranças são emitidas apenas pela administração.');});
 partnerNetworkCharges.get('/pricing',async(req,res)=>res.set('Cache-Control','private,no-store').json(await pricing.partnerPricingInfo(req.user.partnerId)));
 partnerNetworkCharges.get('/',async(req,res)=>res.set('Cache-Control','private,no-store').json({data:await svc.partnerCharges(req.user.partnerId)}));
 

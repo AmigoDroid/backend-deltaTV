@@ -71,7 +71,7 @@ export function upgradeBaseCents({oldPriceCents,newPriceCents,validityDays,endsA
   return halfUp(BigInt(Math.max(0,next-old))*BigInt(remaining),validityDays);
 }
 /** Entradas: somente dados do servidor (plano, contrato, configurações e descontos autorizados). */
-export function calculateChargePricing({kind='renewal',planPriceCents,oldPlanPriceCents=0,validityDays=30,
+export function calculateChargePricing({kind='renewal',planPriceCents,oldPlanPriceCents=0,fullUpgradePrice=false,validityDays=30,
   endsAt=null,effectiveStatus=null,planKey='',now=new Date(),settings={},caps=DEFAULT_CAPS,manual=null,waiver=null}){
   const s=validateSettings(settings,caps),date=new Date(now),planPrice=cents(planPriceCents),oldPrice=cents(oldPlanPriceCents);
   if(!Number.isInteger(validityDays)||validityDays<1)throw new RangeError('Validade inválida.');
@@ -79,7 +79,7 @@ export function calculateChargePricing({kind='renewal',planPriceCents,oldPlanPri
   const overdue=Boolean(endsAt&&new Date(endsAt)<=date&&effectiveStatus==='expired');
   const daysLate=overdue?Math.max(0,localDayDifference(endsAt,date)):0;
   const feeBase=overdue&&oldPrice>0?oldPrice:planPrice;
-  const base=kind==='upgrade'?upgradeBaseCents({oldPriceCents:oldPrice,newPriceCents:planPrice,validityDays,endsAt:overdue?null:endsAt,now:date}):planPrice;
+  const base=kind==='upgrade'?(fullUpgradePrice?planPrice:upgradeBaseCents({oldPriceCents:oldPrice,newPriceCents:planPrice,validityDays,endsAt:overdue?null:endsAt,now:date})):planPrice;
   if(base<1)throw new RangeError('Plano sem valor cobrável.');
   const minimum=s.minChargeCents;
   const earlyAllowed=kind==='renewal'&&!overdue&&Boolean(endsAt)&&s.earlyDiscountEnabled&&
@@ -119,7 +119,7 @@ export function calculateChargePricing({kind='renewal',planPriceCents,oldPlanPri
   }
   const total=Math.max(minimum,base-discount+lateFee+interest-waivedFee-waivedInterest);
   return Object.freeze({version:1,zone:PRICING_ZONE,kind,planKey,contractEndsAt:endsAt?new Date(endsAt).toISOString():null,
-    fullPlanPriceCents:planPrice,oldPlanPriceCents:oldPrice,pricingSettings:{...s},baseCents:base,lateBaseCents:feeBase,
+    fullPlanPriceCents:planPrice,oldPlanPriceCents:oldPrice,fullUpgradePrice:Boolean(fullUpgradePrice&&kind==='upgrade'),pricingSettings:{...s},baseCents:base,lateBaseCents:feeBase,
     earlyDiscountCents:appliedEarly,manualDiscountCents:appliedManual,manual:manualMeta,
     lateFeeCents:lateFee,interestCents:interest,daysLate,toleranceDays:s.toleranceDays,
     lateFeePct:s.lateFeeEnabled?s.lateFeePct:0,interestMonthlyPct:s.lateFeeEnabled?s.interestMonthlyPct:0,
@@ -134,7 +134,7 @@ export function requiredSettlementCents(snapshot,now=new Date(),fallbackAmount=n
   if(!snapshot?.pricingSettings||!snapshot.contractEndsAt)return snapshot?.totalCents??fallbackAmount;
   const expired=new Date(snapshot.contractEndsAt)<new Date(now);
   return calculateChargePricing({kind:snapshot.kind,planPriceCents:snapshot.fullPlanPriceCents,
-    oldPlanPriceCents:snapshot.oldPlanPriceCents,validityDays:snapshot.validityDays,
+    oldPlanPriceCents:snapshot.oldPlanPriceCents,fullUpgradePrice:snapshot.fullUpgradePrice===true,validityDays:snapshot.validityDays,
     planKey:snapshot.planKey,endsAt:snapshot.contractEndsAt,effectiveStatus:expired?'expired':'active',
     settings:snapshot.pricingSettings,caps:{lateFeePct:100,interestMonthlyPct:100},
     manual:snapshot.manual,waiver:snapshot.waiver?{
