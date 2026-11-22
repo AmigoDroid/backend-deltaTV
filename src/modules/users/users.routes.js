@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { Op } from "sequelize";
-import { sequelize, AdminUser, Partner, ServicePlanCatalog, LoginHistory } from "../../db/models/index.js";
+import { sequelize, AdminUser, AuthSession, Partner, ServicePlanCatalog, LoginHistory } from "../../db/models/index.js";
 import { validate } from "../../shared/validate.js";
 import { pageQuery, pageOf, paged } from "../../shared/pagination.js";
 import { AppError, notFound } from "../../shared/errors.js";
@@ -130,6 +130,63 @@ router.post("/:id/send-password-reset", passwordResetSendLimiter, validate({ par
   if (!target) throw notFound("Usuário");
   if (req.userScope === "partner" && target.role !== "partner") throw forbiddenRole();
   res.set("Cache-Control", "no-store").status(202).json(await sendPasswordResetToUser(target.id, actorOf(req)));
+});
+
+// Sessões administrativas: somente usuário elegível e dentro do escopo de sua rede.
+// Nunca expor hashes de refresh token no painel.
+const loadTarget = async (req) => {
+  const target = await AdminUser.findByPk(req.valid.params.id);
+  if (!target || target.deletedAt) throw notFound("Usuário");
+  if (req.userScope === "partner" && target.role !== "partner") throw forbiddenRole();
+  if (req.userScope === "partner") {
+    if (!target.partnerId) throw forbiddenRole();
+    const partner = await Partner.findByPk(target.partnerId, { attributes: ["ownerAdminId"] });
+    if (!partner || (partner.ownerAdminId !== req.user.id && target.partnerId !== req.user.partnerId))
+      throw forbiddenRole();
+  }
+  return target;
+};
+router.get("/:id/sessions", validate({ params: id }), async (req, res) => {
+  const target = await loadTarget(req);
+  const sessions = await AuthSession.findAll({
+    where: { adminUserId: target.id, revokedAt: null, expiresAt: { [Op.gt]: new Date() } },
+    attributes: ["id", "audience", "ip", "userAgent", "createdAt", "expiresAt"],
+    order: [["createdAt", "DESC"]], limit: 100,
+  });
+  res.set("Cache-Control", "no-store").json({ data: sessions });
+});
+router.delete("/:id/sessions/:sessionId", validate({ params: z.object({ id: z.string().uuid(), sessionId: z.string().uuid() }) }), async (req, res) => {
+  const target = await loadTarget(req);
+  const sessionId = req.valid.params.sessionId;
+  await sequelize.transaction(async transaction => {
+    const session = await AuthSession.findOne({
+      where: { id: sessionId, adminUserId: target.id, revokedAt: null }, transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!session) throw notFound("Sessão");
+    await session.update({ revokedAt: new Date() }, { transaction });
+    await audit({ actor: actorOf(req), action: "user.session.revoke", entityType: "admin_user", entityId: target.id,
+      metadata: { sessionId }, transaction });
+    // Não desconectar todas as sessões: a verificação de SID já invalida esta sessão individual.
+  });
+  res.json({ ok: true });
+});
+router.delete("/:id/sessions", validate({ params: id }), async (req, res) => {
+  const target = await loadTarget(req);
+  await sequelize.transaction(async transaction => {
+    await revokeAllSessions(target.id, transaction);
+    await audit({ actor: actorOf(req), action: "user.session.revoke_all", entityType: "admin_user", entityId: target.id, transaction });
+    transaction.afterCommit(() => disconnectAdminUser(target.id));
+  });
+  res.json({ ok: true });
+});
+router.post("/:id/unlock", validate({ params: id }), async (req, res) => {
+  const target = await loadTarget(req);
+  await sequelize.transaction(async transaction => {
+    await target.update({ failedLogins: 0, lockedUntil: null }, { transaction });
+    await audit({ actor: actorOf(req), action: "user.unlock", entityType: "admin_user", entityId: target.id, transaction });
+  });
+  res.json({ ok: true });
 });
 
 router.patch(

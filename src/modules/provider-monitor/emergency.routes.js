@@ -21,7 +21,8 @@ export function emergencyRoutes(partnerOf) {
     async(req,res)=>res.status(202).json(await forceDeviceDns(await partnerOf(req),req.valid.params.id,req.valid.body,actorOf(req),req.user.id)));
   r.delete('/device/:id',macWriteLimiter,validate({params:z.object({id:z.string().uuid()})}),
     async(req,res)=>res.json(await endDeviceDns(await partnerOf(req),req.valid.params.id,actorOf(req))));
-  r.get('/',async(req,res)=>res.json(await emergencyChoices(await partnerOf(req))));
+  r.get('/',validate({query:z.object({page:z.coerce.number().int().min(1).max(1000000).default(1),search:z.string().trim().max(120).default('')})}),
+    async(req,res)=>res.json(await emergencyChoices(await partnerOf(req),req.valid.query)));
   r.post('/',macWriteLimiter,validate({body:write}),async(req,res)=>res.status(202).json(
     await launchEmergency(await partnerOf(req),req.valid.body,actorOf(req),req.user.id)));
   r.delete('/',macWriteLimiter,validate({body:z.object({codeIds:ids}).strict()}),async(req,res)=>res.json(

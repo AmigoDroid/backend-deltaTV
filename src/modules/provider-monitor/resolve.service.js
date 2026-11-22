@@ -82,8 +82,7 @@ export async function resolveForActivation(activation, original, credentials) {
         (SELECT avoid_provider_id FROM device_failover_requests WHERE activation_id=:aid AND expires_at>now()) AS "avoidProviderId"`,
         {replacements:{aid:activation.id,codeId:code.id},type:QueryTypes.SELECT});
       if(!preferences?.deviceProviderId && !preferences?.codeProviderId){
-        // Após uma emergência que substituiu a única vaga do código, a DNS
-        // autorizada continua válida; não ressuscitar a origem antiga removida.
+        // Sem prioridade vigente, preservar a pool original do código.
         const current=(await serversForCode(code,{bypassCache:true,emergency:true})).map(server=>webProvider(server,activation));
         if(current.some(s=>s.id===original?.id))return {provider:original,verified:false};
         const next=current.find(s=>s.status==='active');
@@ -93,41 +92,33 @@ export async function resolveForActivation(activation, original, credentials) {
         }
         return {provider:original,verified:false};
       }
-      const permitted=(await serversForCode(code,{bypassCache:true,emergency:true})).map(server=>webProvider(server,activation));
+      const permitted=(await serversForCode(code,{bypassCache:true,emergency:true,extraProviderId:preferences.codeProviderId})).map(server=>webProvider(server,activation));
       const health=await statesOf(permitted);
       for(const providerId of [preferences.deviceProviderId,preferences.codeProviderId]){
         const forced=permitted.find(s=>s.id===providerId && s.status==='active');
         if(!forced || forced.id===preferences.avoidProviderId || health.get(forced.id)?.state==='down')continue;
-        // A troca individual valida as credenciais dessa TV; a troca por código
-        // já validou amostras antes de publicar o evento para a rede.
-        if(providerId===preferences.deviceProviderId && forced.id!==original?.id &&
+        // Amostra de outros códigos não comprova autenticação DESTA TV.
+        if(forced.id!==original?.id &&
            !(await verifyAlternative(forced,credentials.username,credentials.password)))continue;
         await rememberSelectedProvider(activation.id,forced.id).catch(()=>{});
         return {provider:forced,verified:forced.id!==original?.id};
       }
       return {provider:original,verified:false};
     }
-    const servers=(await serversForCode(code)).map(server => webProvider(server, activation));
-    if(!servers.length)return {provider:original,verified:false};
-    // Se o parceiro removeu explicitamente a origem antiga do pool, ela NÃO pode ser entregue novamente.
-    const states=await statesOf(servers);
-    // Não devolver uma origem sabidamente DOWN apenas por ser a original.
-    const originalHealth=states.get(original?.id);
-    const fallback={provider:servers.some(s=>s.id===original?.id) && originalHealth?.state!=="down"?original:null,verified:false};
-    // Preferência temporária deste dispositivo após erro real de reprodução. Não
-    // altera a saúde global do provedor nem as escolhas das outras TVs.
-    const [request] = await sequelize.query(`SELECT avoid_provider_id FROM device_failover_requests
-      WHERE activation_id=:aid AND expires_at>now() LIMIT 1`,
-      { replacements:{aid:activation.id},type:QueryTypes.SELECT });
-    const avoidId = request?.avoid_provider_id || null;
-    // Preferência emergencial só durante o prazo e apenas para o código da TV.
-    // Um erro reportado pela própria TV (avoidId) ou autenticação inválida permite
-    // seguir para o failover automático, mesmo durante a emergência.
-    // Uma consulta para as duas prioridades (sem adicionar outro round-trip ao PostgreSQL).
+    // Consulta as prioridades uma única vez, incluindo falha relatada pela TV.
     const [preferences] = await sequelize.query(`SELECT
       (SELECT provider_id FROM device_dns_overrides WHERE activation_id=:aid AND expires_at>now()) AS "deviceProviderId",
-      (SELECT provider_id FROM code_dns_emergencies WHERE code_id=:codeId AND expires_at>now()) AS "codeProviderId"`,
+      (SELECT provider_id FROM code_dns_emergencies WHERE code_id=:codeId AND expires_at>now()) AS "codeProviderId",
+      (SELECT avoid_provider_id FROM device_failover_requests WHERE activation_id=:aid AND expires_at>now()) AS "avoidProviderId"`,
       {replacements:{aid:activation.id,codeId:code.id},type:QueryTypes.SELECT});
+    const avoidId=preferences?.avoidProviderId || null;
+    // A emergência pode utilizar uma DNS fora da pool quando o limite já está cheio,
+    // SEM excluir permanentemente as associações anteriores do código.
+    const servers=(await serversForCode(code,{extraProviderId:preferences?.codeProviderId})).map(server => webProvider(server, activation));
+    if(!servers.length)return {provider:original,verified:false};
+    const states=await statesOf(servers);
+    const originalHealth=states.get(original?.id);
+    const fallback={provider:servers.some(s=>s.id===original?.id) && originalHealth?.state!=="down"?original:null,verified:false};
     // Precedência: override da ativação > emergência por código > seleção automática.
     // Não sobrepor erro relatado pelo aparelho ou DNS confirmada como down.
     const deviceForced=servers.find(s=>s.id===preferences?.deviceProviderId && s.status==='active');
@@ -137,12 +128,10 @@ export async function resolveForActivation(activation, original, credentials) {
       return {provider:deviceForced,verified:deviceForced.id!==original?.id};
     }
     const forced=servers.find(s=>s.id===preferences?.codeProviderId && s.status==='active');
-    if(forced && forced.id!==avoidId && states.get(forced.id)?.state!=='down') {
-      // A emergência foi autorizada pelo operador após sondagem + amostra Xtream.
-      // Não executar 3.000 autenticações HTTP concorrentes na VPS: as TVs
-      // validam o streaming, e um erro real registra avoidId para o failover.
+    if(forced && forced.id!==avoidId && states.get(forced.id)?.state!=='down' &&
+      (forced.id===original?.id || await verifyAlternative(forced,credentials.username,credentials.password))) {
       await rememberSelectedProvider(activation.id,forced.id).catch(()=>{});
-      return {provider:forced,verified:true};
+      return {provider:forced,verified:forced.id!==original?.id};
     }
     const now=Date.now();
     const freshMs = (await freshnessWindowSeconds()) * 1000;

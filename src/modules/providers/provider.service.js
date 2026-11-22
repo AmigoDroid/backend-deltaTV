@@ -46,10 +46,10 @@ async function prepare(input, current) {
 }
 
 /** `max`: teto de servidores da parceria (usado no portal do revendedor, que cadastra os próprios). Admin não passa. */
-export async function createProvider(partnerId, input, actor, { max } = {}) {
+export async function createProvider(partnerId, input, actor, { max, transaction } = {}) {
   // Prepare URL/SSRF before acquiring the lock so network probes do not hold a DB transaction.
   const patch = await prepare({ playlistTemplate: DEFAULT_TEMPLATE, ...input });
-  return sequelize.transaction(async (t) => {
+  const insert = async (t) => {
     // A partner row serializes concurrent INSERTs across both reseller and content portals.
     // A zero limit MUST mean zero; never use a truthy check for quotas.
     const owner = await Partner.findByPk(partnerId, { transaction: t, lock: t.LOCK.UPDATE });
@@ -66,7 +66,8 @@ export async function createProvider(partnerId, input, actor, { max } = {}) {
     const p = await PartnerProvider.create({ partnerId, ...patch }, { transaction: t });
     await audit({ actor, action: "provider.create", entityType: "partner", entityId: partnerId, metadata: { providerId: p.id, baseUrl: p.baseUrl }, transaction: t });
     return p;
-  });
+  };
+  return transaction ? insert(transaction) : sequelize.transaction(insert);
 }
 
 export async function updateProvider(partnerId, id, input, actor) {

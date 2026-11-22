@@ -70,7 +70,7 @@ export function createApp() {
   // Sessões de players white-label têm limite próprio por token (não por IP público compartilhado).
   app.use("/api/v1/player-apps", whiteLabelPublic);
   app.use("/api/v1/client/tv-messages",clientMessages);
-  app.use("/api/v1/client/messages",clientMessages);
+  app.use("/api/v1/client/messages", clientMessages);
   app.use(apiLimiter);
   // Notificar após respostas bem-sucedidas; o convite público também cria uma parceria.
   app.use((req, res, next) => {
@@ -108,7 +108,7 @@ export function createApp() {
   app.use("/pair", pairingRoutes);
 
   app.use("/api/v1/app-installation", authenticate, installationRoutes);
-  app.use("/api/v1/tv-messages",panelMessages);
+  app.use("/api/v1/tv-messages", panelMessages);
   app.use("/api/v1/auth", authRoutes);
   app.use("/api/v1/content-partner", contentPartnerRoutes);
   app.use("/api/v1/admin", adminRoutes);

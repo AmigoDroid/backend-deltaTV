@@ -51,7 +51,9 @@ test('troca emergencial é direito padrão do parceiro, inclusive sem autoFailov
  assert.match(svc,/Math\.max\(1,freshPlan\.features\.maxServers\)/);
  assert.match(resolve,/if\(!plan\.features\.autoFailover\)\{/);
  assert.match(resolve,/serversForCode\(code,\{bypassCache:true,emergency:true\}\)/);
- assert.match(resolve,/não ressuscitar a origem antiga removida/);
+ assert.match(resolve,/extraProviderId:preferences.codeProviderId/);
+ assert.doesNotMatch(svc,/CodeServerPool\.destroy/);
+ assert.match(svc,/transaction\}/);
  assert.match(pool,/emergency = false/);
  assert.match(svc,/c\.partner_id=:partnerId/);
 });

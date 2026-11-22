@@ -28,3 +28,9 @@ test("painel mostra bloqueio de login e oferece sessões/desbloqueio", () => {
   assert.match(ui, /\/admin\/users\/\$\{u\.id\}\/unlock/);
   assert.match(ui, /Encerrar todas/);
 });
+
+test("sessões do Admin delegado validam propriedade da rede e não expõem refreshHash", () => {
+  assert.match(routes, /partner\.ownerAdminId !== req\.user\.id/);
+  assert.match(routes, /target\.partnerId !== req\.user\.partnerId/);
+  assert.match(routes, /attributes: \["id", "audience", "ip", "userAgent", "createdAt", "expiresAt"\]/);
+});

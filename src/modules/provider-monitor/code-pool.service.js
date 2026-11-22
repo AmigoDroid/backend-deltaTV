@@ -20,9 +20,15 @@ function save(key, rows) {
   if (poolCache.size > MAX_CACHE) poolCache.delete(poolCache.keys().next().value);
 }
 /** Retorna exclusivamente servidores autorizados para ESTE código. Sem associações = somente servidor original. */
-export async function serversForCode(code, { bypassCache = false, emergency = false } = {}) {
+export async function serversForCode(code, { bypassCache = false, emergency = false, extraProviderId = null } = {}) {
+  const extra = async rows => {
+    if (!extraProviderId || rows.some(server => server.id === extraProviderId)) return rows;
+    // Um override temporário só pode alcançar DNS ativa da MESMA parceria.
+    const server = await PartnerProvider.findOne({where:{id:extraProviderId,partnerId:code.partnerId,status:'active',deletedAt:null},raw:true});
+    return server ? [...rows, server] : rows;
+  };
   const hit = poolCache.get(code.id);
-  if (!bypassCache && !emergency && hit && Date.now() - hit.at < TTL) return hit.rows;
+  if (!bypassCache && !emergency && hit && Date.now() - hit.at < TTL) return extra(hit.rows);
   const plan=await getServicePlan(code.partnerId);
   const links = await CodeServerPool.findAll({where:{codeId: code.id}, attributes:["providerId"], raw:true});
   const ids = links.length ? links.map(x => x.providerId) : (code.providerId ? [code.providerId] : []);
@@ -31,13 +37,13 @@ export async function serversForCode(code, { bypassCache = false, emergency = fa
     // ativo da própria parceria. Não alterar esse comportamento silenciosamente.
     const legacy=await PartnerProvider.findAll({where:{partnerId:code.partnerId,status:"active",deletedAt:null},order:[["priority","ASC"],["createdAt","ASC"]],raw:true});
     const allowed=emergency ? legacy : plan.features.autoFailover ? (plan.features.maxServers === null ? legacy : legacy.slice(0,plan.features.maxServers)) : legacy.slice(0,1);
-    if(!emergency)save(code.id,allowed);return allowed;
+    if(!emergency)save(code.id,allowed);return extra(allowed);
   }
   const rows = await PartnerProvider.findAll({where:{id:{[Op.in]:ids},partnerId:code.partnerId,status:"active",deletedAt:null},raw:true});
   rows.sort((a,b) => Number(b.id === code.providerId) - Number(a.id === code.providerId) || a.priority - b.priority || new Date(a.createdAt) - new Date(b.createdAt) || a.id.localeCompare(b.id));
   const allowed=emergency ? rows : plan.features.autoFailover ? (plan.features.maxServers === null ? rows : rows.slice(0,plan.features.maxServers)) : rows.filter(s=>s.id===code.providerId).slice(0,1);
   if(!emergency)save(code.id,allowed);
-  return allowed;
+  return extra(allowed);
 }
 /** Atualização atômica; URLs ativas da mesma parceria, sem duplicidades. */
 export async function setCodeServers(partnerId, codeId, ids, actor) {

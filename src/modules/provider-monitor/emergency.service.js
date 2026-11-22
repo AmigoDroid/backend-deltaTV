@@ -7,7 +7,7 @@ import { normalizeBaseUrl } from '../providers/playlist-url.js';
 import { createProvider } from '../providers/provider.service.js';
 import { probeServer } from './monitor.service.js';
 import { getServicePlan } from '../service-plans/plan.service.js';
-import { serversForCode, invalidateServerPools } from './code-pool.service.js';
+import { invalidateServerPools } from './code-pool.service.js';
 import { clearResolutionCache } from './resolve.service.js';
 import { broadcastDeviceHint } from '../../realtime/device-channel.js';
 import { probeCredentials } from '../providers/provider.service.js';
@@ -18,15 +18,23 @@ const select = (sql,replacements={})=>sequelize.query(sql,{replacements,type:Que
 const DEFAULT_NOTICE='Atualizando servidor. A transmissão será retomada automaticamente.';
 const unique = ids => [...new Set(ids)];
 
-export async function emergencyChoices(partnerId) {
-  const [servers,codes,active] = await Promise.all([
+export async function emergencyChoices(partnerId, {page=1,search=''}={}) {
+  const pageSize=100;
+  const where={partnerId,deletedAt:null,status:'active'};
+  if(search.trim()) where[Op.or]=[
+    {code:{[Op.iLike]:`%${search.trim()}%`}},
+    {label:{[Op.iLike]:`%${search.trim()}%`}},
+  ];
+  const [servers,totalCodes,codes] = await Promise.all([
     PartnerProvider.findAll({where:{partnerId,deletedAt:null},attributes:['id','name','baseUrl','status'],order:[['priority','ASC']],raw:true}),
-    PartnerCode.findAll({where:{partnerId,deletedAt:null,status:'active'},attributes:['id','code','label'],order:[['createdAt','DESC']],limit:500,raw:true}),
-    select(`SELECT e.code_id AS "codeId",e.provider_id AS "providerId",e.expires_at AS "expiresAt"
-      FROM code_dns_emergencies e JOIN partner_codes c ON c.id=e.code_id
-      WHERE c.partner_id=:partnerId AND e.expires_at>now() ORDER BY e.expires_at ASC LIMIT 500`,{partnerId}),
+    PartnerCode.count({where}),
+    PartnerCode.findAll({where,attributes:['id','code','label'],order:[['createdAt','DESC'],['id','ASC']],limit:pageSize,offset:(page-1)*pageSize,raw:true}),
   ]);
-  const progress = active.length ? await select(`SELECT a.partner_code_id AS "codeId",
+  const active=codes.length?await select(`SELECT e.code_id AS "codeId",e.provider_id AS "providerId",e.expires_at AS "expiresAt"
+    FROM code_dns_emergencies e JOIN partner_codes c ON c.id=e.code_id
+    WHERE c.partner_id=:partnerId AND e.code_id IN (:codeIds) AND e.expires_at>now()
+    ORDER BY e.expires_at ASC`,{partnerId,codeIds:codes.map(c=>c.id)}):[];
+  const progress=active.length?await select(`SELECT a.partner_code_id AS "codeId",
     count(a.id)::int AS total,
     count(a.id) FILTER (WHERE route.provider_id=e.provider_id)::int AS updated
     FROM code_dns_emergencies e
@@ -34,9 +42,9 @@ export async function emergencyChoices(partnerId) {
     LEFT JOIN device_provider_routes route ON route.activation_id=a.id
     WHERE e.code_id IN (:codeIds) AND e.expires_at>now()
     GROUP BY a.partner_code_id`,{codeIds:active.map(x=>x.codeId)}):[];
-  return {servers,codes,active,progress,defaultMinutes:30,maxCodes:500};
+  return {servers,codes,active,progress,defaultMinutes:30,maxCodes:500,
+    page,pageSize,totalCodes,hasMore:page*pageSize<totalCodes};
 }
-
 async function validateAccess(partnerId, codeIds) {
   if (!Array.isArray(codeIds) || !codeIds.length || codeIds.length>500 || unique(codeIds).length!==codeIds.length)
     throw new AppError(422,'EMERGENCY_CODE_LIMIT','Selecione de 1 a 500 códigos, sem repetições.');
@@ -98,23 +106,15 @@ export async function launchEmergency(partnerId, input, actor, userId) {
   // Uma DNS existente anteriormente marcada down pode estar recuperada; o teste
   // HTTP acima e a amostra autenticada permitem retirar o estado antigo.
   // O monitor medirá a saúde de novo nas próximas rodadas.
-  if(provider.id) await ProviderHealth.update({state:'unknown',lastCheckedAt:null,failures:0,successes:0},
-    {where:{providerId:provider.id,state:'down'}});
-  // Para urgências com o pool no limite, a DNS de substituição ocupa a vaga
-  // da origem com pior saúde/menor prioridade. Assim a emergência não falha
-  // justamente quando todos os slots existentes estão ocupados.
-  const intended=[];
-  for(const code of codes){
-    const pool=await serversForCode(code,{bypassCache:true});
-    intended.push({code,preferredOldIds:pool.map(p=>p.id)});
-  }
-  if(newServer)provider=await createProvider(partnerId,{name:input.name||new URL(provider.baseUrl).hostname,
-    baseUrl:provider.baseUrl,status:'active',priority:0},actor);
+  // Não remover DNS antigas nem alterar o limite de pool para forçar a troca.
+  // Se o pool estiver cheio, a prioridade expirável será resolvida pelo código.
   const expiresAt=new Date(Date.now()+input.minutes*60_000);
   await sequelize.transaction(async transaction=>{
     const owner=await Partner.findByPk(partnerId,{transaction,lock:transaction.LOCK.UPDATE});
     if(!owner)throw new AppError(404,'PARTNER_NOT_FOUND','Parceria indisponível.');
     const freshPlan=await getServicePlan(partnerId,{fresh:true});
+    if(newServer) provider=await createProvider(partnerId,{name:input.name||new URL(provider.baseUrl).hostname,
+      baseUrl:provider.baseUrl,status:'active',priority:0},actor,{transaction});
     const current=await PartnerCode.findAll({where:{id:{[Op.in]:codes.map(c=>c.id)},partnerId,status:'active',deletedAt:null},
       transaction,lock:transaction.LOCK.UPDATE,raw:true});
     if(current.length!==codes.length)throw new AppError(409,'CODE_CHANGED','Os códigos foram alterados. Confira novamente.');
@@ -122,30 +122,21 @@ export async function launchEmergency(partnerId, input, actor, userId) {
     const linksByCode=new Map();
     for(const link of allLinks){if(!linksByCode.has(link.codeId))linksByCode.set(link.codeId,new Set());linksByCode.get(link.codeId).add(link.providerId);}
     const additions=[];
-    const removals=[];
-    const replaced=[];
-    for(const {code,preferredOldIds} of intended){
+    let temporaryOnly=0;
+    for(const code of codes){
       const before=linksByCode.get(code.id)||new Set();
-      // Códigos legados sem vínculos passam a ter pool explícito para garantir
-      // que a DNS nova não seja ocultada pelo limite de servidores do resolvedor.
-      const currentIds=before.size?[...before]:code.providerId?[code.providerId]:preferredOldIds;
-      const desired=unique([...currentIds,provider.id]);
-      // Mesmo um plano sem failover precisa de uma vaga durante a emergência.
+      if(before.has(provider.id))continue;
+      // Sem vínculo explícito, código legado conserva seu comportamento anterior.
+      // Com pool cheio, a DNS emergencial vale apenas durante o prazo.
+      const currentCount=before.size || (code.providerId ? 1 : 0);
       const limit=freshPlan.features.maxServers===null?null:Math.max(1,freshPlan.features.maxServers);
-      const removedIds=[];
-      while(limit!==null && desired.length>limit){
-        const alternatives=desired.filter(id=>id!==provider.id);
-        if(!alternatives.length)throw new AppError(403,'PLAN_SERVER_LIMIT','O plano não permite uma DNS ativa.');
-        // A ordem original da pool é boa (prioridade/saúde); descartar do fim.
-        const remove=alternatives[alternatives.length-1];
-        desired.splice(desired.indexOf(remove),1);
-        removedIds.push(remove);
+      if(!code.providerId && !before.size || limit!==null && currentCount>=limit){
+        temporaryOnly++;
+        continue;
       }
-      for(const id of before)if(!desired.includes(id))removals.push({codeId:code.id,providerId:id});
-      for(const id of desired)if(!before.has(id))additions.push({codeId:code.id,providerId:id});
-      if(removedIds.length)replaced.push({codeId:code.id,replacedProviderIds:removedIds});
+      if(!before.size && code.providerId) additions.push({codeId:code.id,providerId:code.providerId});
+      additions.push({codeId:code.id,providerId:provider.id});
     }
-    if(removals.length)await CodeServerPool.destroy({where:{[Op.or]:removals},transaction});
     if(additions.length)await CodeServerPool.bulkCreate(additions,{transaction,ignoreDuplicates:true});
     await sequelize.query(`INSERT INTO code_dns_emergencies
       (code_id,provider_id,expires_at,created_by,created_at,updated_at,notified_at)
@@ -155,8 +146,11 @@ export async function launchEmergency(partnerId, input, actor, userId) {
       created_by=EXCLUDED.created_by,updated_at=now(),notified_at=NULL`,
       {replacements:{providerId:provider.id,expiresAt,userId,codeIds:codes.map(c=>c.id),partnerId},transaction});
     await audit({actor,action:'dns.emergency.start',entityType:'partner',entityId:partnerId,
-      metadata:{providerId:provider.id,codeIds:codes.map(c=>c.id),expiresAt:expiresAt.toISOString(),minutes:input.minutes,replaced},transaction});
+      metadata:{providerId:provider.id,codeIds:codes.map(c=>c.id),expiresAt:expiresAt.toISOString(),minutes:input.minutes,temporaryOnly},transaction});
   });
+  // O estado de saúde só é invalidado após commit bem-sucedido.
+  await ProviderHealth.update({state:'unknown',lastCheckedAt:null,failures:0,successes:0},
+    {where:{providerId:provider.id,state:'down'}}).catch(err=>console.warn('[emergency-dns] health reset',err.message));
   invalidateServerPools();clearResolutionCache();
   // Enviar apenas IDs e mensagem, nunca a URL Xtream ou credenciais. A TV consulta a API autenticada.
   for(const code of codes)broadcastDeviceHint({topic:'dns-emergency',partnerId,codeId:code.id,
