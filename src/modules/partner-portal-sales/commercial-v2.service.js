@@ -228,6 +228,7 @@ export async function saveSellerGateway(id,{provider,accessToken,handle,webhookS
  const author=await AdminUser.findByPk(actor.id);
  if(!author||!await verifyPassword(currentPassword,author.passwordHash))fail(403,'PASSWORD_CONFIRMATION_REQUIRED','Confirme a senha da sua conta.');
  let accountRef=handle||null;
+ if(provider==='mercadopago'&&!accessToken)fail(422,'GATEWAY_INVALID','Informe o Access Token do Mercado Pago.');
  if(provider==='mercadopago'){
   let res;try{res=await fetch('https://api.mercadopago.com/users/me',{
     headers:{Authorization:`Bearer ${accessToken}`},signal:AbortSignal.timeout(12000)});}catch{fail(502,'GATEWAY_UNREACHABLE','Não foi possível verificar o Mercado Pago.');}
@@ -243,7 +244,7 @@ export async function saveSellerGateway(id,{provider,accessToken,handle,webhookS
     VALUES (:id,:provider,:secret,:account,true)
     ON CONFLICT(partner_id,provider) DO UPDATE SET credentials_enc=excluded.credentials_enc,
     account_ref=excluded.account_ref,active=true,updated_at=now()`,
-   {id,provider,secret:encryptSecret(JSON.stringify({accessToken,webhookSecret:webhookSecret||''})),account:accountRef},t);
+   {id,provider,secret:encryptSecret(JSON.stringify({accessToken:accessToken||'',webhookSecret:webhookSecret||''})),account:accountRef},t);
   await audit({actor,action:'portal.network.gateway.configured',entityType:'partner',entityId:id,
    metadata:{provider,accountRef,confirmedOwner:provider==='mercadopago'},transaction:t});
   return {provider,accountRef,configured:true,warning:provider==='infinitepay'?'Credencial salva, mas ainda não validada em cobrança real.':null};

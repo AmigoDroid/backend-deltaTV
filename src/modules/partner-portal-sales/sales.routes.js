@@ -140,8 +140,9 @@ partnerPortalSales.post('/reparent-requests',validate({body:transferRequest}),as
 partnerPortalSales.post('/reparent-requests/:id/decision',validate({params:actionId,body:z.object({accept:z.boolean()}).strict()}),async(req,res)=>
  res.json(await v2.decideReparent(req.valid.params.id,req.valid.body.accept,actorOf(req))));
 partnerPortalSales.get('/gateways',async(req,res)=>res.json(await v2.sellerGatewayStatus(req.user.partnerId)));
-partnerPortalSales.put('/gateways',validate({body:z.object({provider:z.enum(['mercadopago','infinitepay']),accessToken:z.string().trim().min(12).max(1000),
-  handle:z.string().trim().max(120).optional(),webhookSecret:z.string().max(300).optional(),currentPassword:z.string().min(1).max(128)}).strict()}),async(req,res)=>
+partnerPortalSales.put('/gateways',validate({body:z.object({provider:z.enum(['mercadopago','infinitepay']),accessToken:z.union([z.literal(''),z.string().trim().min(12).max(1000)]).optional(),
+  handle:z.string().trim().max(120).optional(),webhookSecret:z.string().max(300).optional(),currentPassword:z.string().min(1).max(128)}).strict()
+  .refine(v=>v.provider!=='mercadopago'||Boolean(v.accessToken),{path:['accessToken'],message:'Informe o Access Token do Mercado Pago.'})}),async(req,res)=>
  res.json(await v2.saveSellerGateway(req.user.partnerId,req.valid.body,actorOf(req))));
 partnerPortalSales.put('/gateways/default',validate({body:z.object({provider:z.enum(['mercadopago','infinitepay'])}).strict()}),async(req,res)=>
  res.json(await v2.setSellerDefaultGateway(req.user.partnerId,req.valid.body.provider,actorOf(req))));

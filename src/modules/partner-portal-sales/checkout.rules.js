@@ -1,7 +1,7 @@
 /** A seleção de provedor do Painel do Parceiro NÃO altera o Pix de licenças de TV. */
 export const PORTAL_PAYMENT_GATEWAYS=Object.freeze(['manual','infinitepay','mercadopago']);
 export const providerAvailable=(provider,config)=>provider==='manual' ||
-  (provider==='infinitepay' && Boolean(config.infinitepayHandle&&config.infinitepayApiKey)) ||
+  (provider==='infinitepay' && Boolean(config.infinitepayHandle)) ||
   (provider==='mercadopago' && Boolean(config.mpAccessToken&&config.mpWebhookSecret));
 export function verifiedAmountMatches(order, amountCents){
   return Number.isSafeInteger(Number(amountCents))&&Number(amountCents)>=100&&Number(amountCents)===Number(order.total_cents);

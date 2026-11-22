@@ -6,7 +6,9 @@ import {createInfinitePay} from '../../src/modules/distribution/gateways/infinit
 const source=path=>readFileSync(new URL(path,import.meta.url),'utf8');
 test('gateway manual sempre funciona; gateway automático exige credenciais server-side',()=>{
  assert.equal(providerAvailable('manual',{}),true);
- assert.equal(providerAvailable('infinitepay',{infinitepayHandle:'deltatv'}),false);
+ assert.equal(providerAvailable('infinitepay',{}),false);
+ assert.equal(providerAvailable('infinitepay',{infinitepayApiKey:'inchk_key'}),false);
+ assert.equal(providerAvailable('infinitepay',{infinitepayHandle:'deltatv'}),true);
  assert.equal(providerAvailable('infinitepay',{infinitepayHandle:'deltatv',infinitepayApiKey:'inchk_key'}),true);
  assert.equal(providerAvailable('mercadopago',{mpAccessToken:'tok'}),false);
  assert.equal(providerAvailable('mercadopago',{mpAccessToken:'tok',mpWebhookSecret:'secret'}),true);
@@ -54,4 +56,31 @@ test('migração e rotas preservam compras antigas e isolam o estoque do Painel 
  assert.match(service,/GATEWAY_VERIFICATION_REQUIRED/);
  assert.match(service,/payment_verified_at=now\(\)/);
  assert.match(service,/PORTAL_SALES_MIGRATION_REQUIRED/);
+});
+test('InfinitePay só com InfiniteTag: chave opcional nas rotas e serviços, obrigatória no Mercado Pago',()=>{
+ const sales=source('../../src/modules/partner-portal-sales/sales.routes.js');
+ const v2=source('../../src/modules/partner-portal-sales/commercial-v2.service.js');
+ const fin=source('../../src/modules/network-finance/finance.routes.js');
+ const finSvc=source('../../src/modules/network-finance/finance.service.js');
+ assert.match(sales,/accessToken:z\.union\(\[z\.literal\(''\),z\.string\(\)\.trim\(\)\.min\(12\)\.max\(1000\)\]\)\.optional\(\)/);
+ assert.match(sales,/v\.provider!=='mercadopago'\|\|Boolean\(v\.accessToken\)/);
+ assert.match(v2,/provider==='mercadopago'&&!accessToken\)fail\(422/);
+ assert.match(v2,/accessToken:accessToken\|\|''/);
+ assert.match(fin,/apiKey:z\.union\(\[z\.literal\(''\),z\.string\(\)\.trim\(\)\.min\(14\)\.max\(250\)\]\)\.optional\(\)/);
+ assert.match(finSvc,/input\.apiKey\|\|''/);
+ assert.match(finSvc,/\(credential&&!\/\^inchk_/);
+});
+test('InfinitePay sem chave: link sem options e sem X-Api-Key, confirmação continua só por payment_check',async()=>{
+ const calls=[];
+ const fakeFetch=async(url,init)=>{calls.push({url,headers:init.headers,body:JSON.parse(init.body)});
+  return {ok:true,status:200,json:async()=>url.endsWith('/links')?{url:'https://checkout.infinitepay.io/x'}:{success:true,paid:true,amount:2500,paid_amount:2500,capture_method:'pix'}};};
+ const adapter=createInfinitePay({handle:'deltatv',apiKey:'',fetchImpl:fakeFetch});
+ await adapter.createLink({orderNsu:'o-1',amountCents:2500,description:'x',redirectUrl:'https://r.example/',webhookUrl:'https://api.example/w',validUntil:new Date(Date.now()+60000),singlePayment:true});
+ assert.equal(calls[0].headers['X-Api-Key'],undefined);
+ assert.equal(calls[0].body.options,undefined);
+ assert.equal(calls[0].body.handle,'deltatv');
+ const check=await adapter.paymentCheck({orderNsu:'o-1',transactionNsu:'t-1',slug:'s-1'});
+ assert.equal(check.paid,true);
+ assert.equal(calls[1].headers['X-Api-Key'],undefined);
+ assert.deepEqual(Object.keys(calls[1].body).sort(),['handle','order_nsu','slug','transaction_nsu']);
 });

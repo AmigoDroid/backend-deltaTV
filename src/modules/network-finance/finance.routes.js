@@ -35,7 +35,7 @@ const quoteBody=z.object({partnerId:z.string().uuid(),kind:z.enum(['renewal','up
 const chargeBody=quoteBody.extend({method:z.enum(['automatic','manual']).default('automatic'),previewFingerprint:z.string().length(64)}).strict();
 const configs=z.discriminatedUnion('provider',[
  z.object({provider:z.literal('mercadopago'),accessToken:z.string().trim().min(20).max(600),webhookSecret:z.string().trim().min(8).max(500)}).strict(),
- z.object({provider:z.literal('infinitepay'),handle:z.string().trim().min(2).max(40),apiKey:z.string().trim().min(14).max(250)}).strict(),
+ z.object({provider:z.literal('infinitepay'),handle:z.string().trim().min(2).max(40),apiKey:z.union([z.literal(''),z.string().trim().min(14).max(250)]).optional()}).strict(),
 ]);
 const strictAdmin = (req,_res,next)=>{
  if(req.user?.role!=='admin'||req.impersonator)throw new AppError(403,'ADMIN_WORKSPACE_ONLY','Configuração reservada ao titular da rede.');

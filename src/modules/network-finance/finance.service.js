@@ -43,10 +43,10 @@ async function gatewayPendingCount(adminId,provider,t) {
 
 /** Salva credenciais em AES-GCM, SEM ativar. Alterações bloqueadas enquanto há cobrança aberta. */
 export async function saveGateway(adminId,provider,input,actor) {
-  const credential=provider==='mercadopago'?input.accessToken:input.apiKey;
+  const credential=provider==='mercadopago'?input.accessToken:(input.apiKey||'');
   const accountRef=provider==='mercadopago'?'pending':normalizeHandle(input.handle);
-  if(provider==='infinitepay'&&(!HANDLE_RE.test(accountRef)||!/^inchk_[\w-]{8,200}$/.test(credential||'')))
-    fail(422,'INVALID_GATEWAY_CREDENTIALS','Informe handle e API Key válida (inchk_) da InfinitePay.');
+  if(provider==='infinitepay'&&(!HANDLE_RE.test(accountRef)||(credential&&!/^inchk_[\w-]{8,200}$/.test(credential))))
+    fail(422,'INVALID_GATEWAY_CREDENTIALS','Informe uma InfiniteTag válida. A API Key da InfinitePay é opcional, mas se informada deve começar com inchk_.');
   if(provider==='mercadopago'&&(!/^APP_USR-[\w-]{10,}$/.test(credential||'')||!input.webhookSecret?.trim()))
     fail(422,'INVALID_GATEWAY_CREDENTIALS','Informe o Access Token de produção e o segredo da assinatura do webhook.');
   return sequelize.transaction(async t=>{
