@@ -42,6 +42,15 @@ export async function listCatalog({ includeInactive = true } = {}) {
   return rows.map(r => ({ ...r, assignedCount: byTier.get(r.key) || 0 }));
 }
 
+async function assertNotPackageControlled(key, transaction) {
+  const rows = await sequelize.query(`SELECT code FROM partner_portal_sales_plans
+    WHERE service_tier=:key AND code<>:key LIMIT 1`, {
+    replacements:{key},type:QueryTypes.SELECT,transaction,
+  });
+  if(rows.length)throw new AppError(409,'PACKAGE_CONTROLLED_TIER',
+    'Este plano é controlado por Pacotes de Serviço. Edite-o naquela tela para aplicar os recursos aos parceiros.');
+}
+
 async function validatePlanChanges(key, body, transaction) {
   const badAudience = await sequelize.query(`SELECT p.name
     FROM partners p LEFT JOIN partner_service_plans s ON s.partner_id=p.id
@@ -80,6 +89,7 @@ export async function updateCatalogPlan(key, input, actor) {
   await sequelize.transaction(async t => {
     record = await ServicePlanCatalog.findByPk(key, { transaction:t, lock:t.LOCK.UPDATE });
     if (!record) throw notFound("Plano");
+    await assertNotPackageControlled(key,t);
     if (record.system && input.active === false) throw new AppError(409,"DEFAULT_PLAN_REQUIRED","Planos padrão não podem ser desativados. Duplique-os se precisar de alternativas.");
     await validatePlanChanges(key, input, t);
     // Verifica todos os assinantes antes de reduzir vagas; o update inteiro é atômico.
@@ -103,6 +113,7 @@ export async function removeCatalogPlan(key, actor) {
   await sequelize.transaction(async t => {
     const record = await ServicePlanCatalog.findByPk(key, { transaction:t, lock:t.LOCK.UPDATE });
     if (!record) throw notFound("Plano");
+    await assertNotPackageControlled(key,t);
     if (record.system) throw new AppError(409,"DEFAULT_PLAN_REQUIRED","Os planos padrão não podem ser excluídos.");
     const used = await PartnerServicePlan.count({ where:{tier:key},transaction:t });
     if (used) throw new AppError(409,"PLAN_IN_USE",`Este plano está atribuído a ${used} cadastro(s). Reatribua-os antes de excluir; você também pode desativar o plano para impedir novas atribuições.`);

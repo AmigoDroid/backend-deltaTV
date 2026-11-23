@@ -36,6 +36,9 @@ export async function provisionNetworkAccount({ownerId,actor,plan,name,email,pas
   dueDay:10,graceDays:5,suspendPolicy:'auto_after_grace'}, {transaction});
  await PartnerServicePlan.create({partnerId:p.id,tier:plan.key,maxServersOverride:null,
   autoFailoverOverride:null,autoPriorityOverride:null,emailAlertsOverride:null,detailedHistoryOverride:null},{transaction});
+ // O plano é a fonte técnica; alterações futuras herdam os limites contratados.
+ await sequelize.query('UPDATE partner_service_plans SET activation_limit_inherited=true WHERE partner_id=:id',{
+  replacements:{id:p.id},transaction});
  if(kind!=='reseller')await ContentPartnerTerms.create({partnerId:p.id,
   mode:benefits.activationLimit==null?'fixed_unlimited':'fixed_limited',fixedFeeCents:benefits.monthlyFeeCents,
   activationLimit:benefits.activationLimit,licensePolicy:'partner_only',creditsPerActivation:1,

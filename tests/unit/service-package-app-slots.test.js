@@ -21,24 +21,35 @@ test('snapshot do pacote carrega a cota de apps, com padrão legado zero', () =>
   assert.equal(packageSnapshotFromRow({...row,max_apps:undefined}).maxApps,0);
 });
 
-test('Admin configura os apps na tela real de Pacotes de Serviço e envia ao backend', () => {
+test('Admin edita limites no modal, sem formulário extenso na página', () => {
   const ui = source('../../../admin/src/pages/ServicePackages.jsx');
   assert.match(ui,/Apps próprios incluídos/);
   assert.match(ui,/maxApps:Number\(p\.max_apps\?\?0\)/);
-  assert.match(ui,/\{p\.max_apps\?\?0\} app\(s\) próprio\(s\)/);
+  assert.match(ui,/<Modal wide title=/);
+  assert.match(ui,/sp-editor-section/);
   const routes = source('../../src/modules/service-packages/package.routes.js');
   assert.match(routes,/maxApps:z\.number\(\)\.int\(\)\.min\(0\)\.max\(50\)\.optional\(\)/);
 });
 
-test('pacote grava cota no catálogo técnico e a atribuição congela a cota do parceiro', () => {
+test('editores de planos central e delegado abrem modal acessível', () => {
+  const admin = source('../../../admin/src/pages/NetworkWorkspace.jsx');
+  assert.match(admin,/<Modal wide title=\{planForm\.key/);
+  const ui = source('../../../admin/src/pages/ServicePackages.jsx');
+  assert.match(ui,/onClose=\{\(\)=>\{/);
+  assert.match(ui,/disabled=\{busy\}/);
+});
+
+test('edições atualizam catálogo e atributos técnicos são herdados, sem copiar overrides', () => {
   const catalog = source('../../src/modules/service-packages/package.service.js');
   assert.match(catalog,/max_apps=excluded\.max_apps/);
   assert.match(catalog,/maxApps=input\.maxApps\?\?Number\(technical\?\.max_apps\?\?0\)/);
   assert.match(catalog,/maxApps:Number\(current\.max_apps\?\?0\)/);
-  assert.match(catalog,/assertNoSlotDowngrade\(row\.partner_id,maxApps,t\)/);
+  assert.match(catalog,/effectivePackageQuota\(/);
+  assert.match(catalog,/assertPartnerFitsPackage\(/);
+  assert.match(catalog,/live_snapshot=CAST\(:snapshot AS jsonb\)/);
   const assign = source('../../src/modules/service-packages/package.apply.js');
-  assert.match(assign,/max_apps_override=excluded\.max_apps_override/);
-  assert.match(assign,/maxApps:snapshot\.maxApps\?\?null/);
+  assert.match(assign,/max_apps_override=NULL/);
+  assert.match(assign,/max_servers_override=NULL/);
   assert.match(assign,/assertNoSlotDowngrade\(partnerId,snapshot\.maxApps,transaction\)/);
 });
 

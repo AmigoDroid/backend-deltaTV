@@ -30,20 +30,18 @@ export async function assertPartnerFitsPackage(partnerId, snapshot, transaction)
 }
 
 /** Keep existing monitoring, DNS resolver, PlayerWeb and legacy device APIs intact.
- * Apply a frozen snapshot, not mutable defaults from the catalog. */
+ * Copy finance only; technical defaults inherit the live catalog. */
 export async function applyServicePackageToPartner(partnerId, snapshot, transaction, { actorId=null, recordAssignment=true, monthlyFeeCents=null }={}){
  if(!snapshot?.tier || !snapshot?.code)throw new AppError(422,'SERVICE_PACKAGE_INVALID','Pacote de Serviço inválido.');
  await assertPartnerFitsPackage(partnerId,snapshot,transaction);
  await run(`INSERT INTO partner_service_plans(partner_id,tier,max_servers_override,max_apps_override,auto_failover_override,
-   auto_priority_override,email_alerts_override,detailed_history_override)
-  VALUES (:partnerId,:tier,:maxDns,:maxApps,:failover,:priority,:alerts,:history)
+   auto_priority_override,email_alerts_override,detailed_history_override,activation_limit_inherited)
+  VALUES (:partnerId,:tier,NULL,NULL,NULL,NULL,NULL,NULL,true)
   ON CONFLICT(partner_id) DO UPDATE SET tier=excluded.tier,
-   max_servers_override=excluded.max_servers_override,max_apps_override=excluded.max_apps_override,auto_failover_override=excluded.auto_failover_override,
-   auto_priority_override=excluded.auto_priority_override,email_alerts_override=excluded.email_alerts_override,
-   detailed_history_override=excluded.detailed_history_override`,{
-  partnerId,tier:snapshot.tier,maxDns:snapshot.maxDns===null?0:snapshot.maxDns,maxApps:snapshot.maxApps??null,
-  failover:!!snapshot.autoFailover,priority:!!snapshot.autoPriority,
-  alerts:!!snapshot.emailAlerts,history:!!snapshot.detailedHistory},transaction);
+   max_servers_override=NULL,max_apps_override=NULL,auto_failover_override=NULL,
+   auto_priority_override=NULL,email_alerts_override=NULL,detailed_history_override=NULL,
+   activation_limit_inherited=true`,{
+  partnerId,tier:snapshot.tier},transaction);
  await run(`INSERT INTO content_partner_terms(partner_id,mode,activation_limit,fixed_fee_cents,auto_priority)
    VALUES (:partnerId,:mode,:limit,COALESCE(:fee,0),:priority)
    ON CONFLICT(partner_id) DO UPDATE SET mode=excluded.mode,activation_limit=excluded.activation_limit,
@@ -51,10 +49,10 @@ export async function applyServicePackageToPartner(partnerId, snapshot, transact
     fixed_fee_cents=COALESCE(:fee,content_partner_terms.fixed_fee_cents)`,{
   partnerId,priority:!!snapshot.autoPriority,fee:monthlyFeeCents,mode:snapshot.activationLimit===null?'fixed_unlimited':'fixed_limited',limit:snapshot.activationLimit},transaction);
  if(recordAssignment){
-  await run(`INSERT INTO partner_service_package_assignments(partner_id,package_code,package_snapshot,assigned_by)
-   VALUES (:partnerId,:packageCode,CAST(:snapshot AS jsonb),:actorId)
+  await run(`INSERT INTO partner_service_package_assignments(partner_id,package_code,package_snapshot,live_snapshot,assigned_by)
+   VALUES (:partnerId,:packageCode,CAST(:snapshot AS jsonb),CAST(:snapshot AS jsonb),:actorId)
    ON CONFLICT(partner_id) DO UPDATE SET package_code=excluded.package_code,
-    package_snapshot=excluded.package_snapshot,assigned_by=excluded.assigned_by,assigned_at=now()`,{
+    package_snapshot=excluded.package_snapshot,live_snapshot=excluded.live_snapshot,assigned_by=excluded.assigned_by,assigned_at=now()`,{
    partnerId,packageCode:snapshot.code,snapshot:JSON.stringify(snapshot),actorId},transaction);
  }
  return snapshot;

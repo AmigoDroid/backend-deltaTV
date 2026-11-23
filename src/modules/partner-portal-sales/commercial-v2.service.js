@@ -56,17 +56,31 @@ export async function myPackage(id){
       JOIN partner_portal_sales_plans sp ON sp.code=mp.plan_code WHERE mp.partner_id=:id`,{id}),
    getServicePlan(id),
    one('SELECT mode,activation_limit,fixed_fee_cents FROM content_partner_terms WHERE partner_id=:id',{id}),
-   one(`SELECT a.package_snapshot,p.name FROM partner_service_package_assignments a
-     JOIN partner_portal_sales_plans p ON p.code=a.package_code WHERE a.partner_id=:id`,{id})
+   one(`SELECT a.package_snapshot,a.live_snapshot,p.name,ps.tier AS assigned_tier
+     FROM partner_service_package_assignments a
+     JOIN partner_portal_sales_plans p ON p.code=a.package_code
+     LEFT JOIN partner_service_plans ps ON ps.partner_id=a.partner_id WHERE a.partner_id=:id`,{id})
  ]);
+ const assignedCurrent=assigned?.assigned_tier && assigned?.assigned_tier===(assigned?.live_snapshot||assigned?.package_snapshot)?.tier;
+ const livePackage=assignedCurrent?{
+   ...assigned.live_snapshot,...technical.features,
+   name:assigned.name,maxDns:technical.features.maxServers,maxApps:technical.features.maxApps,
+   activationLimit:terms?.mode==='fixed_limited'?Number(terms.activation_limit):null,
+ }:null;
  const usage=await one(`SELECT count(*)::int AS used FROM activations WHERE partner_id=:id AND status<>'revoked'`,{id});
  const pendingOrder=masterPackage?.status==='pending'?await one(`SELECT o.id,o.status,o.payment_gateway,o.total_cents,o.checkout_url
   FROM partner_portal_master_packages mp JOIN partner_portal_stock_orders o ON o.id=mp.first_order_id
   WHERE mp.partner_id=:id`,{id}):null;
  return {publicId:partner?.public_partner_number?String(partner.public_partner_number):null,
-   name:partner?.name,package:assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.package_snapshot||null,
+   name:partner?.name,package:technical?{
+     ...(livePackage||contract?.package_snapshot||masterPackage?.package_snapshot||{}),
+     name:livePackage?.name||technical.planName,maxDns:technical.features.maxServers,
+     maxApps:technical.features.maxApps,activationLimit:terms?.mode==='fixed_limited'?Number(terms.activation_limit):null,
+     ...technical.features,
+   }:contract?.package_snapshot||masterPackage?.package_snapshot||null,
+   historicalPackage:assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.package_snapshot||null,
    packageName:technical?.planName||'Plano de serviço',
-   expiresAt:partner?.ends_at,pendingPayment:pendingOrder?{orderId:pendingOrder.id,status:pendingOrder.status,gateway:pendingOrder.payment_gateway,totalCents:Number(pendingOrder.total_cents),checkoutUrl:pendingOrder.checkout_url}:null,legacy:!(assigned?.package_snapshot||contract?.package_snapshot||masterPackage?.package_snapshot),
+   expiresAt:partner?.ends_at,pendingPayment:pendingOrder?{orderId:pendingOrder.id,status:pendingOrder.status,gateway:pendingOrder.payment_gateway,totalCents:Number(pendingOrder.total_cents),checkoutUrl:pendingOrder.checkout_url}:null,legacy:!(livePackage||contract?.package_snapshot||masterPackage?.package_snapshot),
    masterPackageStatus:masterPackage?.status||null,
    monthlyFeeCents:contract ? Math.round(Number(contract.declared_resale_cents||0)/Math.max(1,Number(contract.months_paid||1))) : Number(terms?.fixed_fee_cents||0),
    feeRecipient:contract?.seller_name||'DeltaTV',

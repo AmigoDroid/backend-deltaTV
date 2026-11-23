@@ -4,8 +4,8 @@ import { AppError } from '../../shared/errors.js';
 import { audit } from '../../shared/audit.js';
 import { invalidatePlan } from '../service-plans/plan.service.js';
 import { assertPackageInput, technicalTierForPackage, packageSnapshotFromRow } from './package.rules.js';
-import { applyServicePackageToPartner } from './package.apply.js';
-import { assertNoSlotDowngrade } from '../client-apps/app-entitlement.js';
+import { applyServicePackageToPartner, assertPartnerFitsPackage } from './package.apply.js';
+import { effectivePackageQuota, contractInheritsLimit, isReduction } from './package.inheritance.js';
 
 const read=(sql,replacements={},t)=>sequelize.query(sql,{replacements,type:QueryTypes.SELECT,transaction:t});
 const run=(sql,replacements={},t)=>sequelize.query(sql,{replacements,transaction:t});
@@ -25,24 +25,37 @@ export async function getServicePackage(code,t){
   LEFT JOIN service_plan_catalogs c ON c.key=p.service_tier WHERE p.code=:code`,{code},t);
  if(!p)notFound();return p;
 }
-/** One write endpoint updates both physical representations transactionally.
- * Existing assignments are snapshots and must never be altered by catalog edits. */
+/** Um pacote governa os recursos atuais; só o histórico comercial fica congelado. */
 export async function saveServicePackage(input,actor,{create=false}={}){
  try{assertPackageInput(input);}catch(e){throw new AppError(422,'SERVICE_PACKAGE_INVALID',e.message);}
  let row,maxApps;
  await sequelize.transaction(async t=>{
   await run('SELECT pg_advisory_xact_lock(99111712)',{},t);
+  // Ordem de locks igual a claims/alteração individual: parceiro antes de catálogo.
+  const tier=technicalTierForPackage(input.code);
+  await read(`SELECT id FROM partners WHERE id IN
+    (SELECT partner_id FROM partner_service_plans WHERE tier=:tier)
+    ORDER BY id FOR UPDATE`,{tier},t);
   const prior=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:code FOR UPDATE',{code:input.code},t);
   if(create&&prior)throw new AppError(409,'SERVICE_PACKAGE_ALREADY_EXISTS','Já existe um pacote com este identificador.');
   if(!create&&!prior)notFound();
-  // A dedicated technical tier avoids rewriting a shared legacy tier (e.g. partner_premium).
-  const tier=technicalTierForPackage(input.code);
-  const technical=await one('SELECT key,system,max_apps FROM service_plan_catalogs WHERE key=:tier FOR UPDATE OF service_plan_catalogs',{tier},t);
+  const technical=await one(`SELECT key,system,max_apps,max_servers FROM service_plan_catalogs
+    WHERE key=:tier FOR UPDATE`,{tier},t);
   if(technical?.system)throw new AppError(409,'SERVICE_PACKAGE_TIER_CONFLICT','Tier técnico protegido.');
   maxApps=input.maxApps??Number(technical?.max_apps??0);
-  if(technical && maxApps < technical.max_apps){
-   const assigned=await read(`SELECT partner_id FROM partner_service_plans WHERE tier=:tier AND max_apps_override IS NULL`,{tier},t);
-   for(const row of assigned)await assertNoSlotDowngrade(row.partner_id,maxApps,t);
+  const assigned=technical?await read(`SELECT ps.partner_id,ps.max_apps_override,ps.max_servers_override,
+    a.package_code,a.package_snapshot,a.live_snapshot,ct.mode,ct.activation_limit,ct.auto_priority
+    FROM partner_service_plans ps
+    LEFT JOIN partner_service_package_assignments a ON a.partner_id=ps.partner_id AND a.package_code=:code
+    LEFT JOIN content_partner_terms ct ON ct.partner_id=ps.partner_id
+    WHERE ps.tier=:tier ORDER BY ps.partner_id`,{tier,code:input.code},t):[];
+  for(const account of assigned){
+   const limits=effectivePackageQuota(account,technical,{maxApps,maxDns:input.maxDns,activationLimit:input.activationLimit});
+   await assertPartnerFitsPackage(account.partner_id,{
+     maxApps:isReduction(limits.oldApps,limits.maxApps)?limits.maxApps:undefined,
+     maxDns:isReduction(limits.oldDns,limits.maxDns)?limits.maxDns:null,
+     activationLimit:isReduction(limits.oldActivation,limits.activationLimit)?limits.activationLimit:null,
+   },t);
   }
   await run(`INSERT INTO service_plan_catalogs(key,name,description,audience,monthly_price_cents,max_servers,
      max_apps,auto_failover,auto_priority,email_alerts,detailed_history,active,system,sort_order)
@@ -69,6 +82,26 @@ export async function saveServicePackage(input,actor,{create=false}={}){
   if(!row){
     if(create)throw new AppError(409,'SERVICE_PACKAGE_ALREADY_EXISTS','Já existe um pacote com este identificador.');
     notFound();
+  }
+  // Atribuições não perdem seu snapshot histórico. A cópia viva acompanha
+  // todas as edições técnicas, incluindo aumento de vagas e benefícios.
+  const updatedSnapshot=packageSnapshotFromRow({...row,max_apps:maxApps});
+  for(const account of assigned){
+   if(!account.package_code)continue;
+   const previous=account.live_snapshot||account.package_snapshot;
+   if(contractInheritsLimit(account)){
+    await run(`UPDATE content_partner_terms SET mode=:mode,activation_limit=:limit
+      WHERE partner_id=:partnerId`,{
+      partnerId:account.partner_id,mode:updatedSnapshot.activationLimit==null?'fixed_unlimited':'fixed_limited',
+      limit:updatedSnapshot.activationLimit},t);
+   }
+   if(account.auto_priority!=null && previous?.autoPriority===account.auto_priority){
+    await run(`UPDATE content_partner_terms SET auto_priority=:priority WHERE partner_id=:partnerId`,{
+      partnerId:account.partner_id,priority:updatedSnapshot.autoPriority},t);
+   }
+   await run(`UPDATE partner_service_package_assignments SET live_snapshot=CAST(:snapshot AS jsonb)
+     WHERE partner_id=:partnerId AND package_code=:code`,{
+     snapshot:JSON.stringify(updatedSnapshot),partnerId:account.partner_id,code:input.code},t);
   }
   await audit({actor,action:'service_package.saved',entityType:'service_package',entityId:null,
    metadata:{packageCode:input.code,version:row.revision,previousVersion:prior?.revision||null,wasNew:!prior},transaction:t});
@@ -119,11 +152,18 @@ export async function assignServicePackage(partnerId,code,actor){
 
 /** DeltaTV-only readmodel for the partner profile; no mutation or leaked private ids. */
 export async function getPartnerAssignedPackage(partnerId){
- const row=await one(`SELECT a.partner_id,a.package_code,a.package_snapshot,a.assigned_at,
-  p.name AS current_name,p.active AS catalog_active
+ const row=await one(`SELECT a.partner_id,a.package_code,a.package_snapshot,a.live_snapshot,a.assigned_at,
+  p.name AS current_name,p.active AS catalog_active,ps.tier AS assigned_tier
   FROM partner_service_package_assignments a
   LEFT JOIN partner_portal_sales_plans p ON p.code=a.package_code
+  LEFT JOIN partner_service_plans ps ON ps.partner_id=a.partner_id
   WHERE a.partner_id=:partnerId`,{partnerId});
- return row?{code:row.package_code,package:row.package_snapshot,
-  assignedAt:row.assigned_at,catalogActive:row.catalog_active,currentName:row.current_name}:{legacy:true};
+ if(!row||row.assigned_tier!==(row.live_snapshot||row.package_snapshot)?.tier)return {legacy:true};
+ const {getServicePlan}=await import('../service-plans/plan.service.js');
+ const current=await getServicePlan(partnerId);
+ const live={...(row.live_snapshot||row.package_snapshot),...current.features,
+   name:row.current_name||current.planName,maxDns:current.features.maxServers,
+   maxApps:current.features.maxApps};
+ return {code:row.package_code,package:live,historicalPackage:row.package_snapshot,
+   assignedAt:row.assigned_at,catalogActive:row.catalog_active,currentName:row.current_name};
 }

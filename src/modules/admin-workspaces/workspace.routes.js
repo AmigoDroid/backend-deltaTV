@@ -170,10 +170,13 @@ async function applyOwnedTerms(partner, {activationLimit,dnsLimit,monthlyFeeCent
   let technical=await PartnerServicePlan.findByPk(partner.id,{transaction,lock:transaction.LOCK.UPDATE});
   if(planKey!==undefined || dnsLimit!==undefined) {
     const next={tier:planKey??technical?.tier??"partner_professional",
-      maxServersOverride:dnsLimit!==undefined?dnsLimit:(technical?.maxServersOverride??null),
-      ...(planKey!==undefined && planKey!==technical?.tier?{maxAppsOverride:null}:{})};
+      maxServersOverride:planKey!==undefined?null:(dnsLimit!==undefined?dnsLimit:(technical?.maxServersOverride??null)),
+      ...(planKey!==undefined && planKey!==technical?.tier?{maxAppsOverride:null,
+        autoFailoverOverride:null,autoPriorityOverride:null,emailAlertsOverride:null,detailedHistoryOverride:null}:{})};
     if(technical)await technical.update(next,{transaction});
     else technical=await PartnerServicePlan.create({partnerId:partner.id,...next},{transaction});
+    if(planKey!==undefined)await sequelize.query(`UPDATE partner_service_plans SET activation_limit_inherited=true
+      WHERE partner_id=:partnerId`,{replacements:{partnerId:partner.id},transaction});
   }
 }
 function normalizeError(error){
@@ -243,6 +246,11 @@ router.put("/plans/:key",requireScope("network:plans:write"),validate({params:z.
   const root=tenant(req),{key}=req.valid.params,body=req.valid.body;
   if(body.maxServers!==undefined||body.activationLimit!==undefined)assertResourceQuota(req,{dnsLimit:body.maxServers,activationLimit:body.activationLimit});
   const plan=await sequelize.transaction(async t=>{
+    await lockNetworkOwner(root,t);
+    // Claim e troca de plano tomam o lock do parceiro antes do catálogo.
+    await sequelize.query(`SELECT id FROM partners WHERE id IN
+      (SELECT partner_id FROM partner_service_plans WHERE tier=:key)
+      ORDER BY id FOR UPDATE`,{replacements:{key},transaction:t});
     const p=await ServicePlanCatalog.findOne({where:{key,ownerAdminId:root,deletedAt:null},transaction:t,lock:t.LOCK.UPDATE});
     if(!p)throw new AppError(404,"NOT_FOUND","Plano não encontrado na sua rede.");
     if(body.active===false && await PartnerServicePlan.count({where:{tier:key},transaction:t}))
@@ -262,6 +270,39 @@ router.put("/plans/:key",requireScope("network:plans:write"),validate({params:z.
       const assigned=await PartnerServicePlan.findAll({where:{tier:key,maxAppsOverride:null},attributes:['partnerId'],transaction:t});
       // O lock do catálogo serializa este downgrade contra a aquisição de vagas.
       for(const row of assigned)await assertNoSlotDowngrade(row.partnerId,body.maxApps,t);
+    }
+    // Apenas ativações herdadas acompanham mudanças no catálogo da rede.
+    // Contratos alterados individualmente não são reescritos.
+    if(body.activationLimit!==undefined || body.autoPriority!==undefined){
+      const [accounts]=await sequelize.query(`SELECT ps.partner_id,ps.activation_limit_inherited,
+        ct.mode,ct.activation_limit,ct.auto_priority
+        FROM partner_service_plans ps
+        LEFT JOIN content_partner_terms ct ON ct.partner_id=ps.partner_id
+        WHERE ps.tier=:key ORDER BY ps.partner_id`,{replacements:{key},transaction:t});
+      const nextActivation=body.activationLimit===undefined?p.activationLimit:body.activationLimit;
+      for(const account of accounts){
+        if(!account.activation_limit_inherited||account.mode==null)continue;
+        const inherited=p.activationLimit==null?account.mode==='fixed_unlimited':
+          account.mode==='fixed_limited' && Number(account.activation_limit)===Number(p.activationLimit);
+        if(!inherited){
+          await sequelize.query(`UPDATE partner_service_plans SET activation_limit_inherited=false
+            WHERE partner_id=:partnerId`,{replacements:{partnerId:account.partner_id},transaction:t});
+          continue;
+        }
+        if(body.activationLimit!==undefined){
+          await verifyLimitsInUse(account.partner_id,{activationLimit:nextActivation},t);
+          await sequelize.query(`UPDATE content_partner_terms SET mode=:mode,activation_limit=:limit
+            WHERE partner_id=:partnerId`,{replacements:{partnerId:account.partner_id,
+            mode:nextActivation==null?'fixed_unlimited':'fixed_limited',limit:nextActivation},transaction:t});
+          await sequelize.query(`UPDATE partners SET device_limit=:limit
+            WHERE id=:partnerId AND device_limit IS NOT DISTINCT FROM CAST(:oldLimit AS integer)`,
+            {replacements:{partnerId:account.partner_id,limit:nextActivation,oldLimit:p.activationLimit},transaction:t});
+        }
+        if(body.autoPriority!==undefined && account.auto_priority===p.autoPriority){
+          await sequelize.query(`UPDATE content_partner_terms SET auto_priority=:priority WHERE partner_id=:partnerId`,
+            {replacements:{partnerId:account.partner_id,priority:body.autoPriority},transaction:t});
+        }
+      }
     }
     await p.update(body,{transaction:t});
     if(p.autoPriority&&!p.autoFailover)throw new AppError(422,"INVALID_PLAN","Prioridade automática exige failover.");

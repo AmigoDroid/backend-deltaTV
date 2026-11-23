@@ -242,11 +242,13 @@ async function settleCharge(id,verify,actor) {
         changes.deviceLimit=plan.activationLimit;
         changes.monthlyFeeCents=plan.monthlyPriceCents;
         changes.billingModel='fixed';
+        // Um novo plano substitui os padrões técnicos; não cria overrides congelados.
+        // A cobrança e o preço negociado continuam no contrato financeiro.
         await PartnerServicePlan.upsert({partnerId:partner.id,tier:charge.plan_to,
-          ...(charge.breakdown?.selfServiceUpgrade===true ? {
-            maxAppsOverride:null,maxServersOverride:null,autoFailoverOverride:null,autoPriorityOverride:null,
-            emailAlertsOverride:null,detailedHistoryOverride:null,
-          } : {maxServersOverride:plan.maxServers})},{transaction:t});
+          maxAppsOverride:null,maxServersOverride:null,autoFailoverOverride:null,autoPriorityOverride:null,
+          emailAlertsOverride:null,detailedHistoryOverride:null},{transaction:t});
+        await sequelize.query(`UPDATE partner_service_plans SET activation_limit_inherited=true
+          WHERE partner_id=:partnerId`,{replacements:{partnerId:partner.id},transaction:t});
         if(partner.kind!=='reseller'){
           const updatedTerms={mode:plan.activationLimit==null?'fixed_unlimited':'fixed_limited',
             fixedFeeCents:plan.monthlyPriceCents,activationLimit:plan.activationLimit,
