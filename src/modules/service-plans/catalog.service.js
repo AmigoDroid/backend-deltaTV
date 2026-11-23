@@ -3,7 +3,7 @@ import { sequelize, PartnerServicePlan, ServicePlanCatalog } from "../../db/mode
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { invalidatePlan } from "./plan.service.js";
-import { assertNoSlotDowngrade } from "../client-apps/app-entitlement.js";
+import { assertNoSlotDowngrade, effectiveAppSlots } from "../client-apps/app-entitlement.js";
 
 // Backward-compatible link to pre-existing invitation FKs. This is NOT a product
 // catalogue and has NO independent price or permission authority.
@@ -95,7 +95,12 @@ export async function updateCatalogPlan(key, input, actor) {
     // Verifica todos os assinantes antes de reduzir vagas; o update inteiro é atômico.
     if (input.maxApps < record.maxApps) {
       const assigned = await PartnerServicePlan.findAll({ where: { tier: key }, transaction: t });
-      for (const plan of assigned) await assertNoSlotDowngrade(plan.partnerId, plan.maxAppsOverride ?? input.maxApps, t);
+      for (const plan of assigned) {
+        const slots=await effectiveAppSlots(plan.partnerId,t);
+        const limit=plan.maxAppsOverride!=null && slots.included===Number(plan.maxAppsOverride)
+          ? Number(plan.maxAppsOverride) : input.maxApps;
+        await assertNoSlotDowngrade(plan.partnerId,limit,t);
+      }
       const direct = await sequelize.query(`SELECT p.id FROM partners p LEFT JOIN partner_service_plans s ON s.partner_id=p.id
         WHERE s.partner_id IS NULL AND (CASE WHEN p.kind='reseller' THEN 'reseller_basic' ELSE 'partner_professional' END)=:key`,
         { replacements: { key }, transaction: t, type: QueryTypes.SELECT });

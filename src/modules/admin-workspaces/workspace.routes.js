@@ -19,7 +19,7 @@ import { AppError } from "../../shared/errors.js";
 import { actorOf, audit } from "../../shared/audit.js";
 import { hashPassword } from "../../shared/crypto.js";
 import { invalidatePlan } from "../service-plans/plan.service.js";
-import { assertNoSlotDowngrade } from "../client-apps/app-entitlement.js";
+import { assertNoSlotDowngrade, effectiveAppSlots } from "../client-apps/app-entitlement.js";
 import {invalidateServerPools} from "../provider-monitor/code-pool.service.js";
 import {clearResolutionCache} from "../provider-monitor/resolve.service.js";
 import { clearContractAccessCache } from "../access/access.service.js";
@@ -267,9 +267,13 @@ router.put("/plans/:key",requireScope("network:plans:write"),validate({params:z.
       if(over.length)throw new AppError(409,"PLAN_BELOW_USAGE","Há códigos com mais DNS do que o novo plano permite.");
     }
     if(body.maxApps!==undefined && body.maxApps<p.maxApps){
-      const assigned=await PartnerServicePlan.findAll({where:{tier:key,maxAppsOverride:null},attributes:['partnerId'],transaction:t});
-      // O lock do catálogo serializa este downgrade contra a aquisição de vagas.
-      for(const row of assigned)await assertNoSlotDowngrade(row.partnerId,body.maxApps,t);
+      const assigned=await PartnerServicePlan.findAll({where:{tier:key},attributes:['partnerId','maxAppsOverride'],transaction:t});
+      // Inclui os overrides antigos copiados do pacote, não só os NULL.
+      for(const row of assigned){
+        const slots=await effectiveAppSlots(row.partnerId,t);
+        if(row.maxAppsOverride==null || slots.included!==Number(row.maxAppsOverride))
+          await assertNoSlotDowngrade(row.partnerId,body.maxApps,t);
+      }
     }
     // Apenas ativações herdadas acompanham mudanças no catálogo da rede.
     // Contratos alterados individualmente não são reescritos.
@@ -449,8 +453,8 @@ router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(
       changes.startsAt=now;changes.endsAt=new Date(now.getTime()+plan.validityDays*86400_000);}
    }
    await verifyLimitsInUse(p.id,{activationLimit:plan.activationLimit,dnsLimit:plan.maxServers},t);
-   const newSlotLimit=current?.tier===plan.key?(current?.maxAppsOverride??plan.maxApps??0):(plan.maxApps??0);
-   await assertNoSlotDowngrade(p.id,newSlotLimit,t);
+   const currentSlots=current?.tier===plan.key?await effectiveAppSlots(p.id,t):null;
+   await assertNoSlotDowngrade(p.id,currentSlots?.included??plan.maxApps??0,t);
    changes.deviceLimit=plan.activationLimit;
    changes.monthlyFeeCents=plan.monthlyPriceCents;
    changes.billingModel='fixed';

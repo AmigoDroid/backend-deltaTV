@@ -52,7 +52,7 @@ test('salvamento atualiza cotas herdadas sem apagar histórico nem preço negoci
  const sql=readFileSync(new URL('../../src/modules/service-packages/package.service.js',import.meta.url),'utf8');
  assert.match(sql,/UPDATE content_partner_terms SET mode=:mode,activation_limit=:limit/);
  assert.doesNotMatch(sql,/UPDATE content_partner_terms SET[^`]*fixed_fee_cents/);
- assert.match(sql,/SET live_snapshot=CAST\(:snapshot AS jsonb\)/);
+ assert.match(sql,/SET live_snapshot=\s*CAST\(:snapshot AS jsonb\)/);
  const read=readFileSync(new URL('../../src/modules/partner-portal-sales/commercial-v2.service.js',import.meta.url),'utf8');
  assert.match(read,/livePackage/);
  assert.match(read,/historicalPackage/);

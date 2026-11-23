@@ -46,7 +46,7 @@ test('edições atualizam catálogo e atributos técnicos são herdados, sem cop
   assert.match(catalog,/maxApps:Number\(current\.max_apps\?\?0\)/);
   assert.match(catalog,/effectivePackageQuota\(/);
   assert.match(catalog,/assertPartnerFitsPackage\(/);
-  assert.match(catalog,/live_snapshot=CAST\(:snapshot AS jsonb\)/);
+  assert.match(catalog,/live_snapshot=\s*CAST\(:snapshot AS jsonb\)/);
   const assign = source('../../src/modules/service-packages/package.apply.js');
   assert.match(assign,/max_apps_override=NULL/);
   assert.match(assign,/max_servers_override=NULL/);

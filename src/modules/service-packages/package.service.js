@@ -99,7 +99,9 @@ export async function saveServicePackage(input,actor,{create=false}={}){
     await run(`UPDATE content_partner_terms SET auto_priority=:priority WHERE partner_id=:partnerId`,{
       partnerId:account.partner_id,priority:updatedSnapshot.autoPriority},t);
    }
-   await run(`UPDATE partner_service_package_assignments SET live_snapshot=CAST(:snapshot AS jsonb)
+   await run(`UPDATE partner_service_package_assignments SET live_snapshot=
+     CAST(:snapshot AS jsonb) || jsonb_build_object('explicitOverrides',
+       COALESCE(live_snapshot->'explicitOverrides','{}'::jsonb))
      WHERE partner_id=:partnerId AND package_code=:code`,{
      snapshot:JSON.stringify(updatedSnapshot),partnerId:account.partner_id,code:input.code},t);
   }

@@ -5,6 +5,29 @@ export const TIERS = Object.freeze({
   partner_premium: Object.freeze({label:"Parceiro · Premium",maxServers:8,autoFailover:true,autoPriority:true,emailAlerts:true,detailedHistory:true}),
 });
 export const defaultTier = kind => kind === "reseller" ? "reseller_basic" : "partner_professional";
+// Um snapshot de atribuição não é uma exceção contratual: valores copiados
+// do pacote devem acompanhar o catálogo. Exceções explícitas são preservadas.
+export const PLAN_OVERRIDE_FIELDS = Object.freeze({
+  maxAppsOverride:'maxApps', maxServersOverride:'maxDns',
+  autoFailoverOverride:'autoFailover', autoPriorityOverride:'autoPriority',
+  emailAlertsOverride:'emailAlerts', detailedHistoryOverride:'detailedHistory',
+});
+export function inheritedPlanOverrides(record={},snapshot=null,explicitOverrides={}) {
+  const result={...record};
+  if (!snapshot || snapshot.tier!==record.tier) return result;
+  for (const [field,snapshotField] of Object.entries(PLAN_OVERRIDE_FIELDS)) {
+    const value=record[field];
+    if (value==null || explicitOverrides?.[field]===true || !Object.hasOwn(snapshot,snapshotField)) continue;
+    const previous=snapshot[snapshotField];
+    const copied=field==='maxServersOverride'
+      ? (previous==null ? Number(value)===0 : Number(value)===Number(previous))
+      : field==='maxAppsOverride'
+        ? Number(value)===Number(previous)
+        : typeof previous==='boolean' && value===previous;
+    if(copied)result[field]=null;
+  }
+  return result;
+}
 export function featuresFor(tier, overrides={}, catalog=null) {
   if (!catalog && !Object.hasOwn(TIERS,tier)) throw new Error("Plano de recursos desconhecido");
   const base = catalog ? {

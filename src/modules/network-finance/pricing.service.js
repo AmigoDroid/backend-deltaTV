@@ -6,6 +6,7 @@ import { audit } from '../../shared/audit.js';
 import {assertPublicPlan,isHiddenNetworkPlan} from '../service-plans/network-plan-visibility.js';
 import { isSelfServiceUpgrade, upgradePriceBaseline, upgradePlanSignature } from './upgrade-eligibility.js';
 import { AppError } from '../../shared/errors.js';
+import { getServicePlan } from '../service-plans/plan.service.js';
 import { calculateChargePricing, DEFAULT_CAPS, DEFAULT_SETTINGS, localDate, validateSettings } from './charge-pricing.js';
 const sql=(statement,replacements={},transaction)=>sequelize.query(statement,{type:QueryTypes.SELECT,replacements,...(transaction?{transaction}:{})});
 const fail=(status,code,message)=>{throw new AppError(status,code,message)};
@@ -133,10 +134,11 @@ export async function partnerUpgradeOptions(partnerId) {
  const partner=await Partner.findByPk(partnerId,{attributes:['id','ownerAdminId','status','endsAt','kind','billingModel','monthlyFeeCents']});
  if(!partner?.ownerAdminId)return {current:null,plans:[],available:false};
  const service=await PartnerServicePlan.findByPk(partnerId);
- const [current,publicPlans,terms]=await Promise.all([
+ const [current,publicPlans,terms,technical]=await Promise.all([
   service?.tier?ServicePlanCatalog.findOne({where:{key:service.tier,ownerAdminId:partner.ownerAdminId}}):Promise.resolve(null),
   ServicePlanCatalog.findAll({where:{ownerAdminId:partner.ownerAdminId,active:true,deletedAt:null,hiddenFromNetwork:false},order:[['monthlyPriceCents','ASC'],['name','ASC']]}),
-  partner.kind!=='reseller'?ContentPartnerTerms.findByPk(partnerId,{attributes:['mode']}):Promise.resolve(null)
+  partner.kind!=='reseller'?ContentPartnerTerms.findByPk(partnerId,{attributes:['mode']}):Promise.resolve(null),
+  service?.tier?getServicePlan(partnerId,{fresh:true}):Promise.resolve(null),
  ]);
  const present=p=>({key:p.key,name:p.name,description:p.description,monthlyPriceCents:p.monthlyPriceCents,
   maxApps:p.maxApps??0,maxServers:p.maxServers,activationLimit:p.activationLimit,validityDays:p.validityDays,
@@ -148,7 +150,7 @@ export async function partnerUpgradeOptions(partnerId) {
  const reason=!baseline?'Não foi possível identificar o preço atual deste contrato. Fale com seu Master.'
   :effectivePartnerStatus(partner)!=='active'?'O contrato precisa estar ativo para fazer upgrade automático.'
   :terms?.mode==='credits'?'Contratos por créditos exigem atendimento do Master.':null;
- return {current:baseline?{...(current?present(current):baseline),contractPriceCents:baseline.monthlyPriceCents}:null,
+ return {current:baseline?{...(current?{...present(current),...technical.features}:baseline),contractPriceCents:baseline.monthlyPriceCents}:null,
   plans:publicPlans.map(p=>({...present(p),isCurrent:p.key===current?.key,
    canUpgrade:available&&isSelfServiceUpgrade(baseline,p)})),available,reason};
 }

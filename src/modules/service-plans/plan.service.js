@@ -2,7 +2,7 @@ import { QueryTypes } from "sequelize";
 import { sequelize, Partner, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms } from "../../db/models/index.js";
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
-import { defaultTier, featuresFor, TIERS } from "./plan.rules.js";
+import { defaultTier, featuresFor, inheritedPlanOverrides, PLAN_OVERRIDE_FIELDS, TIERS } from "./plan.rules.js";
 import { assertNoSlotDowngrade } from "../client-apps/app-entitlement.js";
 
 const CACHE_MS=20_000, CACHE_MAX=1000, cache=new Map();
@@ -20,9 +20,13 @@ export async function getServicePlan(partnerId,{fresh=false}={}){
       ps.auto_priority_override AS "autoPriorityOverride",
       ps.email_alerts_override AS "emailAlertsOverride",
       ps.detailed_history_override AS "detailedHistoryOverride",
-      ct.auto_priority AS "contractAutoPriority"
+      ct.auto_priority AS "contractAutoPriority",
+      a.package_snapshot AS "packageSnapshot",
+      to_jsonb(a)->'live_snapshot'->'explicitOverrides' AS "explicitOverrides"
     FROM partners p LEFT JOIN partner_service_plans ps ON ps.partner_id=p.id
     LEFT JOIN content_partner_terms ct ON ct.partner_id=p.id
+    LEFT JOIN partner_service_package_assignments a ON a.partner_id=p.id
+      AND a.package_snapshot->>'tier'=ps.tier
     WHERE p.id=:partnerId LIMIT 1`, {
       replacements:{partnerId},type:QueryTypes.SELECT,
     });
@@ -37,7 +41,8 @@ export async function getServicePlan(partnerId,{fresh=false}={}){
   const tier=record?.tier||defaultTier(partner.kind);
   const catalog = await ServicePlanCatalog.findByPk(tier,{raw:true});
   if(!catalog)throw new AppError(409,"PLAN_MISSING","Plano técnico não encontrado no catálogo.");
-  const features=featuresFor(tier,record||{},catalog);
+  const effectiveOverrides=inheritedPlanOverrides(record||{tier},row.packageSnapshot,row.explicitOverrides);
+  const features=featuresFor(tier,effectiveOverrides,catalog);
   features.canResellPanel=Boolean(catalog.canResellPanel);
   features.canCreateSubmasters=Boolean(catalog.canResellPanel&&catalog.canCreateSubmasters);
   features.canViewFinance=Boolean(catalog.canResellPanel&&catalog.canViewFinance);
@@ -45,9 +50,9 @@ export async function getServicePlan(partnerId,{fresh=false}={}){
   // Compatibilidade: o controle antigo de prioridade do contrato continua funcionando.
   if(contract?.autoPriority===false)features.autoPriority=false;
   return remember(partnerId,{tier,planName:catalog.name,features,overrides:{
-    maxAppsOverride:record?.maxAppsOverride??null,maxServersOverride:record?.maxServersOverride??null,autoFailoverOverride:record?.autoFailoverOverride??null,
-    autoPriorityOverride:record?.autoPriorityOverride??null,emailAlertsOverride:record?.emailAlertsOverride??null,
-    detailedHistoryOverride:record?.detailedHistoryOverride??null,
+    maxAppsOverride:effectiveOverrides.maxAppsOverride??null,maxServersOverride:effectiveOverrides.maxServersOverride??null,autoFailoverOverride:effectiveOverrides.autoFailoverOverride??null,
+    autoPriorityOverride:effectiveOverrides.autoPriorityOverride??null,emailAlertsOverride:effectiveOverrides.emailAlertsOverride??null,
+    detailedHistoryOverride:effectiveOverrides.detailedHistoryOverride??null,
   },tiers:TIERS});
 }
 export async function updateServicePlan(partnerId,body,actor){
@@ -80,6 +85,14 @@ export async function updateServicePlan(partnerId,body,actor){
     await row.update({tier:body.tier,maxAppsOverride:body.maxAppsOverride??null,maxServersOverride:body.maxServersOverride??null,autoFailoverOverride:body.autoFailoverOverride??null,
       autoPriorityOverride:body.autoPriorityOverride??null,emailAlertsOverride:body.emailAlertsOverride??null,
       detailedHistoryOverride:body.detailedHistoryOverride??null},{transaction:t});
+    // Overrides editados pelo Superadmin são exceções reais, mesmo quando
+    // coincidem numericamente com o snapshot histórico.
+    const explicit=Object.fromEntries(Object.keys(PLAN_OVERRIDE_FIELDS)
+      .map(key=>[key,body[key]!=null]));
+    await sequelize.query(`UPDATE partner_service_package_assignments SET
+      live_snapshot=jsonb_set(COALESCE(live_snapshot,package_snapshot),'{explicitOverrides}',CAST(:explicit AS jsonb),true)
+      WHERE partner_id=:partnerId AND package_snapshot->>'tier'=:tier`,{
+      replacements:{partnerId,tier:body.tier,explicit:JSON.stringify(explicit)},transaction:t});
     if (['content','both'].includes(partner.kind)) {
       // The existing catalogue's monthly price is what the account pays DeltaTV.
       // Respect pre-existing negotiated contracts (credits/fixed_limited/fixed_unlimited).

@@ -1,3 +1,5 @@
+import { inheritedPlanOverrides } from '../service-plans/plan.rules.js';
+
 // Compatibilidade com o snapshot antigo: distingue cotas herdadas de condições
 // negociadas individualmente, sem tratar 0 como ausência de override.
 export const comparableLimit = value => value == null ? null : Number(value);
@@ -9,11 +11,14 @@ export function contractInheritsLimit(row) {
  return (limit == null ? row.mode === 'fixed_unlimited' : row.mode === 'fixed_limited' && comparableLimit(row.activation_limit) === limit);
 }
 export function effectivePackageQuota(row, catalog, change) {
- const maxApps = row.max_apps_override == null ? Number(change.maxApps) : Number(row.max_apps_override);
- const dnsRaw = row.max_servers_override == null ? change.maxDns : Number(row.max_servers_override);
+ const overrides=inheritedPlanOverrides({tier:row.package_snapshot?.tier,
+   maxAppsOverride:row.max_apps_override,maxServersOverride:row.max_servers_override},
+   row.package_snapshot,row.live_snapshot?.explicitOverrides);
+ const maxApps = overrides.maxAppsOverride == null ? Number(change.maxApps) : Number(overrides.maxAppsOverride);
+ const dnsRaw = overrides.maxServersOverride == null ? change.maxDns : Number(overrides.maxServersOverride);
  const maxDns = dnsRaw === 0 ? null : comparableLimit(dnsRaw);
- const oldApps = row.max_apps_override == null ? Number(catalog.max_apps ?? 0) : Number(row.max_apps_override);
- const oldDnsRaw = row.max_servers_override == null ? catalog.max_servers : Number(row.max_servers_override);
+ const oldApps = overrides.maxAppsOverride == null ? Number(catalog.max_apps ?? 0) : Number(overrides.maxAppsOverride);
+ const oldDnsRaw = overrides.maxServersOverride == null ? catalog.max_servers : Number(overrides.maxServersOverride);
  const oldDns = oldDnsRaw === 0 ? null : comparableLimit(oldDnsRaw);
  const oldActivation = row.mode === 'fixed_limited' ? comparableLimit(row.activation_limit) : null;
  const activationLimit = row.package_code && contractInheritsLimit(row) ? change.activationLimit : oldActivation;
