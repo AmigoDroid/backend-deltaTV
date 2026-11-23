@@ -29,7 +29,7 @@ test('Backend de rede respeita escopo e protege redução de vagas',()=>{
  assert.match(route,/ServicePlanCatalog\.findOne\(\{where:\{key,ownerAdminId:root,deletedAt:null\}/);
  assert.match(route,/if\(body\.maxApps!==undefined && body\.maxApps<p\.maxApps\)/);
  assert.match(route,/assertNoSlotDowngrade\(row\.partnerId,body\.maxApps,t\)/);
- assert.match(route,/assertNoSlotDowngrade\(p\.id,newSlotLimit,t\)/);
+ assert.match(route,/assertNoSlotDowngrade\(p\.id,currentSlots\?\.included\?\?plan\.maxApps\?\?0,t\)/);
  assert.match(route,/requireScope\("network:plans:write"\)/);
  assert.match(route,/maxAppsOverride:null/);
 });

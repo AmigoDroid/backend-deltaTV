@@ -1,0 +1,14 @@
+{
+  "origem_base": "painel(5).zip + V4 consolidado + planos universais + permissões Meus Apps + pt-BR modal + alinhamento de testes estáticos",
+  "projeto": "backend",
+  "arquivos": 49,
+  "comparacao_base": {
+    "novo": 18,
+    "alterado": 31
+  },
+  "migrations_apenas_preexistentes": [
+    "src/db/migrations/20261123000001-client-apps-and-plan-slots.cjs",
+    "src/db/migrations/20261123000002-client-app-public-qr.cjs",
+    "src/db/migrations/20270115000001-live-service-package-inheritance.cjs"
+  ]
+}

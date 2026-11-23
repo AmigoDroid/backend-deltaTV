@@ -62,7 +62,8 @@ test('claims requerem hash, expiração, uso único e transação',()=>{
 
 test('vagas efetivas usam override e lock no parceiro e catálogo',()=>{
   const slots=read('modules/client-apps/app-entitlement.js');
-  assert.match(slots,/maxAppsOverride \?\? catalog\?\.maxApps \?\? 0/);
+  assert.match(slots,/inheritedPlanOverrides\(/);
+  assert.match(slots,/featuresFor\(tier,overrides,catalog\)\.maxApps/);
   assert.match(slots,/transaction\.LOCK\.UPDATE/);
   assert.match(slots,/transaction\.LOCK\.SHARE/);
 });
