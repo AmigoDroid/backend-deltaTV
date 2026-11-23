@@ -4,7 +4,7 @@ import { quoteNetworkCharge } from './pricing.service.js';
 import { isSelfServiceUpgrade, upgradePriceBaseline, upgradePlanSignature } from './upgrade-eligibility.js';
 import { verifyNetworkPaymentMatch } from './policy.js';
 import { QueryTypes, Op } from 'sequelize';
-import { sequelize, Partner, AdminUser, AdminUserProfile, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms, Activation } from '../../db/models/index.js';
+import { sequelize, Partner, AdminUser, AdminUserProfile, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms, Activation, PartnerApp } from '../../db/models/index.js';
 import { encryptSecret, decryptSecret } from '../../shared/crypto.js';
 import { AppError } from '../../shared/errors.js';
 import { audit } from '../../shared/audit.js';
@@ -217,7 +217,9 @@ async function settleCharge(id,verify,actor) {
       ? await ServicePlanCatalog.findOne({where:{key:current.tier,ownerAdminId:charge.owner_admin_id},transaction:t}) : null;
     const baseline=charge.breakdown?.selfServiceUpgrade===true
       ? upgradePriceBaseline(partner,current,original) : null;
+    const appUsage=charge.kind==='upgrade' ? await PartnerApp.count({where:{partnerId:partner.id},transaction:t}) : 0;
     const blocked=charge.kind==='upgrade' && (
+      appUsage>Number(plan?.maxApps??0) ||
       (terms?.mode==='credits') || (plan?.activationLimit!=null && used>plan.activationLimit) ||
       (charge.breakdown?.selfServiceUpgrade===true && (
         !isSelfServiceUpgrade(baseline,plan) ||
@@ -242,7 +244,7 @@ async function settleCharge(id,verify,actor) {
         changes.billingModel='fixed';
         await PartnerServicePlan.upsert({partnerId:partner.id,tier:charge.plan_to,
           ...(charge.breakdown?.selfServiceUpgrade===true ? {
-            maxServersOverride:null,autoFailoverOverride:null,autoPriorityOverride:null,
+            maxAppsOverride:null,maxServersOverride:null,autoFailoverOverride:null,autoPriorityOverride:null,
             emailAlertsOverride:null,detailedHistoryOverride:null,
           } : {maxServersOverride:plan.maxServers})},{transaction:t});
         if(partner.kind!=='reseller'){

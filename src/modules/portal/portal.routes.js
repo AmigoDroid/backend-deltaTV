@@ -1,3 +1,4 @@
+import { partnerClientAppsRouter, partnerAppUnlinkedRouter } from "../client-apps/client-app.routes.js";
 import { emergencyRoutes } from "../provider-monitor/emergency.routes.js";
 import { AppError } from "../../shared/errors.js";
 import { partnerNetworkCharges } from "../network-finance/finance.routes.js";
@@ -74,6 +75,8 @@ router.use("/commerce", partnerCommerce);
 router.use("/web-access", webAccessRoutes);
 router.use("/app-downloads", appDownloadsRoutes);
 router.use("/white-label", whiteLabelApps);
+router.use("/apps", partnerClientAppsRouter);
+router.use("/devices/unlinked", partnerAppUnlinkedRouter);
 const scope = (req) => ({ partnerId: req.user.partnerId });
 const id = z.object({ id: z.string().uuid() });
 router.get("/devices/:id/connection-audit", auditParams, auditRead(true));

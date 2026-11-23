@@ -17,6 +17,7 @@ import { evaluateAccess } from "../access/access.policy.js";
 import { pickPrimaryList } from "./device-lists.js";
 import { parseVirtualInstallationId, sameInstallation, VIRTUAL_INSTALLATION_HINT } from "./device-identity.js";
 import { dropMirrorAuth } from "../mirror/mirror.cache.js";
+import { appBindingByIdentifier, bindingForDevice, unavailable } from "../client-apps/client-app.service.js";
 
 const live = { [Op.ne]: "revoked" };
 
@@ -55,8 +56,10 @@ async function summarizeActivation(activationId) {
 
 /** Todas as listas (ativações vivas) do dispositivo, da mais recente para a mais antiga. */
 export async function listsOfDevice(deviceId, scope = {}) {
+  const device = await Device.findByPk(deviceId);
+  const binding = device ? await bindingForDevice(device) : null;
   const rows = await Activation.findAll({
-    where: { deviceId, status: live }, attributes: ["id"],
+    where: { deviceId, status: live, ...(binding ? { partnerId: binding.partner.id } : {}) }, attributes: ["id"],
     ...(scope.ownerAdminId !== undefined ? {include:[{model:Partner,required:true,attributes:[],where:{ownerAdminId:scope.ownerAdminId}}]} : {}),
     order: [["activatedAt", "DESC"], ["id", "ASC"]],
   });
@@ -70,7 +73,7 @@ export async function listsOfDevice(deviceId, scope = {}) {
 async function stateOf(device, scope = {}) {
   const lists = await listsOfDevice(device.id, scope);
   let primary = pickPrimaryList(lists);
-  if (!primary && scope.ownerAdminId === undefined) {
+  if (!primary && scope.ownerAdminId === undefined && !device.clientAppId) {
     // Sem vínculo vivo: mostra a ativação revogada mais recente (estado "deactivated"), se houver.
     const last = await Activation.findOne({ where: { deviceId: device.id }, attributes: ["id"], order: [["updatedAt", "DESC"]] });
     primary = last ? await summarizeActivation(last.id) : null;
@@ -121,8 +124,10 @@ const platformFields = ({ platform, mac }) => ({
   platform, appId: `delta-tv-${platform}`, identifierType: "virtual_mac", deviceKey: `${platform}:${mac}`,
 });
 
-export async function registerDevice({ mac: macInput, installationId }) {
+export async function registerDevice({ mac: macInput, installationId, appId }) {
   const normalized = normalizeVirtualRegistration(macInput, installationId);
+  const context = await appBindingByIdentifier(appId);
+  if (context && normalized.platform !== context.app.platform) throw unavailable();
   const pairToken = randomToken(32);
   const registrationToken = randomToken(32);
   const expiresAt = new Date(Date.now() + env.pairingTokenTtl * 1000);
@@ -130,11 +135,15 @@ export async function registerDevice({ mac: macInput, installationId }) {
   const result = await sequelize.transaction(async (transaction) => {
     const [device, created] = await Device.findOrCreate({
       where: { mac: normalized.mac },
-      defaults: { mac: normalized.mac, ...platformFields(normalized) },
+      defaults: { mac: normalized.mac, ...platformFields(normalized),
+        ...(context ? { clientAppId: context.app.id, appId: context.app.identifier } : {}) },
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
-    const trialGrant = await grantNewDeviceTrial(device, created, { transaction, installationId: normalized.installationId });
+    if (context ? String(device.clientAppId) !== String(context.app.id) : !!device.clientAppId) {
+      throw new AppError(409, 'APP_MISMATCH', 'Este MAC pertence a outro aplicativo.');
+    }
+    const trialGrant = context ? null : await grantNewDeviceTrial(device, created, { transaction, installationId: normalized.installationId });
     // Um MAC pode ter várias ativações vivas (uma por parceiro): nenhuma delas pode pertencer a outra instalação.
     const actives = await Activation.findAll({
       where: { deviceId: device.id, status: live },
@@ -144,7 +153,8 @@ export async function registerDevice({ mac: macInput, installationId }) {
     if (actives.some((a) => a.installationId && !sameInstallation(a.installationId, normalized.installationId))) {
       throw new AppError(409, "INSTALLATION_MISMATCH", "Este dispositivo pertence a outra instalação.");
     }
-    await device.update({ lastInstallationId: normalized.installationId, lastSeenAt: new Date(), ...platformFields(normalized) }, { transaction });
+    await device.update({ lastInstallationId: normalized.installationId, lastSeenAt: new Date(),
+      ...(context ? { appId: context.app.identifier } : platformFields(normalized)) }, { transaction });
     const active = actives.length > 0;
     const recoverable = active && recoveryMode() === "mac_lookup";
     let pairing = null;
@@ -248,7 +258,7 @@ export async function savePersonalPlaylist(activationId, { name, url }, actor) {
   return { activationId: activation.id, mode: "playlist", listName: activation.playlistName };
 }
 
-export async function pollRegistration({ mac: macInput, installationId, registrationToken, meta }) {
+export async function pollRegistration({ mac: macInput, installationId, registrationToken, appId, meta }) {
   const normalized = normalizeVirtualRegistration(macInput, installationId);
   const pairing = await DevicePairingToken.findOne({
     where: {
@@ -259,6 +269,11 @@ export async function pollRegistration({ mac: macInput, installationId, registra
   });
   if (!pairing || pairing.Device.mac !== normalized.mac || !sameInstallation(pairing.Device.lastInstallationId, normalized.installationId)) {
     throw new AppError(403, "REGISTRATION_TOKEN_INVALID", "Registro não reconhecido. Gere um novo QR Code no dispositivo.");
+  }
+  const context = await appBindingByIdentifier(appId);
+  if (context && normalized.platform !== context.app.platform) throw unavailable();
+  if (context ? String(pairing.Device.clientAppId) !== String(context.app.id) : !!pairing.Device.clientAppId) {
+    throw new AppError(409, 'APP_MISMATCH', 'Registro de outro aplicativo.');
   }
   if (pairing.registrationUsedAt) {
     throw new AppError(409, "REGISTRATION_TOKEN_USED", "O registro já foi concluído neste dispositivo.");
@@ -350,6 +365,9 @@ export async function registeredDeviceById(deviceId, scope = {}) {
 export async function configureDeviceByAdmin(deviceId, input, actor, scope = {}) {
   const device = await Device.findByPk(deviceId);
   if (!device) throw notFound("Dispositivo");
+  const bound = await bindingForDevice(device);
+  if (bound && (input.mode !== 'partner' || input.code !== (await PartnerCode.findByPk(bound.link.partnerCodeId))?.code ||
+      (actor?.role !== 'superadmin' && String(scope.partnerId ?? '') !== String(bound.partner.id)))) throw unavailable();
   if (!input.confirm) {
     await audit({
       actor, action: "device.configuration.cancel", entityType: "device", entityId: device.id,
@@ -367,6 +385,9 @@ export async function configureDeviceByAdmin(deviceId, input, actor, scope = {})
 async function configurePartnerList(device, input, actor, scope = {}) {
   // Valida código + usuário/senha no provedor (rede) e identifica o parceiro. Sem travas.
   const prepared = await preparePartnerActivation({ ...input, web: device.platform === "web" });
+  const bound = await bindingForDevice(device);
+  if (bound && (String(prepared.partner.id) !== String(bound.partner.id) ||
+      String(prepared.pc.id) !== String(bound.link.partnerCodeId))) throw unavailable();
   if (scope.ownerAdminId !== undefined && String(prepared.partner.ownerAdminId) !== String(scope.ownerAdminId))
     throw notFound("Parceiro da rede");
   const existing = await Activation.findOne({

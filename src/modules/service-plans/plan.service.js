@@ -3,6 +3,7 @@ import { sequelize, Partner, PartnerServicePlan, ServicePlanCatalog, ContentPart
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { defaultTier, featuresFor, TIERS } from "./plan.rules.js";
+import { assertNoSlotDowngrade } from "../client-apps/app-entitlement.js";
 
 const CACHE_MS=20_000, CACHE_MAX=1000, cache=new Map();
 export function invalidatePlan(partnerId){if(partnerId)cache.delete(partnerId);else cache.clear();}
@@ -14,6 +15,7 @@ export async function getServicePlan(partnerId,{fresh=false}={}){
   // A política final continua sendo decidida exclusivamente por featuresFor().
   const [row] = await sequelize.query(`SELECT p.id, p.kind,
       ps.tier, ps.max_servers_override AS "maxServersOverride",
+      ps.max_apps_override AS "maxAppsOverride",
       ps.auto_failover_override AS "autoFailoverOverride",
       ps.auto_priority_override AS "autoPriorityOverride",
       ps.email_alerts_override AS "emailAlertsOverride",
@@ -27,7 +29,7 @@ export async function getServicePlan(partnerId,{fresh=false}={}){
   if(!row)throw notFound("Parceiro");
   const partner={id:row.id,kind:row.kind};
   const record=row.tier ? {
-    tier:row.tier,maxServersOverride:row.maxServersOverride,
+    tier:row.tier,maxServersOverride:row.maxServersOverride,maxAppsOverride:row.maxAppsOverride,
     autoFailoverOverride:row.autoFailoverOverride,autoPriorityOverride:row.autoPriorityOverride,
     emailAlertsOverride:row.emailAlertsOverride,detailedHistoryOverride:row.detailedHistoryOverride,
   } : null;
@@ -43,7 +45,7 @@ export async function getServicePlan(partnerId,{fresh=false}={}){
   // Compatibilidade: o controle antigo de prioridade do contrato continua funcionando.
   if(contract?.autoPriority===false)features.autoPriority=false;
   return remember(partnerId,{tier,planName:catalog.name,features,overrides:{
-    maxServersOverride:record?.maxServersOverride??null,autoFailoverOverride:record?.autoFailoverOverride??null,
+    maxAppsOverride:record?.maxAppsOverride??null,maxServersOverride:record?.maxServersOverride??null,autoFailoverOverride:record?.autoFailoverOverride??null,
     autoPriorityOverride:record?.autoPriorityOverride??null,emailAlertsOverride:record?.emailAlertsOverride??null,
     detailedHistoryOverride:record?.detailedHistoryOverride??null,
   },tiers:TIERS});
@@ -58,6 +60,7 @@ export async function updateServicePlan(partnerId,body,actor){
     if(catalog.audience!=="both" && partner.kind!=="both" && catalog.audience!==partner.kind)
       throw new AppError(422,"PLAN_AUDIENCE","Este plano não é permitido para esse tipo de parceiro.");
     const features=featuresFor(body.tier,body,catalog);
+    await assertNoSlotDowngrade(partnerId, features.maxApps ?? 0, t);
     // Revenda do painel is a RIGHT OF THE EXISTING PARTNER PLAN, never a new account type.
     // Existing sellers retain their parent link and history; no stock is created.
     const resale={canSell:Boolean(catalog.canResellPanel),
@@ -74,7 +77,7 @@ export async function updateServicePlan(partnerId,body,actor){
       if(over.length)throw new AppError(409,"SERVER_POOL_EXCEEDS_PLAN",`O código ${over[0].code} tem ${over[0].count} URLs. Reduza para ${features.maxServers} antes de alterar o plano.`);
     }
     const [row]=await PartnerServicePlan.findOrCreate({where:{partnerId},defaults:{partnerId,tier:defaultTier(partner.kind)},transaction:t});
-    await row.update({tier:body.tier,maxServersOverride:body.maxServersOverride??null,autoFailoverOverride:body.autoFailoverOverride??null,
+    await row.update({tier:body.tier,maxAppsOverride:body.maxAppsOverride??null,maxServersOverride:body.maxServersOverride??null,autoFailoverOverride:body.autoFailoverOverride??null,
       autoPriorityOverride:body.autoPriorityOverride??null,emailAlertsOverride:body.emailAlertsOverride??null,
       detailedHistoryOverride:body.detailedHistoryOverride??null},{transaction:t});
     if (['content','both'].includes(partner.kind)) {

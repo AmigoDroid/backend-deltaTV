@@ -8,13 +8,13 @@ export const defaultTier = kind => kind === "reseller" ? "reseller_basic" : "par
 export function featuresFor(tier, overrides={}, catalog=null) {
   if (!catalog && !Object.hasOwn(TIERS,tier)) throw new Error("Plano de recursos desconhecido");
   const base = catalog ? {
-    label: catalog.name, maxServers: catalog.maxServers,
+    label: catalog.name, maxServers: catalog.maxServers, maxApps: catalog.maxApps ?? 0,
     autoFailover: catalog.autoFailover, autoPriority: catalog.autoPriority,
     emailAlerts: catalog.emailAlerts, detailedHistory: catalog.detailedHistory,
   } : TIERS[tier];
   const result={...base};
   for(const [field,override] of Object.entries({
-    maxServers:"maxServersOverride",autoFailover:"autoFailoverOverride",autoPriority:"autoPriorityOverride",
+    maxApps:"maxAppsOverride", maxServers:"maxServersOverride",autoFailover:"autoFailoverOverride",autoPriority:"autoPriorityOverride",
     emailAlerts:"emailAlertsOverride",detailedHistory:"detailedHistoryOverride",
   })) if(overrides[override]!==null && overrides[override]!==undefined) result[field]=overrides[override];
   // null representa plano sem limite; a exceção 0 também significa sem limite.

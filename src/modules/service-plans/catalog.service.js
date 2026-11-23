@@ -3,6 +3,7 @@ import { sequelize, PartnerServicePlan, ServicePlanCatalog } from "../../db/mode
 import { AppError, notFound } from "../../shared/errors.js";
 import { audit } from "../../shared/audit.js";
 import { invalidatePlan } from "./plan.service.js";
+import { assertNoSlotDowngrade } from "../client-apps/app-entitlement.js";
 
 // Backward-compatible link to pre-existing invitation FKs. This is NOT a product
 // catalogue and has NO independent price or permission authority.
@@ -81,6 +82,15 @@ export async function updateCatalogPlan(key, input, actor) {
     if (!record) throw notFound("Plano");
     if (record.system && input.active === false) throw new AppError(409,"DEFAULT_PLAN_REQUIRED","Planos padrão não podem ser desativados. Duplique-os se precisar de alternativas.");
     await validatePlanChanges(key, input, t);
+    // Verifica todos os assinantes antes de reduzir vagas; o update inteiro é atômico.
+    if (input.maxApps < record.maxApps) {
+      const assigned = await PartnerServicePlan.findAll({ where: { tier: key }, transaction: t });
+      for (const plan of assigned) await assertNoSlotDowngrade(plan.partnerId, plan.maxAppsOverride ?? input.maxApps, t);
+      const direct = await sequelize.query(`SELECT p.id FROM partners p LEFT JOIN partner_service_plans s ON s.partner_id=p.id
+        WHERE s.partner_id IS NULL AND (CASE WHEN p.kind='reseller' THEN 'reseller_basic' ELSE 'partner_professional' END)=:key`,
+        { replacements: { key }, transaction: t, type: QueryTypes.SELECT });
+      for (const partner of direct) await assertNoSlotDowngrade(partner.id, input.maxApps, t);
+    }
     const before = record.toJSON();
     await record.update(input, {transaction:t});
     await syncLegacyInvitationPlan(record.toJSON(),t);

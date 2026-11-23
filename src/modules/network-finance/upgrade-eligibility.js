@@ -20,14 +20,14 @@ export function upgradePriceBaseline(partner, assignment, catalog) {
 /** Contratos personalizados não devem ser sobrescritos por autoatendimento. */
 export function hasCustomPlanOverrides(assignment, catalog) {
  if (!assignment || !catalog) return true;
- const fields={maxServersOverride:'maxServers',autoFailoverOverride:'autoFailover',
+ const fields={maxAppsOverride:'maxApps',maxServersOverride:'maxServers',autoFailoverOverride:'autoFailover',
   autoPriorityOverride:'autoPriority',emailAlertsOverride:'emailAlerts',detailedHistoryOverride:'detailedHistory'};
  return Object.entries(fields).some(([override,field])=>assignment[override]!=null && assignment[override]!==catalog[field]);
 }
 
 /** Congela as condições ofertadas para não aplicar um plano alterado após o Pix. */
 export function upgradePlanSignature(plan) {
- const keys=['key','monthlyPriceCents','maxServers','activationLimit','validityDays','autoFailover',
+ const keys=['key','monthlyPriceCents','maxApps','maxServers','activationLimit','validityDays','autoFailover',
   'autoPriority','emailAlerts','detailedHistory','canResellPanel','canCreateSubmasters',
   'canViewFinance','canManageGateways'];
  return plan?createHash('sha256').update(JSON.stringify(keys.map(k=>plan[k]??null))).digest('hex'):null;

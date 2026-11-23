@@ -31,7 +31,9 @@ import { addListByUrl } from "../devices/playlist-by-url.service.js";
 import * as pix from "../pix/pix.service.js";
 import { clientRouter as webClientRoutes } from "../web/web.routes.js";
 import { kindOf, configurationStatusOf, statusOf } from "./client-status.js";
-import { sameInstallation, VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT } from "../devices/device-identity.js";
+import { sameInstallation, VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT, normalizeIdentity } from "../devices/device-identity.js";
+import { Device } from "../../db/models/index.js";
+import { appBindingByIdentifier, bindingForDevice, unavailable } from "../client-apps/client-app.service.js";
 
 /** API pública para os aplicativos/frontends clientes (prefixo /api/v1/client). */
 const router = Router();
@@ -40,6 +42,7 @@ const router = Router();
 // Recupera o camelCase esperado quando só a versão minúscula veio. Só estas chaves, só em corpos JSON simples.
 const CAMEL_KEYS = [
   "installationId",
+  "appId",
   "refreshToken",
   "registrationToken",
   "idempotencyKey",
@@ -75,10 +78,7 @@ const licenseBody = z.object({
 });
 // Parceria: código curto (4–12 letras/números) + usuário e senha do provedor IPTV.
 const partnerBody = z.object({
-  code: z
-    .string()
-    .trim()
-    .regex(/^[A-Za-z0-9]{4,12}$/, "Código inválido"),
+  code: z.string().trim().regex(/^[A-Za-z0-9]{4,12}$/, "Código inválido").optional(),
   username: z.string().min(1).max(128),
   password: z.string().min(1).max(128),
   mac,
@@ -110,6 +110,8 @@ router.post(
   activationMacLimiter,
   validate({ body: licenseBody }),
   async (req, res) => {
+    const device = await Device.findOne({ where: { mac: req.valid.body.mac } });
+    if (device?.clientAppId) throw unavailable();
     const r = await svc.activateLicense({ ...req.valid.body, meta: meta(req) });
     res.status(r.reused ? 200 : 201).json(activationResponse(r));
   },
@@ -123,7 +125,11 @@ router.post(
   partnerCredLimiter,
   validate({ body: partnerBody }),
   async (req, res) => {
-    const r = await svc.activatePartner({ ...req.valid.body, meta: meta(req) });
+    const device = await Device.findOne({ where: { mac: req.valid.body.mac } });
+    const binding = device ? await bindingForDevice(device) : null;
+    if (!binding && !req.valid.body.code) throw new AppError(422, 'INVALID_CODE', 'Informe o código da parceria.');
+    const code = binding ? (await svc.partnerCodeForBinding(binding)) : req.valid.body.code;
+    const r = await svc.activatePartner({ ...req.valid.body, code, meta: meta(req) });
     res.status(r.reused ? 200 : 201).json(activationResponse(r));
   },
 );
@@ -174,6 +180,7 @@ router.post(
     body: z.object({
       mac: z.string().min(11).max(20),
       installationId: z.string().regex(VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT),
+      appId: z.string().refine(v => { try { normalizeIdentity({ platform: 'roku', mac: 'AA:BB:CC:DD:EE:FF', appId: v }); return true; } catch { return false; } }, 'Identificador inválido').optional(),
     }),
   }),
   async (req, res) =>
@@ -187,6 +194,7 @@ router.post(
       mac: z.string().min(11).max(20),
       installationId: z.string().regex(VIRTUAL_INSTALLATION_PATTERN, VIRTUAL_INSTALLATION_HINT),
       registrationToken: z.string().min(40).max(100),
+      appId: z.string().refine(v => { try { normalizeIdentity({ platform: 'roku', mac: 'AA:BB:CC:DD:EE:FF', appId: v }); return true; } catch { return false; } }, 'Identificador inválido').optional(),
     }),
   }),
   async (req, res) =>

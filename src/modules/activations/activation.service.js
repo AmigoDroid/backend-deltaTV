@@ -21,6 +21,7 @@ import { authorizeActivation, termsFor } from "../content-commerce/commerce.serv
 import { STOCK_KINDS } from "../stock/stock-ledger.js";
 import { sellFromStock } from "../stock/stock-license.js";
 import { webIssuePolicy } from "../web/issuance-policy.js";
+import { bindingForDevice, unavailable } from "../client-apps/client-app.service.js";
 
 const live = { [Op.ne]: "revoked" };
 const invalidCode = () => new AppError(404, "INVALID_CODE", "Código inválido.");
@@ -157,6 +158,11 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
     // Estado reavaliado SOB TRAVA (a fase 1 foi só uma triagem barata).
     const partner = await Partner.findByPk(partnerId, lock);
     const code = await PartnerCode.findByPk(codeId, lock);
+    const deviceBound = await Device.findOne({ where: { mac }, transaction: t });
+    if (deviceBound?.clientAppId) {
+      const binding = await bindingForDevice(deviceBound, { transaction: t });
+      if (String(binding.partner.id) !== String(partnerId)) throw unavailable();
+    }
     if (!partner || !code || code.partnerId !== partner.id) throw invalidCredentials();
     if (code.status !== "active" || (code.expiresAt && code.expiresAt <= new Date())) throw invalidCredentials();
     if(webIssuerPartnerId){
@@ -226,7 +232,7 @@ async function activatePartnerOnce({ codeId, partnerId, provider, credentialsEnc
       await siblingsInstallationCheck(mac, installationId, t);
       const [device, created] = await Device.findOrCreate({ where: { mac }, defaults: { mac }, transaction: t });
       await device.update({ lastInstallationId: installationId ?? null, lastSeenAt: new Date() }, { transaction: t });
-      await grantNewDeviceTrial(device, created, { transaction: t, installationId });
+      if (!device.clientAppId) await grantNewDeviceTrial(device, created, { transaction: t, installationId });
       activation = await Activation.create(
         {
           deviceId: device.id, mac, installationId: installationId ?? null, partnerId: partner.id, partnerCodeId: code.id,
@@ -335,6 +341,12 @@ export function activatePrepared({ prepared, mac: rawMac, installationId, idempo
   }));
 }
 
+export async function partnerCodeForBinding(binding) {
+  const code = await PartnerCode.findByPk(binding.link.partnerCodeId);
+  if (!code || code.partnerId !== binding.partner.id || code.status !== 'active') throw unavailable();
+  return code.code;
+}
+
 export async function activatePartner({ code, username, password, mac: rawMac, installationId, idempotencyKey, meta }) {
   const mac = needMac(rawMac);
   const prepared = await preparePartnerActivation({ code, username, password });
@@ -356,6 +368,9 @@ export async function issueSiblingSession({ currentActivation, targetActivationI
     if (!target || target.status === "revoked" || target.deviceId !== currentActivation.deviceId) {
       throw new AppError(404, "LIST_NOT_FOUND", "Lista não encontrada.");
     }
+    const device = await Device.findByPk(target.deviceId, { transaction: t });
+    const bound = await bindingForDevice(device, { transaction: t });
+    if (bound && String(target.partnerId) !== String(bound.partner.id)) throw unavailable();
     const mismatch = (a, b) => a && b && !sameInstallation(a, b);
     if (mismatch(target.installationId, installationId) || mismatch(target.installationId, currentActivation.installationId)) {
       throw new AppError(403, "INSTALLATION_MISMATCH", "Instalação não reconhecida.");
@@ -381,6 +396,8 @@ export async function claimLegacy({ mac: rawMac, installationId, meta }) {
       where: { mac, status: live, claimPending: true }, transaction: t, lock: t.LOCK.UPDATE,
     });
     if (!activation) throw new AppError(404, "NOTHING_TO_CLAIM", "Nenhuma ativação pendente para este dispositivo.");
+    const legacyDevice = await Device.findByPk(activation.deviceId, { transaction: t });
+    if (legacyDevice?.clientAppId) throw unavailable();
     await activation.update({ installationId, claimPending: false }, { transaction: t });
     const { decision } = await checkActivation(activation.id, { transaction: t });
     if (!decision.allowed) throw denialError(decision);

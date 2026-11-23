@@ -7,6 +7,7 @@ import { evaluateAccess } from "./access.policy.js";
 import { sessionsToRevoke } from "./session-cap.js";
 import { dropMirrorAuth } from "../mirror/mirror.cache.js";
 import { sameInstallation } from "../devices/device-identity.js";
+import { bindingForDevice } from "../client-apps/client-app.service.js";
 
 // Cache pequeno, com expiração curta. A TV consulta acesso frequentemente; não queremos SELECT
 // adicional a cada segmento ou refresh. Admin invalida ao alterar política (ver serviço de contratos).
@@ -42,9 +43,16 @@ export async function overdueSinceFor(partnerId, transaction) {
 /** Carrega o estado ATUAL no banco e aplica a política. Chamado em toda requisição protegida. */
 export async function checkActivation(activationId, { now = new Date(), transaction } = {}) {
   const activation = await Activation.findByPk(activationId, {
-    include: [License, Partner, PartnerProvider, { model: License, as: "GrantedLicense" }, { model: Device, attributes: ["id", "platform"], required: false }], transaction,
+    include: [License, Partner, PartnerProvider, { model: License, as: "GrantedLicense" }, { model: Device, attributes: ["id", "platform", "appId", "clientAppId"], required: false }], transaction,
   });
   if (!activation) return { activation: null, decision: evaluateAccess({ activation: null }) };
+  if (activation.Device?.clientAppId) {
+    const binding = await bindingForDevice(activation.Device, { transaction });
+    if (String(activation.partnerId) !== String(binding.partner.id) ||
+        !activation.partnerCodeId) {
+      return { activation, decision: { allowed: false, code: 'APP_NOT_AVAILABLE', message: 'Aplicativo indisponível. Fale com seu provedor.', expiresAt: null } };
+    }
+  }
   // Com licença concedida pelo estoque do revendedor, o prazo é o da licença: a inadimplência do portal não é consultada.
   const overdueSince = activation.partnerId && !activation.GrantedLicense ? await overdueSinceFor(activation.partnerId, transaction) : null;
   let decision = evaluateAccess({

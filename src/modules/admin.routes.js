@@ -1,3 +1,4 @@
+import { adminClientAppsRouter } from "./client-apps/client-app.routes.js";
 import { emergencyRoutes } from "./provider-monitor/emergency.routes.js";
 import { requirePermission } from "../middleware/authenticate.js";
 import { Partner } from "../db/models/index.js";
@@ -72,6 +73,7 @@ router.use("/partners", partners);
 router.use("/network/master-pix", adminMasterPixRouter);
 router.use("/network", adminNetwork);
 router.use("/service-plans", servicePlansCatalog);
+router.use("/client-apps", adminClientAppsRouter);
 router.use("/server-monitor", adminServerMonitor);
 router.use("/devices", devices);
 router.use("/billing", billing);

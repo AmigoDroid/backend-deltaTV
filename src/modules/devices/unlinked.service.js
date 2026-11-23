@@ -27,7 +27,7 @@ export const HAS_LIST_SQL = `(a.partner_id IS NOT NULL OR (a.license_id IS NOT N
 export const NOT_LINKED_SQL = `NOT EXISTS (SELECT 1 FROM activations a WHERE a.device_id = "Device".id AND a.status <> 'revoked' AND ${HAS_LIST_SQL})`;
 const notLinked = () => sequelize.literal(NOT_LINKED_SQL);
 
-export const countUnlinkedDevices = () => Device.count({ where: { [Op.and]: [notLinked()] } });
+export const countUnlinkedDevices = () => Device.count({ where: { clientAppId: null, [Op.and]: [notLinked()] } });
 
 const serialize = (device, lastRevoked, waiting) => ({
   id: device.id,
@@ -45,7 +45,7 @@ const serialize = (device, lastRevoked, waiting) => ({
 });
 
 export async function listUnlinkedDevices({ q, page, pageSize }) {
-  const and = [notLinked()];
+  const and = [notLinked(), { clientAppId: null }];
   if (q) and.push(sequelize.literal(macSearchSql("Device", q, (v) => sequelize.escape(v))));
 
   const { rows, count } = await Device.findAndCountAll({
@@ -147,4 +147,43 @@ async function discardIfUnused(deviceId) {
   } catch {
     /* melhor esforço: no pior caso o aparelho só continua listado como "sem vínculo" */
   }
+}
+
+/** Mesmo predicado NOT_LINKED_SQL, agora restrito aos apps do parceiro dono. */
+export async function listPartnerUnlinkedDevices(partnerId, query) {
+  const { PartnerApp, ClientApp } = await import('../../db/models/index.js');
+  const links = await PartnerApp.findAll({ where: { partnerId }, attributes: ['clientAppId'], include: [{ model: ClientApp, attributes: ['name', 'identifier'] }] });
+  const apps = links.map(link => link.clientAppId);
+  if (!apps.length) return paged([], 0, { page: query.page, pageSize: query.pageSize });
+  const and = [notLinked(), { clientAppId: { [Op.in]: apps } }];
+  if (query.q) and.push(sequelize.literal(macSearchSql('Device', query.q, v => sequelize.escape(v))));
+  const { rows, count } = await Device.findAndCountAll({ where: { [Op.and]: and },
+    order: [['lastSeenAt', 'DESC']], ...pageOf(query) });
+  const map = new Map(links.map(link => [String(link.clientAppId), link.ClientApp?.name]));
+  const ever = rows.length ? await Activation.findAll({ where: { deviceId: { [Op.in]: rows.map(r => r.id) } },
+    attributes: ['deviceId', 'status'] }) : [];
+  const linked = new Set(ever.map(r => r.deviceId));
+  return paged(rows.map(device => ({ id: device.id, mac: device.mac, app: map.get(String(device.clientAppId)),
+    ...presenceOf(device.id, device.lastSeenAt), firstSeenAt: device.firstRegisteredAt ?? device.createdAt,
+    previouslyLinked: linked.has(device.id) })), count, { page: query.page, pageSize: query.pageSize });
+}
+
+export async function countPartnerUnlinkedDevices(partnerId) {
+  const { PartnerApp } = await import('../../db/models/index.js');
+  const links = await PartnerApp.findAll({ where: { partnerId }, attributes: ['clientAppId'] });
+  const apps = links.map(link => link.clientAppId);
+  if (!apps.length) return { count: 0 };
+  return { count: await Device.count({ where: { clientAppId: { [Op.in]: apps }, [Op.and]: [notLinked()] } }) };
+}
+
+export async function linkPartnerUnlinkedDevice(deviceId, { username, password }, partnerId, actor) {
+  const { PartnerApp, PartnerCode } = await import('../../db/models/index.js');
+  const device = await Device.findByPk(deviceId);
+  if (!device?.clientAppId) throw notFound('TV');
+  const link = await PartnerApp.findOne({ where: { clientAppId: device.clientAppId, partnerId, status: 'active' } });
+  if (!link) throw notFound('TV');
+  const code = await PartnerCode.findOne({ where: { id: link.partnerCodeId, partnerId, status: 'active', deletedAt: null } });
+  if (!code) throw new AppError(403, 'APP_NOT_AVAILABLE', 'Aplicativo indisponível. Fale com seu provedor.');
+  await assertUnlinked(device);
+  return configureDeviceByAdmin(device.id, partnerConfiguration({ code: code.code, username, password }), actor, { partnerId });
 }

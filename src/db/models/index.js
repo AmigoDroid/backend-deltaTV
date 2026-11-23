@@ -159,10 +159,23 @@ export const PartnerCode = def("PartnerCode", "partner_codes", {
   deletedAt: ts(),
 });
 
+export const ClientApp = def("ClientApp", "client_apps", {
+  identifier: str(64, { allowNull: false, unique: true }), name: str(120, { allowNull: false }),
+  platform: str(20, { allowNull: false, defaultValue: "roku" }),
+  status: str(20, { allowNull: false, defaultValue: "active" }),
+  claimCodeHash: { type: T.CHAR(64) }, claimCodeExpiresAt: ts(), createdBy: { type: T.UUID },
+});
+export const PartnerApp = def("PartnerApp", "partner_apps", {
+  clientAppId: { type: T.UUID, allowNull: false, unique: true }, partnerId: { type: T.UUID, allowNull: false },
+  partnerCodeId: { type: T.UUID, allowNull: false },
+  status: str(20, { allowNull: false, defaultValue: "active" }), linkedAt: { ...ts(), allowNull: false, defaultValue: T.NOW },
+});
+
 export const PartnerServicePlan = sequelize.define("PartnerServicePlan", {
   partnerId:{type:T.UUID,primaryKey:true},
   tier:str(32,{allowNull:false}),
   maxServersOverride:{type:T.INTEGER},
+  maxAppsOverride:{type:T.INTEGER},
   autoFailoverOverride:{type:T.BOOLEAN},
   autoPriorityOverride:{type:T.BOOLEAN},
   emailAlertsOverride:{type:T.BOOLEAN},
@@ -174,6 +187,7 @@ export const ServicePlanCatalog = sequelize.define("ServicePlanCatalog", {
   name:str(120,{allowNull:false}), description:str(500,{allowNull:false,defaultValue:""}),
   audience:str(16,{allowNull:false}), monthlyPriceCents:{type:T.INTEGER,allowNull:true},
   maxServers:{type:T.INTEGER,allowNull:true,defaultValue:1},
+  maxApps:{type:T.INTEGER,allowNull:false,defaultValue:0},
   activationLimit:{type:T.INTEGER,allowNull:true,defaultValue:100},
   validityDays:{type:T.INTEGER,allowNull:false,defaultValue:30},
   autoFailover:{type:T.BOOLEAN,allowNull:false,defaultValue:false},
@@ -237,6 +251,7 @@ export const Device = def("Device", "devices", {
   // Multiplataforma (migration 20261018000001). device_key é preenchida por gatilho quando só o MAC é informado.
   platform: str(20, { allowNull: false, defaultValue: "roku" }), appId: str(64, { allowNull: false, defaultValue: "delta-tv-roku" }),
   identifierType: str(20, { allowNull: false, defaultValue: "virtual_mac" }), deviceKey: str(160),
+  clientAppId: { type: T.UUID },
   appVersion: str(40), firstRegisteredAt: ts(), secretHash: { type: T.CHAR(64) }, installationChangedAt: ts(),
   // Lista por link enviada pelo site enquanto o MAC não tem licença (migration 20261031000001). Passa para a ativação ao licenciar.
   pendingPlaylistName: str(160), pendingPlaylistUrlEnc: T.TEXT, pendingPlaylistAt: ts(),
@@ -470,6 +485,14 @@ export const AuditLog = sequelize.define(
   { tableName: "audit_logs", updatedAt: false },
 );
 
+ClientApp.hasOne(PartnerApp, { foreignKey: "clientAppId" });
+PartnerApp.belongsTo(ClientApp, { foreignKey: "clientAppId" });
+Partner.hasMany(PartnerApp, { foreignKey: "partnerId" });
+PartnerApp.belongsTo(Partner, { foreignKey: "partnerId" });
+PartnerCode.hasMany(PartnerApp, { foreignKey: "partnerCodeId" });
+PartnerApp.belongsTo(PartnerCode, { foreignKey: "partnerCodeId" });
+ClientApp.hasMany(Device, { foreignKey: "clientAppId" });
+Device.belongsTo(ClientApp, { foreignKey: "clientAppId" });
 Partner.hasMany(WhiteLabelApp, { foreignKey: "partnerId" });
 WhiteLabelApp.belongsTo(Partner, { foreignKey: "partnerId" });
 WhiteLabelApp.hasOne(WhiteLabelAppAppearance, { foreignKey: "appId", as: "appearance" });

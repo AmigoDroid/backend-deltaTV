@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { QueryTypes } from 'sequelize';
-import { sequelize, Partner, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms } from '../../db/models/index.js';
+import { sequelize, Partner, PartnerApp, PartnerServicePlan, ServicePlanCatalog, ContentPartnerTerms } from '../../db/models/index.js';
 import { effectivePartnerStatus } from '../access/access.policy.js';
 import { audit } from '../../shared/audit.js';
 import {assertPublicPlan,isHiddenNetworkPlan} from '../service-plans/network-plan-visibility.js';
@@ -139,7 +139,7 @@ export async function partnerUpgradeOptions(partnerId) {
   partner.kind!=='reseller'?ContentPartnerTerms.findByPk(partnerId,{attributes:['mode']}):Promise.resolve(null)
  ]);
  const present=p=>({key:p.key,name:p.name,description:p.description,monthlyPriceCents:p.monthlyPriceCents,
-  maxServers:p.maxServers,activationLimit:p.activationLimit,validityDays:p.validityDays,
+  maxApps:p.maxApps??0,maxServers:p.maxServers,activationLimit:p.activationLimit,validityDays:p.validityDays,
   autoFailover:p.autoFailover,autoPriority:p.autoPriority,emailAlerts:p.emailAlerts,detailedHistory:p.detailedHistory,
   canResellPanel:p.canResellPanel,canCreateSubmasters:p.canCreateSubmasters,
   canViewFinance:p.canViewFinance,canManageGateways:p.canManageGateways});
@@ -154,6 +154,10 @@ export async function partnerUpgradeOptions(partnerId) {
 }
 
 export async function quotePartnerUpgrade(partnerId,planTo) {
+ const target=await ServicePlanCatalog.findByPk(planTo);
+ const used=await PartnerApp.count({where:{partnerId}});
+ if(target && used>Number(target.maxApps??0))
+   fail(409,'APP_SLOTS_EXCEED_PLAN',`Este parceiro já usa ${used} aplicativo(s) próprio(s). Não é possível reduzir as vagas para ${target.maxApps??0}.`);
  const partner=await Partner.findByPk(partnerId,{attributes:['ownerAdminId']});
  if(!partner?.ownerAdminId)fail(404,'NETWORK_MISSING','Nenhuma rede de Master vinculada.');
  return quoteNetworkCharge(partner.ownerAdminId,{partnerId,kind:'upgrade',planTo},{},{source:'partner'});

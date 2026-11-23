@@ -148,6 +148,7 @@ router.put("/:id/service-plan",requirePermission("partners:write"),validate({par
   tier:z.string().regex(/^[a-z][a-z0-9_]{2,31}$/),
   // null = herdar do plano; 0 = sem limite; número positivo = limite negociado.
   maxServersOverride:z.number().int().min(0).max(2147483647).nullable().optional(),
+  maxAppsOverride:z.number().int().min(0).max(50).nullable().optional(),
   autoFailoverOverride:nullableBool.optional(),autoPriorityOverride:nullableBool.optional(),
   emailAlertsOverride:nullableBool.optional(),detailedHistoryOverride:nullableBool.optional(),
 }).strict()}),async(req,res)=>res.json(await updateServicePlan(req.valid.params.id,req.valid.body,actorOf(req))));
