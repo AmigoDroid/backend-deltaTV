@@ -207,6 +207,7 @@ export async function registerDevice({ mac: macInput, installationId, appId }) {
     url: `${env.publicBaseUrl}/pair#${decryptSecret(result.pairing.tokenEnc)}`,
     expiresAt: result.pairing.expiresAt,
     registrationToken: decryptSecret(result.pairing.registrationEnc),
+    ...(context ? { qrToken: decryptSecret(result.pairing.tokenEnc) } : {}),
   };
   if (result.recoverable) {
     // Resposta mínima: quem só conhece o MAC não vê lista, parceiro nem estado da licença. A sessão sai no /register/status.

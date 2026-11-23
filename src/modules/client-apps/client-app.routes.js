@@ -12,12 +12,16 @@ import { createPlatformApp, listPlatformApps, editPlatformApp, issueClaimCode, c
 
 const id = z.object({ id: z.string().uuid() });
 const appIdentifier = z.string().regex(/^[a-z0-9][a-z0-9._-]{1,63}$/);
+const color = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+const theme = z.object({ background: color, panel: color, primary: color, text: color, muted: color }).strict();
+const branding = { logoUrl: z.string().url().startsWith('https://').max(1000).nullable().optional(), theme: theme.nullable().optional() };
+
 export const adminClientAppsRouter = Router();
 adminClientAppsRouter.use(requirePermission('override'));
 adminClientAppsRouter.get('/', async (_req, res) => res.set('Cache-Control', 'no-store').json({ data: await listPlatformApps() }));
-adminClientAppsRouter.post('/', validate({ body: z.object({ identifier: appIdentifier, name: z.string().trim().min(2).max(120), status: z.enum(['active', 'suspended']).default('active') }).strict() }),
+adminClientAppsRouter.post('/', validate({ body: z.object({ identifier: appIdentifier, name: z.string().trim().min(2).max(120), status: z.enum(['active', 'suspended']).default('active'), ...branding }).strict() }),
   async (req, res) => res.status(201).json(await createPlatformApp(req.valid.body, actorOf(req))));
-adminClientAppsRouter.patch('/:id', validate({ params: id, body: z.object({ name: z.string().trim().min(2).max(120).optional(), status: z.enum(['active', 'suspended']).optional() }).strict() }),
+adminClientAppsRouter.patch('/:id', validate({ params: id, body: z.object({ name: z.string().trim().min(2).max(120).optional(), status: z.enum(['active', 'suspended']).optional(), ...branding }).strict() }),
   async (req, res) => res.json(await editPlatformApp(req.valid.params.id, req.valid.body, actorOf(req))));
 adminClientAppsRouter.post('/:id/claim-code', validate({ params: id, body: z.object({ expiresMinutes: z.number().int().min(5).max(10080).default(1440) }).strict() }),
   async (req, res) => res.json(await issueClaimCode(req.valid.params.id, req.valid.body.expiresMinutes, actorOf(req))));

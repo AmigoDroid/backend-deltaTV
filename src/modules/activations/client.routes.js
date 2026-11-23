@@ -127,6 +127,7 @@ router.post(
   async (req, res) => {
     const device = await Device.findOne({ where: { mac: req.valid.body.mac } });
     const binding = device ? await bindingForDevice(device) : null;
+    if (binding && req.valid.body.code) throw unavailable();
     if (!binding && !req.valid.body.code) throw new AppError(422, 'INVALID_CODE', 'Informe o código da parceria.');
     const code = binding ? (await svc.partnerCodeForBinding(binding)) : req.valid.body.code;
     const r = await svc.activatePartner({ ...req.valid.body, code, meta: meta(req) });

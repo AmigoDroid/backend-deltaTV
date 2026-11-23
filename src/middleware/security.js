@@ -83,6 +83,9 @@ export const listUrlMacLimiter = limiter(60 * 60_000, 15, (req) => `listurl:${St
 export const webLoginIpLimiter = limiter(15 * 60_000, 30);
 export const webLoginCodeLimiter = limiter(15 * 60_000, 8, (req) => `weblogin:${String(req.body?.code ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "")}:${req.ip}`);
 export const pairingResolveLimiter = limiter(60_000, 30);
+export const publicAppReadLimiter = limiter(60_000, 30);
+export const publicAppLinkIpLimiter = limiter(15 * 60_000, 12);
+export const publicAppLinkMacLimiter = limiter(15 * 60_000, 5, (req) => `applink:${String(req.params?.identifier || "")}:${String(req.body?.mac || "").replace(/[^A-F0-9]/gi, "").toUpperCase()}`);
 // Consulta/edição de dispositivo por MAC no painel do revendedor: por usuário (não por IP), contra varredura de MACs.
 export const macLookupLimiter = limiter(60_000, 30, (req) => `maclookup:${req.user?.id ?? req.ip}`);
 // Estoque de licenças: consulta de destinatário por e-mail (anti-enumeração) e escritas (transferir/aplicar), por usuário.

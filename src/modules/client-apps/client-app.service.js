@@ -64,7 +64,7 @@ export async function listPlatformApps() {
 export async function createPlatformApp(input, actor) {
   if (isLegacyAppId(input.identifier) || !validIdentifier.test(input.identifier)) throw new AppError(422, 'INVALID_APP_ID', 'Identificador reservado ou inválido.');
   return sequelize.transaction(async transaction => {
-    const app = await ClientApp.create({ identifier: input.identifier, name: input.name, platform: 'roku', status: input.status, createdBy: actor.id }, { transaction });
+    const app = await ClientApp.create({ identifier: input.identifier, name: input.name, platform: 'roku', status: input.status, logoUrl: input.logoUrl ?? null, theme: input.theme ?? null, createdBy: actor.id }, { transaction });
     await audit({ actor, action: 'client_app.created', entityType: 'client_app', entityId: app.id, metadata: { identifier: input.identifier }, transaction });
     return { id: app.id, identifier: app.identifier, name: app.name, status: app.status };
   });

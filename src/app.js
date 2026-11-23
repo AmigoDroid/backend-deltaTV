@@ -23,6 +23,7 @@ import { webhookMasterPixRouter } from "./modules/distribution/master-pix.routes
 import {portalSalesWebhook} from "./modules/partner-portal-sales/sales.routes.js";
 import { networkFinanceWebhooks } from "./modules/network-finance/finance.routes.js";
 import pairingRoutes from "./modules/devices/pairing.routes.js";
+import clientAppPublicRouter from "./modules/client-apps/client-app-public.routes.js";
 import deviceAccessRoutes from "./modules/devices/device-access.routes.js";
 import playRoutes from "./modules/sources/delivery.routes.js";
 import mirrorRoutes from "./modules/mirror/mirror.routes.js";
@@ -37,16 +38,17 @@ export function createApp() {
   app.use(requestContext);
   app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
   app.use(
-    cors({
+    cors((req, done) => done(null, {
       origin(origin, cb) {
         // Sem Origin (apps nativos, curl, players) é permitido; navegadores só nas origens configuradas.
-        if (!origin || env.corsOrigins.includes(origin)) return cb(null, true);
+        if (!origin || env.corsOrigins.includes(origin) ||
+          (origin === env.partnerPortalUrl && /^\/api\/v1\/public\/client-apps\//.test(req.path))) return cb(null, true);
         return cb(new AppError(403, "CORS_NOT_ALLOWED", "Origem não permitida."));
       },
       methods: ["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE"],
       exposedHeaders: ["Content-Range", "Accept-Ranges", "Content-Length"],
       allowedHeaders: ["Content-Type", "Authorization", "Range", "X-Webhook-Signature", "X-Webhook-Timestamp"],
-    }),
+    })),
   );
   // Importação de até 32 MB: validar papel ANTES de analisar payload grande.
   app.use('/api/v1/admin/control/data/import', authenticate, (req,_res,next) => {
@@ -106,6 +108,7 @@ export function createApp() {
   app.use(maintenanceGate);
   app.get("/health", (_req, res) => res.json({ ok: true }));
   app.use("/pair", pairingRoutes);
+  app.use("/api/v1/public/client-apps", clientAppPublicRouter);
 
   app.use("/api/v1/app-installation", authenticate, installationRoutes);
   app.use("/api/v1/tv-messages", panelMessages);

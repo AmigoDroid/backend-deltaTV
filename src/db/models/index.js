@@ -164,6 +164,7 @@ export const ClientApp = def("ClientApp", "client_apps", {
   platform: str(20, { allowNull: false, defaultValue: "roku" }),
   status: str(20, { allowNull: false, defaultValue: "active" }),
   claimCodeHash: { type: T.CHAR(64) }, claimCodeExpiresAt: ts(), createdBy: { type: T.UUID },
+  logoUrl: T.TEXT, theme: T.JSONB,
 });
 export const PartnerApp = def("PartnerApp", "partner_apps", {
   clientAppId: { type: T.UUID, allowNull: false, unique: true }, partnerId: { type: T.UUID, allowNull: false },
@@ -335,7 +336,7 @@ export const DevicePairingToken = def("DevicePairingToken", "device_pairing_toke
   registrationEnc: { type: T.TEXT, allowNull: false },
   expiresAt: { ...ts(), allowNull: false },
   usedAt: ts(),
-  registrationUsedAt: ts(),
+  registrationUsedAt: ts(), qrLinkInProgressAt: ts(),
   attempts: int(0),
 });
 

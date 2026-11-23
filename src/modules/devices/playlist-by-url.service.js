@@ -70,8 +70,9 @@ export async function addListByUrl({ mac: macInput, name, url, ip, authorizedDev
   const listName = String(name ?? "").trim();
   if (!listName || listName.length > 160) throw new AppError(400, "INVALID_NAME", "Informe um nome de até 160 caracteres.");
 
-  const device = await Device.findOne({ where: { mac }, attributes: ["id"] });
+  const device = await Device.findOne({ where: { mac }, attributes: ["id", "clientAppId"] });
   if (!device || device.id !== authorizedDeviceId) throw new AppError(403,"DEVICE_SCOPE_MISMATCH","A sessão não pertence a esta TV. Gere uma nova chave no aparelho correto.");
+  if (device.clientAppId) throw new AppError(403, "APP_NOT_AVAILABLE", "Este aplicativo recebe listas somente pelo parceiro responsável.");
   const cred = parseListUrl(url);
   await assertPublicUrl(cred.baseUrl);
 
