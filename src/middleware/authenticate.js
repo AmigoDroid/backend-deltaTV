@@ -18,7 +18,7 @@ export const PERMISSIONS = {
     "licenses:read", "partners:read", "billing:read", "devices:read", "devices:write",
     "sources:read", "dashboard:read", "clients:read", "web:read", "downloads:read",
   ],
-  partner: ["dashboard","messages","clients","licenses","devices","codes","providers","commerce","network","billing","pix","credits","web-access","help","notifications","downloads","white-label","support","monitor","account","stock","sources"].flatMap(area=>[`partner:${area}:read`,`partner:${area}:write`]), // namespaces isolated from admin
+  partner: ["dashboard","messages","clients","licenses","devices","codes","providers","commerce","network","billing","pix","credits","web-access","help","notifications","downloads","white-label","apps","support","monitor","account","stock","sources"].flatMap(area=>[`partner:${area}:read`,`partner:${area}:write`]), // namespaces isolated from admin
 };
 
 export const can = (user, perm) => {
