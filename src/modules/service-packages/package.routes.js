@@ -16,7 +16,7 @@ const id=z.string().uuid();
 const money=z.number().int().min(0).max(1_000_000_000);
 const schema=z.object({code,name:z.string().trim().min(2).max(120),wholesaleCents:money,minResaleCents:money,
  active:z.boolean().default(true),maxDns:z.number().int().min(1).max(2_000_000).nullable(),
- activationLimit:z.number().int().min(0).max(2_000_000_000).nullable(),
+ activationLimit:z.number().int().min(0).max(2_000_000_000).nullable(),maxApps:z.number().int().min(0).max(50).optional(),
  autoFailover:z.boolean(),autoPriority:z.boolean(),emailAlerts:z.boolean(),detailedHistory:z.boolean()}).strict();
 router.get('/',async(_req,res)=>res.json({items:await listServicePackages()}));
 router.post('/',validate({body:schema}),async(req,res)=>res.status(201).json(await createServicePackage(req.valid.body,actorOf(req))));

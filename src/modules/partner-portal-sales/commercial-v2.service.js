@@ -338,7 +338,7 @@ export async function onboardMasterSimple({account,planCode,activationLimit,perm
  admin(actor);
  const hashed=account.mode==='new'?await hashPassword(account.password):null;
  return tx(async t=>{
-  const plan=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:planCode AND active=true',{planCode},t);
+  const plan=await one(`SELECT p.*,c.max_apps FROM partner_portal_sales_plans p LEFT JOIN service_plan_catalogs c ON c.key=p.service_tier WHERE p.code=:planCode AND p.active=true`,{planCode},t);
   let snapshot;
   try{snapshot=personalizedPackage(plan,activationLimit);}catch(e){fail(422,'PACKAGE_LIMIT_INVALID',e.message);}
   let partnerId,createdUserId=null;
@@ -417,7 +417,7 @@ export async function onboardRootMaster({partnerId,planCode,quantityMonths,agree
    fail(422,'INVALID_PARTNER','Selecione um parceiro ativo do Painel do Parceiro.');
   const exists=await one('SELECT partner_id FROM partner_portal_sellers WHERE partner_id=:partnerId',{partnerId},t);
   if(exists)fail(409,'MASTER_ALREADY_EXISTS','Conta já é Master/Submaster. Edite os preços e pedidos existentes.');
-  const plan=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:planCode AND active=true',{planCode},t);
+  const plan=await one(`SELECT p.*,c.max_apps FROM partner_portal_sales_plans p LEFT JOIN service_plan_catalogs c ON c.key=p.service_tier WHERE p.code=:planCode AND p.active=true`,{planCode},t);
   const snapshot=packageSnapshot(plan);
   if(!snapshot)fail(409,'PACKAGE_NOT_CONFIGURED','Escolha um Pacote de Serviço válido, não um plano comercial legado.');
   const total=agreedPriceCents*quantityMonths;

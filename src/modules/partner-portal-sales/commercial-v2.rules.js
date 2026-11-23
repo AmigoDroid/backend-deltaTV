@@ -7,6 +7,7 @@ export function packageSnapshot(record){
     code:record.code,name:record.name,revision:Number(record.revision||1),
     tier:record.service_tier,maxDns:record.max_dns==null?null:Number(record.max_dns),
     activationLimit:record.activation_limit==null?null:Number(record.activation_limit),
+    ...(record.max_apps==null?{}:{maxApps:Number(record.max_apps)}),
     autoFailover:Boolean(record.auto_failover),autoPriority:Boolean(record.auto_priority)&&Boolean(record.auto_failover),
     emailAlerts:Boolean(record.email_alerts),detailedHistory:Boolean(record.detailed_history)
   };

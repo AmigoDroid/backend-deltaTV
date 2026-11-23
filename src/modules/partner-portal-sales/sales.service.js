@@ -52,7 +52,7 @@ async function activeSeller(id,t,opts={}) {
   return row;
 }
 async function planRow(code,t,{active=false}={}) {
-  const plan=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:code',{code},t);
+  const plan=await one(`SELECT p.*,c.max_apps FROM partner_portal_sales_plans p LEFT JOIN service_plan_catalogs c ON c.key=p.service_tier WHERE p.code=:code`,{code},t);
   if(!plan)throw notFound('Plano comercial do Painel do Parceiro');
   if(active&&!plan.active)fail(409,'PORTAL_PLAN_INACTIVE','Este plano não está à venda.');
   return plan;

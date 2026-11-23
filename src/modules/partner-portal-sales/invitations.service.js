@@ -104,7 +104,7 @@ export async function createInvitation({sellerPartnerId,invitedName,invitedEmail
       error(403,'SUBMASTER_CREATION_FORBIDDEN','Você não pode criar novos revendedores de painel.');
     if(inviteType==='submaster'&&!catalog.can_resell_panel)
       error(422,'PLAN_NO_RESALE','Escolha um plano que autorize a revenda do painel.');
-    const plan=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:planCode',{planCode},t);
+    const plan=await one(`SELECT p.*,c.max_apps FROM partner_portal_sales_plans p LEFT JOIN service_plan_catalogs c ON c.key=p.service_tier WHERE p.code=:planCode`,{planCode},t);
     if(!plan||!plan.active)error(409,'PLAN_ADAPTER_MISSING','O plano original ainda não foi sincronizado. Execute a migração e salve o plano.');
     try{verifyPortalInviteInput({months,unitResaleCents,inviteType},plan);}catch{error(422,'PORTAL_INVITE_PRICE','Plano, duração ou preço inválido.');}
     if(!resaleAllowed(unitResaleCents,plan))error(422,'PORTAL_INVITE_PRICE','Preço abaixo do piso de revenda.');

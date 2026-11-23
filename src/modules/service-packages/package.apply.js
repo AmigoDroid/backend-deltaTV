@@ -2,6 +2,7 @@ import { QueryTypes } from 'sequelize';
 import { sequelize } from '../../db/models/index.js';
 import { AppError } from '../../shared/errors.js';
 import { packageSnapshotFromRow } from './package.rules.js';
+import { assertNoSlotDowngrade } from '../client-apps/app-entitlement.js';
 
 const read=(sql,replacements={},transaction)=>sequelize.query(sql,{replacements,type:QueryTypes.SELECT,transaction});
 const run=(sql,replacements={},transaction)=>sequelize.query(sql,{replacements,transaction});
@@ -10,6 +11,7 @@ const one=async(sql,p={},t)=>(await read(sql,p,t))[0]||null;
 /** No destructive downgrade: the master retains used DNS and activations.
  * Called from package assignments and invite acceptance inside ONE transaction. */
 export async function assertPartnerFitsPackage(partnerId, snapshot, transaction){
+ if(snapshot.maxApps!==undefined && snapshot.maxApps!==null)await assertNoSlotDowngrade(partnerId,snapshot.maxApps,transaction);
  if(snapshot.maxDns!==null){
   const tooMany=await one(`SELECT c.code,count(pool.id)::int AS used
    FROM partner_codes c JOIN code_server_pools pool ON pool.code_id=c.id
@@ -32,14 +34,14 @@ export async function assertPartnerFitsPackage(partnerId, snapshot, transaction)
 export async function applyServicePackageToPartner(partnerId, snapshot, transaction, { actorId=null, recordAssignment=true, monthlyFeeCents=null }={}){
  if(!snapshot?.tier || !snapshot?.code)throw new AppError(422,'SERVICE_PACKAGE_INVALID','Pacote de Serviço inválido.');
  await assertPartnerFitsPackage(partnerId,snapshot,transaction);
- await run(`INSERT INTO partner_service_plans(partner_id,tier,max_servers_override,auto_failover_override,
+ await run(`INSERT INTO partner_service_plans(partner_id,tier,max_servers_override,max_apps_override,auto_failover_override,
    auto_priority_override,email_alerts_override,detailed_history_override)
-  VALUES (:partnerId,:tier,:maxDns,:failover,:priority,:alerts,:history)
+  VALUES (:partnerId,:tier,:maxDns,:maxApps,:failover,:priority,:alerts,:history)
   ON CONFLICT(partner_id) DO UPDATE SET tier=excluded.tier,
-   max_servers_override=excluded.max_servers_override,auto_failover_override=excluded.auto_failover_override,
+   max_servers_override=excluded.max_servers_override,max_apps_override=excluded.max_apps_override,auto_failover_override=excluded.auto_failover_override,
    auto_priority_override=excluded.auto_priority_override,email_alerts_override=excluded.email_alerts_override,
    detailed_history_override=excluded.detailed_history_override`,{
-  partnerId,tier:snapshot.tier,maxDns:snapshot.maxDns===null?0:snapshot.maxDns,
+  partnerId,tier:snapshot.tier,maxDns:snapshot.maxDns===null?0:snapshot.maxDns,maxApps:snapshot.maxApps??null,
   failover:!!snapshot.autoFailover,priority:!!snapshot.autoPriority,
   alerts:!!snapshot.emailAlerts,history:!!snapshot.detailedHistory},transaction);
  await run(`INSERT INTO content_partner_terms(partner_id,mode,activation_limit,fixed_fee_cents,auto_priority)
