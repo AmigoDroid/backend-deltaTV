@@ -10,6 +10,35 @@ export class AppError extends Error {
 export const notFound = (what = "Recurso") =>
   new AppError(404, "NOT_FOUND", `${what} não encontrado.`);
 
+// Erros de validação são públicos: nunca expor mensagens técnicas nem os dados informados.
+const validationLabels = {
+  claimCode: "Código de vinculação",
+  identifier: "Identificador do aplicativo",
+  partnerCodeId: "Código da parceria",
+  partnerId: "Parceiro",
+  username: "Usuário",
+  password: "Senha",
+  email: "E-mail",
+  name: "Nome",
+};
+
+function validationIssueMessage(issue) {
+  const key = String(issue.path?.at(-1) ?? "");
+  const label = validationLabels[key] || (key ? "Campo informado" : "Dados enviados");
+  const min = Number.isFinite(issue.minimum) ? issue.minimum : null;
+  const max = Number.isFinite(issue.maximum) ? issue.maximum : null;
+  let reason = "Informe um valor válido.";
+  if (issue.code === "invalid_type" && issue.input === undefined) reason = "Este campo é obrigatório.";
+  else if (issue.code === "too_small" && min !== null) {
+    reason = issue.origin === "string" ? `Informe pelo menos ${min} caracteres.` : `O valor mínimo permitido é ${min}.`;
+  } else if (issue.code === "too_big" && max !== null) {
+    reason = issue.origin === "string" ? `Informe no máximo ${max} caracteres.` : `O valor máximo permitido é ${max}.`;
+  } else if (issue.code === "invalid_format") {
+    reason = issue.format === "uuid" ? "Selecione um identificador válido." : "O formato informado é inválido.";
+  } else if (issue.code === "unrecognized_keys") reason = "Existem campos não permitidos.";
+  return `${label}: ${reason}`;
+}
+
 // Resposta padronizada: { code, message, details?, requestId }
 export function errorHandler(err, req, res, _next) {
   let status = 500;
@@ -23,15 +52,10 @@ export function errorHandler(err, req, res, _next) {
     status = 400;
     code = "VALIDATION_ERROR";
     const first = err.issues[0];
-    // Inclui o campo para o erro ser acionável (ex.: "registrationToken: Required"). Só nomes de campo, nunca valores.
-    message = first
-      ? first.path.length
-        ? `${first.path.join(".")}: ${first.message}`
-        : first.message
-      : "Dados inválidos.";
+    message = first ? validationIssueMessage(first) : "Dados inválidos.";
     details = err.issues.map((i) => ({
       path: i.path.join("."),
-      message: i.message,
+      message: validationIssueMessage(i),
     }));
   } else if (err?.name === "SequelizeUniqueConstraintError") {
     status = 409;
