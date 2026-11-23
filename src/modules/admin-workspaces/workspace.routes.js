@@ -19,6 +19,7 @@ import { AppError } from "../../shared/errors.js";
 import { actorOf, audit } from "../../shared/audit.js";
 import { hashPassword } from "../../shared/crypto.js";
 import { invalidatePlan } from "../service-plans/plan.service.js";
+import { assertNoSlotDowngrade } from "../client-apps/app-entitlement.js";
 import {invalidateServerPools} from "../provider-monitor/code-pool.service.js";
 import {clearResolutionCache} from "../provider-monitor/resolve.service.js";
 import { clearContractAccessCache } from "../access/access.service.js";
@@ -77,7 +78,7 @@ const intLimit = z.number().int().min(0).max(2147483647).nullable();
 const packageFields = z.object({
   name: z.string().trim().min(3).max(120), description: z.string().trim().max(500).default(""),
   audience: z.enum(["content","reseller","both"]), monthlyPriceCents: z.number().int().min(0).max(100000000),
-  maxServers: intLimit, activationLimit: intLimit, validityDays: z.number().int().min(1).max(3660),
+  maxServers: intLimit, activationLimit: intLimit, maxApps: z.number().int().min(0).max(50).optional(), validityDays: z.number().int().min(1).max(3660),
   autoFailover: z.boolean(), autoPriority: z.boolean(),
   emailAlerts: z.boolean(), detailedHistory: z.boolean(),
 }).strict();
@@ -169,7 +170,8 @@ async function applyOwnedTerms(partner, {activationLimit,dnsLimit,monthlyFeeCent
   let technical=await PartnerServicePlan.findByPk(partner.id,{transaction,lock:transaction.LOCK.UPDATE});
   if(planKey!==undefined || dnsLimit!==undefined) {
     const next={tier:planKey??technical?.tier??"partner_professional",
-      maxServersOverride:dnsLimit!==undefined?dnsLimit:(technical?.maxServersOverride??null)};
+      maxServersOverride:dnsLimit!==undefined?dnsLimit:(technical?.maxServersOverride??null),
+      ...(planKey!==undefined && planKey!==technical?.tier?{maxAppsOverride:null}:{})};
     if(technical)await technical.update(next,{transaction});
     else technical=await PartnerServicePlan.create({partnerId:partner.id,...next},{transaction});
   }
@@ -228,7 +230,7 @@ router.post("/plans",requireScope("network:plans:write"),validate({body:packageB
     assertQuota(req,"maxPlans",used,"PLAN_QUOTA_EXCEEDED");
     // Chave aleatória (e globalmente única); a identidade da rede vem do proprietário no banco.
     const key=`n${randomBytes(12).toString("hex")}`;
-    const plan=await ServicePlanCatalog.create({key,...b,ownerAdminId:adminId,sortOrder:100,
+    const plan=await ServicePlanCatalog.create({key,...b,maxApps:b.maxApps??0,ownerAdminId:adminId,sortOrder:100,
       system:false,active:true,canResellPanel:false,canCreateSubmasters:false,
       canViewFinance:false,canManageGateways:false},{transaction:t});
     await audit({actor:actorOf(req),action:"network.plan.create",entityType:"service_plan",entityId:key,metadata:{name:plan.name},transaction:t});
@@ -255,6 +257,11 @@ router.put("/plans/:key",requireScope("network:plans:write"),validate({params:z.
         GROUP BY c.id HAVING count(pool.id) > :max LIMIT 1`,
         {transaction:t,replacements:{root,key,max:body.maxServers}});
       if(over.length)throw new AppError(409,"PLAN_BELOW_USAGE","Há códigos com mais DNS do que o novo plano permite.");
+    }
+    if(body.maxApps!==undefined && body.maxApps<p.maxApps){
+      const assigned=await PartnerServicePlan.findAll({where:{tier:key,maxAppsOverride:null},attributes:['partnerId'],transaction:t});
+      // O lock do catálogo serializa este downgrade contra a aquisição de vagas.
+      for(const row of assigned)await assertNoSlotDowngrade(row.partnerId,body.maxApps,t);
     }
     await p.update(body,{transaction:t});
     if(p.autoPriority&&!p.autoFailover)throw new AppError(422,"INVALID_PLAN","Prioridade automática exige failover.");
@@ -401,6 +408,8 @@ router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(
       changes.startsAt=now;changes.endsAt=new Date(now.getTime()+plan.validityDays*86400_000);}
    }
    await verifyLimitsInUse(p.id,{activationLimit:plan.activationLimit,dnsLimit:plan.maxServers},t);
+   const newSlotLimit=current?.tier===plan.key?(current?.maxAppsOverride??plan.maxApps??0):(plan.maxApps??0);
+   await assertNoSlotDowngrade(p.id,newSlotLimit,t);
    changes.deviceLimit=plan.activationLimit;
    changes.monthlyFeeCents=plan.monthlyPriceCents;
    changes.billingModel='fixed';
