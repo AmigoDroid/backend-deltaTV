@@ -141,7 +141,12 @@ export async function registerDevice({ mac: macInput, installationId, appId }) {
       lock: transaction.LOCK.UPDATE,
     });
     if (context ? String(device.clientAppId) !== String(context.app.id) : !!device.clientAppId) {
-      throw new AppError(409, 'APP_MISMATCH', 'Este MAC pertence a outro aplicativo.');
+      // Registro "órfão": o MAC foi criado antes do app existir na plataforma (sem app dono) e não tem NENHUMA ativação viva.
+      // Nesse caso o app próprio adota o MAC em vez de dar 409 para sempre. Com ativação viva, continua bloqueado.
+      const orphan = context && !device.clientAppId && !created &&
+        (await Activation.count({ where: { deviceId: device.id, status: live }, transaction })) === 0;
+      if (!orphan) throw new AppError(409, 'APP_MISMATCH', 'Este MAC pertence a outro aplicativo.');
+      await device.update({ clientAppId: context.app.id, appId: context.app.identifier }, { transaction });
     }
     const trialGrant = context ? null : await grantNewDeviceTrial(device, created, { transaction, installationId: normalized.installationId });
     // Um MAC pode ter várias ativações vivas (uma por parceiro): nenhuma delas pode pertencer a outra instalação.

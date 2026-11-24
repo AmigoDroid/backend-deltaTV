@@ -40,6 +40,26 @@ const limiter = (windowMs, limit, keyGenerator) =>
   });
 
 export const apiLimiter = limiter(60_000, 600);
+// Rotas do APLICATIVO (/api/v1/client/*: status, listas, catálogo paginado, xtream, resources...).
+// Antes dividiam o limite global de 600/min POR IP: com CGNAT (centenas de TVs no mesmo IP público) o servidor
+// devolvia 429 para todo mundo. Agora o limite é POR APARELHO (token). Sem token (ativação/refresh) mantém o limite por IP,
+// e esses endpoints continuam com os limitadores específicos próprios (activation*, refresh, deviceKey...).
+export const clientLimiter = rateLimit({
+  windowMs: 60_000,
+  limit: (req) => ((req.get("authorization") || "").length > 20 ? 300 : 600),
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip: () => env.rateLimitDisabled,
+  keyGenerator: (req) => {
+    const bearer = (req.get("authorization") || "").slice(-64);
+    return bearer.length > 20 ? `client:${bearer}` : `clientip:${req.ip}`;
+  },
+  validate: false,
+  handler: (_req, res, next) => {
+    res.set("Retry-After", String(30 + Math.floor(Math.random() * 30)));
+    next(new AppError(429, "RATE_LIMITED", "Muitas requisições. Aguarde e tente novamente."));
+  },
+});
 // Rota espelho (players Xtream) e gateway de reprodução: playlists HLS geram requisições contínuas, por isso o limite
 // é bem maior e é por credencial (token), não por IP (várias TVs atrás do mesmo NAT).
 const JWT_SEG = /[\w-]{8,}\.[\w-]{8,}\.[\w-]{8,}/;
