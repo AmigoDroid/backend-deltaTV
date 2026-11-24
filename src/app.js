@@ -10,7 +10,7 @@ import helmet from "helmet";
 import cors from "cors";
 import { env } from "./config/env.js";
 import { AppError, errorHandler } from "./shared/errors.js";
-import { requestContext, apiLimiter, mirrorLimiter } from "./middleware/security.js";
+import { requestContext, apiLimiter, mirrorLimiter, clientLimiter } from "./middleware/security.js";
 import { publicRouter as whiteLabelPublic } from "./modules/white-label/white-label.routes.js";
 import authRoutes from "./modules/auth/auth.routes.js";
 import contentPartnerRoutes from "./modules/provider-monitor/monitor.routes.js";
@@ -73,6 +73,8 @@ export function createApp() {
   app.use("/api/v1/player-apps", whiteLabelPublic);
   app.use("/api/v1/client/tv-messages",clientMessages);
   app.use("/api/v1/client/messages", clientMessages);
+  // App (TVs): limite por aparelho (token), antes do limitador global por IP.
+  app.use("/api/v1/client", clientLimiter, clientRoutes);
   app.use(apiLimiter);
   // Notificar após respostas bem-sucedidas; o convite público também cria uma parceria.
   app.use((req, res, next) => {
@@ -98,7 +100,9 @@ export function createApp() {
         invalidateDashboardCache();
         broadcastChange({ partnerId: isPartner ? req.user.partnerId : modifiedPartner, topic });
         const deviceChange = classifyDeviceChange(req.path, req.method);
-        if (deviceChange) broadcastDeviceHint(deviceChange);
+        // Aviso às TVs SEMPRE restrito ao dono da mudança: edição de um parceiro não acorda as TVs dos outros.
+        // (Antes, qualquer edição de parceiro/código enviava aviso global a TODAS as TVs: revoada de requisições.)
+        if (deviceChange) broadcastDeviceHint({ ...deviceChange, partnerId: deviceChange.partnerId ?? (isPartner ? req.user.partnerId : modifiedPartner) ?? null });
       }
     });
     next();
@@ -116,7 +120,6 @@ export function createApp() {
   app.use("/api/v1/content-partner", contentPartnerRoutes);
   app.use("/api/v1/admin", adminRoutes);
   app.use("/api/v1/partner", portalRoutes);
-  app.use("/api/v1/client", clientRoutes);
   app.use("/api/v1/device-access", deviceAccessRoutes);
   app.use("/api/v1/webhooks/payments", webhookRoutes);
   app.use("/api/v1/webhooks/pix", pixWebhookRoutes);

@@ -45,6 +45,6 @@
 
         <Timer id="clockTimer" repeat="true" duration="20" />
         <Timer id="licenseTimer" repeat="true" duration="60" />
-        <Timer id="appearanceTimer" repeat="true" duration="300" />
+        <Timer id="appearanceTimer" repeat="true" duration="1800" />
     </children>
 </component>

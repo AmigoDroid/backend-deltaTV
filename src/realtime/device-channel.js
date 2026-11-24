@@ -64,7 +64,10 @@ export function transportForActivation(activationId) {
     lastSeenAt: new Date(item.seenAt).toISOString(), latencyMeasuredAt: item.latencyAt ? new Date(item.latencyAt).toISOString() : null,
     latencyMethod: item.transport === 'wss' ? 'WSS aplicação (RTT)' : 'HTTPS cliente (RTT)' };
 }
-let sequence = 0;
+// Sequencia inicia em epoch (segundos). Antes iniciava em 0: apos cada reinicio/deploy o contador voltava a 0, TODA TV em
+// long-poll tinha since > sequence, recebia 'reconnect' ao mesmo tempo e consultava o servidor em massa (autoataque).
+// Epoch em segundos cabe em inteiro de 32 bits do BrightScript ate 2038.
+let sequence = Math.floor(Date.now() / 1000);
 let rechecking = false;
 let pendingAuth = 0;
 
@@ -87,13 +90,29 @@ function hintPacket(hint) {
 }
 function readHints(since, aid, partnerId, codeId) {
   const from = Number.isSafeInteger(since) && since >= 0 ? since : 0;
-  if (recent.length && from > 0 && from < recent[0].seq - 1) return [{ type: 'check-status', topic: 'reconnect', scope: 'targeted' }];
-  if (from > sequence) return [{ type: 'check-status', topic: 'reconnect', scope: 'targeted' }];
+  if (recent.length && from > 0 && from < recent[0].seq - 1) return [{ type: 'check-status', topic: 'reconnect', scope: 'global' }];
+  if (from > sequence) return [{ type: 'check-status', topic: 'reconnect', scope: 'global' }];
   return recent.filter(x => x.seq > from && isRelevant(x, aid, partnerId, codeId) && (!x.expiresAt || Date.parse(x.expiresAt) > Date.now())).map(hintPacket);
+}
+
+// Avisos SEM destinatario especifico (global ou por parceiro) iguais em sequencia sao fundidos numa janela curta.
+// O app espera no minimo 3 s antes de consultar (jitter), entao um segundo aviso dentro da janela nao perde nada.
+const COALESCE_MS = 2500;
+const lastBroadcast = new Map();
+function coalesced(hint) {
+  if (hint.activationId || hint.topic === 'remote-command') return false;
+  const key = [hint.topic, hint.partnerId, hint.codeId, hint.providerId].join('|');
+  const now = Date.now();
+  if (lastBroadcast.size > 500) for (const [k, t] of lastBroadcast) if (now - t > COALESCE_MS) lastBroadcast.delete(k);
+  if (now - (lastBroadcast.get(key) || 0) < COALESCE_MS) return true;
+  lastBroadcast.set(key, now);
+  return false;
 }
 
 export function broadcastDeviceHint({ topic = 'devices', activationId = null, partnerId = null, providerId = null, codeId = null, message = null, expiresAt = null, priority = null } = {}, propagate = true) {
   // The notification is a hint, never an authorization or a copy of a list.
+  const topicKey = String(topic).slice(0, 32);
+  if (coalesced({ topic: topicKey, activationId, partnerId, codeId, providerId })) return;
   sequence++;
   const hint = { seq: sequence, topic: String(topic).slice(0, 32), activationId, partnerId,
     providerId: topic === 'dns-failover' ? providerId : null,
@@ -135,6 +154,23 @@ export async function authorizeDevice(token) {
   const activation = await Activation.findByPk(claims.aid, { attributes: ['id', 'deviceId', 'partnerId', 'partnerCodeId'], raw: true });
   if (!activation?.deviceId) throw new Error('Invalid activation');
   return { sessionId: session.id, activationId: activation.id, deviceId: activation.deviceId, partnerId: activation.partnerId, codeId: activation.partnerCodeId, tokenExp: claims.exp * 1000 };
+}
+
+// O long-poll reautentica a cada ~40 s por TV (2 consultas ao banco). Cache curto: revogacao vale em ate 20 s,
+// o WSS ja revalida sessoes a cada 30 s de qualquer forma.
+const AUTH_TTL_MS = 20000;
+const authCache = new Map();
+export async function authorizeDeviceCached(token) {
+  const now = Date.now();
+  const hit = authCache.get(token);
+  if (hit && hit.until > now && hit.auth.tokenExp > now) return hit.auth;
+  const auth = await authorizeDevice(token);
+  if (authCache.size >= 20000) {
+    for (const [k, v] of authCache) if (v.until <= now) authCache.delete(k);
+    if (authCache.size >= 20000) authCache.clear();
+  }
+  authCache.set(token, { auth, until: now + AUTH_TTL_MS });
+  return auth;
 }
 
 export function observeSocketEvent(peer, packet, ip) {
@@ -182,7 +218,7 @@ export function createDeviceWebSocketServer() {
           safeSend(ws, { type: 'ready', transport: 'websocket', heartbeatSeconds: 45, sequence });
           if (Number(peer.build) >= 66) void deliverCommands(peer);
           else safeSend(ws, { type: 'command-ready' });
-          safeSend(ws, { type: 'check-status', topic: 'reconnect', scope: 'targeted' });
+          safeSend(ws, { type: 'check-status', topic: 'reconnect', scope: 'global' });
         } catch { ws.close(1008, 'Unauthorized'); }
         return;
       }
@@ -289,7 +325,7 @@ export async function legacyPoll(req, res) {
   try {
     const header = req.get('authorization') || '';
     if (!header.startsWith('Bearer ')) throw new Error('Auth required');
-    auth = await authorizeDevice(header.slice(7));
+    auth = await authorizeDeviceCached(header.slice(7));
   } catch { res.status(401).set('Cache-Control', 'no-store').json({ ok: false, code: 'SESSION_REVOKED' }); return; }
   touchDevice(auth.deviceId);
   noteDeviceTransport(auth.activationId, 'https-legacy', req.query.build);
@@ -298,7 +334,12 @@ export async function legacyPoll(req, res) {
   const since = Number.isSafeInteger(requested) && requested >= 0 ? requested : 0;
   const hints = readHints(since, auth.activationId, auth.partnerId, auth.codeId);
   res.set('Cache-Control', 'no-store, no-transform').set('X-Accel-Buffering', 'no');
-  if (hints.length || waiting.size >= MAX_PENDING_POLLS) { res.json({ ok: true, sequence, hints }); return; }
+  if (hints.length) { res.json({ ok: true, sequence, hints }); return; }
+  // Capacidade cheia: antes respondia 200 vazio imediatamente e a TV repetia o pedido em laco. Agora pede espera longa.
+  if (waiting.size >= MAX_PENDING_POLLS) {
+    res.status(503).set('Retry-After', String(30 + Math.floor(Math.random() * 30))).json({ ok: false, code: 'BUSY' });
+    return;
+  }
   let done = false;
   const waiter = { activationId: auth.activationId, partnerId: auth.partnerId, codeId:auth.codeId, finish: null };
   const finish = () => {
