@@ -76,7 +76,7 @@ test('parceiro atualiza recursos ao voltar à aba sem alterar cobrança',()=>{
  assert.match(canonical,/Tentar novamente/);
 });
 test('modelo técnico administrado por Pacotes de Serviço não é alterado por editor paralelo',()=>{
- const source=readFileSync(new URL('../../src/modules/service-plans/catalog.service.js',import.meta.url),'utf8');
- assert.match(source,/PACKAGE_CONTROLLED_TIER/);
- assert.match(source,/assertNotPackageControlled\(key,t\)/);
+ const source=readFileSync(new URL('../../src/modules/service-plans/catalog.routes.js',import.meta.url),'utf8');
+ assert.match(source,/USE_SERVICE_PACKAGES/);
+ assert.doesNotMatch(source,/router\.(put|post|delete)\(/);
 });

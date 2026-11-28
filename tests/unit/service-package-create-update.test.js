@@ -22,5 +22,5 @@ test('criação responde 409 para código existente sem ON CONFLICT DO UPDATE', 
 test('duplicação de pacote usa criação estrita para não sobrescrever código', () => {
   const code=file('../../src/modules/service-packages/package.service.js');
   assert.match(code, /return createServicePackage\(\{code:newCode/);
-  assert.match(code, /if\(!create&&!prior\)notFound\(\)/);
+  assert.match(code, /if\(!create&&!prior\?\.catalog_package\)notFound\(\)/);
 });

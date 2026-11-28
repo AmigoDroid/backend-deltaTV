@@ -10,7 +10,7 @@ export function technicalTierForPackage(code) {
 export function assertPackageInput(p) {
   if (!p || !/^[a-z][a-z0-9_-]{1,31}$/.test(p.code||'')) throw new RangeError('Identificador de pacote inválido');
   if (p.autoPriority && !p.autoFailover) throw new RangeError('Prioridade requer failover');
-  if (!Number.isSafeInteger(p.wholesaleCents)||p.wholesaleCents<1 || !Number.isSafeInteger(p.minResaleCents) || p.minResaleCents<1)
+  if (!Number.isSafeInteger(p.wholesaleCents)||p.wholesaleCents<0 || !Number.isSafeInteger(p.minResaleCents) || p.minResaleCents<0)
     throw new RangeError('Preço inválido');
   if(p.minResaleCents<p.wholesaleCents)throw new RangeError('Revenda abaixo do custo negociado');
   if(p.maxDns!==null && (!Number.isInteger(p.maxDns)||p.maxDns<1))throw new RangeError('Limite de DNS inválido');

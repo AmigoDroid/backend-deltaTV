@@ -15,6 +15,9 @@ const code=z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/);
 const id=z.string().uuid();
 const money=z.number().int().min(0).max(1_000_000_000);
 const schema=z.object({code,name:z.string().trim().min(2).max(120),wholesaleCents:money,minResaleCents:money,
+ audience:z.enum(['content','reseller','both']).optional(),validityDays:z.number().int().min(1).max(3660).optional(),
+ monthlyPriceCents:money.max(100000000).nullable().optional(), hiddenFromNetwork:z.boolean().optional(),
+ canResellPanel:z.boolean().optional(),canCreateSubmasters:z.boolean().optional(),canViewFinance:z.boolean().optional(),canManageGateways:z.boolean().optional(),
  active:z.boolean().default(true),maxDns:z.number().int().min(1).max(2_000_000).nullable(),
  activationLimit:z.number().int().min(0).max(2_000_000_000).nullable(),maxApps:z.number().int().min(0).max(50).optional(),
  autoFailover:z.boolean(),autoPriority:z.boolean(),emailAlerts:z.boolean(),detailedHistory:z.boolean()}).strict();

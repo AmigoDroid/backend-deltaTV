@@ -1,3 +1,4 @@
+import {assertPublicPlan} from '../service-plans/network-plan-visibility.js';
 import {Router} from 'express';
 import {z} from 'zod';
 import {createHash} from 'node:crypto';
@@ -40,6 +41,7 @@ router.post('/verify',inviteVerifyLimiter,validate({body:z.object({token}).stric
  assertValid(r);
  await ownerAllowed(r);
  const plan=await scopedPlan(r.ownerAdminId,r.planKey,r.kind);
+  assertPublicPlan(plan);
  if(r.planFingerprint!==planFingerprint(plan))throw new AppError(409,'PLAN_CHANGED','Este plano foi alterado; solicite novo convite.');
  res.set('Cache-Control','no-store').json({email:r.email||null,kind:r.kind,remainingUses:remainingUses(r),planName:plan.name,monthlyFeeCents:plan.monthlyPriceCents,
    maxDns:plan.maxServers,activationLimit:plan.activationLimit,expiresAt:r.expiresAt});
@@ -54,6 +56,7 @@ router.post('/complete',inviteCompleteLimiter,validate({body:z.object({token,nam
   await lockNetworkOwner(r.ownerAdminId,t);
   const owner=await ownerAllowed(r,t);
   const plan=await scopedPlan(r.ownerAdminId,r.planKey,r.kind,t);
+  assertPublicPlan(plan);
   if(planFingerprint(plan)!==r.planFingerprint)throw new AppError(409,'PLAN_CHANGED','Plano alterado após o convite. Peça outro link.');
   const email=inviteRecipient(r,b.email);
   if(!email || !z.string().email().max(200).safeParse(email).success)

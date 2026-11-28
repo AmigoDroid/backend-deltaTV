@@ -1,3 +1,4 @@
+import {ensurePackageSeller} from '../service-packages/package.apply.js';
 import { Op } from 'sequelize';
 import {sequelize,Partner,AdminUser,PartnerServicePlan,ContentPartnerTerms,ServicePlanCatalog} from '../../db/models/index.js';
 import {AppError} from '../../shared/errors.js';
@@ -43,6 +44,7 @@ export async function provisionNetworkAccount({ownerId,actor,plan,name,email,pas
   mode:benefits.activationLimit==null?'fixed_unlimited':'fixed_limited',fixedFeeCents:benefits.monthlyFeeCents,
   activationLimit:benefits.activationLimit,licensePolicy:'partner_only',creditsPerActivation:1,
   autoPriority:benefits.autoPriority,allowWebIssuance:false},{transaction});
+ if(ownerId===null&&plan.canResellPanel)await ensurePackageSeller(p.id,transaction);
  const u=await AdminUser.create({name:name.trim(),email:email.trim().toLowerCase(),passwordHash,
   role:'partner',partnerId:p.id,status:'active'},{transaction});
  await audit({actor,action:'network.partner.create',entityType:'partner',entityId:p.id,

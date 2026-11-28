@@ -122,12 +122,12 @@ partnerPortalSales.get('/my-package',async(req,res)=>res.json(await v2.myPackage
 partnerPortalSales.get('/packages',async(req,res)=>{
  const state=await v2.ownPermissions(req.user.partnerId);
  if(!state.enabled||!state.permissions?.canSell)throw new AppError(403,'PLAN_SALES_FORBIDDEN','Sua conta não pode revender o painel.');
- const rows=await sequelize.query(`SELECT key AS code,name,max_servers AS "maxDns",NULL::integer AS "activationLimit",
-   auto_failover AS "autoFailover",auto_priority AS "autoPriority",email_alerts AS "emailAlerts",
-   detailed_history AS "detailedHistory",can_resell_panel AS "canResellPanel",
-   1::bigint AS "minResaleCents"
-   FROM service_plan_catalogs WHERE active=true AND audience IN ('content','both')
-   ORDER BY sort_order,name`,{type:QueryTypes.SELECT});
+ const rows=await sequelize.query(`SELECT p.code,p.name,p.max_dns AS "maxDns",p.activation_limit AS "activationLimit",
+   p.auto_failover AS "autoFailover",p.auto_priority AS "autoPriority",p.email_alerts AS "emailAlerts",
+   p.detailed_history AS "detailedHistory",c.can_resell_panel AS "canResellPanel",p.min_resale_cents AS "minResaleCents"
+   FROM partner_portal_sales_plans p JOIN service_plan_catalogs c ON c.key=p.service_tier
+   WHERE p.catalog_package AND p.active AND c.active AND c.owner_admin_id IS NULL AND c.deleted_at IS NULL
+     AND NOT c.hidden_from_network AND c.audience IN ('content','both') ORDER BY c.sort_order,p.name`,{type:QueryTypes.SELECT});
  res.json({items:rows});
 });
 partnerPortalSales.get('/permissions',async(req,res)=>res.json(await v2.ownPermissions(req.user.partnerId)));

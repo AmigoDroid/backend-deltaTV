@@ -8,6 +8,19 @@ const read=(sql,replacements={},transaction)=>sequelize.query(sql,{replacements,
 const run=(sql,replacements={},transaction)=>sequelize.query(sql,{replacements,transaction});
 const one=async(sql,p={},t)=>(await read(sql,p,t))[0]||null;
 
+// Uma conta nova da DeltaTV pode receber os direitos previstos pelo pacote.
+// Contas filhas e restrições individuais existentes seguem sua hierarquia.
+export async function ensurePackageSeller(partnerId, transaction){
+ await run(`INSERT INTO partner_portal_sellers(partner_id,parent_partner_id,role,can_sell,active,
+   can_create_submasters,can_view_finance,can_manage_gateways)
+   SELECT p.id,NULL,'master',true,true,c.can_create_submasters,c.can_view_finance,c.can_manage_gateways
+   FROM partners p JOIN partner_service_plans ps ON ps.partner_id=p.id
+   JOIN service_plan_catalogs c ON c.key=ps.tier
+   WHERE p.id=:partnerId AND p.parent_partner_id IS NULL AND p.owner_admin_id IS NULL
+     AND p.kind IN ('content','both') AND c.owner_admin_id IS NULL AND c.can_resell_panel
+   ON CONFLICT(partner_id) DO NOTHING`,{partnerId},transaction);
+}
+
 /** No destructive downgrade: the master retains used DNS and activations.
  * Called from package assignments and invite acceptance inside ONE transaction. */
 export async function assertPartnerFitsPackage(partnerId, snapshot, transaction){

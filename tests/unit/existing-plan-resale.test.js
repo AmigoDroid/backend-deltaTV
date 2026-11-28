@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 const source = path => readFileSync(new URL(`../../src/${path}`,import.meta.url),'utf8');
 test('existing service_plan_catalogs defines monthly fee and commercial permissions',()=>{
- const routes=source('modules/service-plans/catalog.routes.js');
+ const routes=source('modules/service-packages/package.routes.js');
  for(const name of ['monthlyPriceCents','canResellPanel','canCreateSubmasters','canViewFinance','canManageGateways'])assert.ok(routes.includes(name));
  const sql=source('db/migrations/20261228000001-existing-plans-resale-rights.cjs');
  assert.match(sql,/ALTER TABLE service_plan_catalogs/);

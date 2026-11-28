@@ -23,28 +23,7 @@ const active=async(id,t)=>{
 };
 export async function packages(){
  return read(`SELECT code,name,wholesale_cents,min_resale_cents,active,revision,service_tier,max_dns,activation_limit,
-  auto_failover,auto_priority,email_alerts,detailed_history FROM partner_portal_sales_plans ORDER BY created_at DESC`);
-}
-export async function saveServicePackage(p,actor){admin(actor);
- if(p.minResaleCents<p.wholesaleCents)fail(422,'PRICE_BELOW_COST','Preço de revenda menor que o preço de aquisição.');
- if(p.autoPriority&&!p.autoFailover)fail(422,'PRIORITY_NEEDS_FAILOVER','Prioridade automática requer failover ativo.');
- return tx(async t=>{
-  const tier=await one('SELECT key,audience,active FROM service_plan_catalogs WHERE key=:key',{key:p.tier},t);
-  if(!tier||!tier.active||!['content','both'].includes(tier.audience))fail(422,'BAD_PACKAGE_TIER','Escolha um modelo técnico ativo para parceiro.');
-  const current=await one('SELECT * FROM partner_portal_sales_plans WHERE code=:code FOR UPDATE',{code:p.code},t);
-  const row=await one(`INSERT INTO partner_portal_sales_plans(code,name,wholesale_cents,min_resale_cents,active,service_tier,max_dns,
-    activation_limit,auto_failover,auto_priority,email_alerts,detailed_history)
-   VALUES(:code,:name,:wholesaleCents,:minResaleCents,:active,:tier,:maxDns,:activationLimit,
-    :autoFailover,:autoPriority,:emailAlerts,:detailedHistory)
-   ON CONFLICT(code) DO UPDATE SET name=excluded.name,wholesale_cents=excluded.wholesale_cents,
-    min_resale_cents=excluded.min_resale_cents,active=excluded.active,service_tier=excluded.service_tier,
-    max_dns=excluded.max_dns,activation_limit=excluded.activation_limit,auto_failover=excluded.auto_failover,
-    auto_priority=excluded.auto_priority,email_alerts=excluded.email_alerts,detailed_history=excluded.detailed_history,
-    revision=partner_portal_sales_plans.revision+1,updated_at=now() RETURNING *`,p,t);
-  await audit({actor,action:'portal.service_package.saved',entityType:'portal_package',entityId:null,
-    metadata:{code:p.code,revision:row.revision,previousRevision:current?.revision??null},transaction:t});
-  return {package:packageSnapshot(row),wholesaleCents:Number(row.wholesale_cents),minResaleCents:Number(row.min_resale_cents)};
- });
+  auto_failover,auto_priority,email_alerts,detailed_history FROM partner_portal_sales_plans WHERE catalog_package ORDER BY created_at DESC`);
 }
 export async function myPackage(id){
  const [partner,contract,masterPackage,technical,terms,assigned]=await Promise.all([

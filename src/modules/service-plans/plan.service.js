@@ -61,7 +61,7 @@ export async function updateServicePlan(partnerId,body,actor){
     const partner=await Partner.findByPk(partnerId,{transaction:t,lock:t.LOCK.UPDATE});
     if(!partner)throw notFound("Parceiro");
     const catalog=await ServicePlanCatalog.findByPk(body.tier,{transaction:t,lock:t.LOCK.UPDATE});
-    if(!catalog||!catalog.active)throw new AppError(409,"PLAN_UNAVAILABLE","Plano indisponível para novas atribuições.");
+    if(!catalog||catalog.deletedAt||catalog.ownerAdminId!==partner.ownerAdminId||!catalog.active)throw new AppError(409,"PLAN_UNAVAILABLE","Plano indisponível para novas atribuições.");
     if(catalog.audience!=="both" && partner.kind!=="both" && catalog.audience!==partner.kind)
       throw new AppError(422,"PLAN_AUDIENCE","Este plano não é permitido para esse tipo de parceiro.");
     const features=featuresFor(body.tier,body,catalog);

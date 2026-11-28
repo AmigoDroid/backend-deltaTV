@@ -1,3 +1,4 @@
+import {assertPublicPlan} from '../service-plans/network-plan-visibility.js';
 import {Router} from 'express';
 import {z} from 'zod';
 import {randomBytes,createHash} from 'node:crypto';
@@ -44,7 +45,7 @@ router.get('/plans',async(req,res)=>{
  if(adminHasNetworkPermission(req.user,'network:partners:write'))audiences.push('content');
  if(adminHasNetworkPermission(req.user,'network:resellers:write'))audiences.push('reseller');
  audiences.push('both');
- const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:req.networkOwnerId,active:true,deletedAt:null,
+ const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:req.networkOwnerId,active:true,hiddenFromNetwork:false,deletedAt:null,
    audience:{[Op.in]:audiences}},attributes:['key','name','audience','monthlyPriceCents','maxServers','activationLimit','validityDays'],
    order:[['name','ASC']]});
  res.set('Cache-Control','no-store').json({data:rows});
@@ -72,6 +73,7 @@ router.post('/',validate({body}),async(req,res)=>{
  const token=randomBytes(32).toString('base64url');
  const invitation=await sequelize.transaction(async transaction=>{
   const plan=await scopedPlan(ownerId,b.planKey,b.kind,transaction);
+  assertPublicPlan(plan);
   const row=await AdminNetworkInvitation.create({ownerAdminId:ownerId,invitedById:req.user.id,email,kind:b.kind,
     planKey:plan.key,planFingerprint:planFingerprint(plan),tokenHash:HASH(token),
     label:b.label?.trim()||null,maxUses:email?1:(b.maxUses===undefined?10:b.maxUses),useCount:0,

@@ -96,8 +96,9 @@ export async function createInvitation({sellerPartnerId,invitedName,invitedEmail
     const pending=await one(`SELECT id FROM partner_portal_sales_invitations
       WHERE lower(invited_email)=:email AND status='pending'`,{email},t);
     if(pending)error(409,'PORTAL_INVITE_PENDING','Já existe convite comercial pendente para este e-mail.');
-    const catalog=await one(`SELECT * FROM service_plan_catalogs
-      WHERE key=:planCode AND active=true AND audience IN ('content','both')`,{planCode},t);
+    const catalog=await one(`SELECT c.* FROM service_plan_catalogs c JOIN partner_portal_sales_plans p ON p.service_tier=c.key
+      WHERE p.code=:planCode AND p.catalog_package AND p.active AND c.owner_admin_id IS NULL AND c.deleted_at IS NULL
+        AND NOT c.hidden_from_network AND c.active AND c.audience IN ('content','both')`,{planCode},t);
     if(!catalog)error(409,'PLAN_INACTIVE','Este plano não está disponível para parceiros.');
     // A sale of a plan with resale rights adds a descendant to the hierarchy.
     if((catalog.can_resell_panel||inviteType==='submaster')&&!sellerPermission.permissions?.canCreateSubmasters)

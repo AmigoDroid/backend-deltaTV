@@ -1,3 +1,4 @@
+import {ensurePackageSeller} from '../service-packages/package.apply.js';
 import { emergencyRoutes } from "../provider-monitor/emergency.routes.js";
 import { deleteScopedActivation, bulkScopedActivation } from "../admin-deletion.service.js";
 import { Router } from "express";
@@ -217,6 +218,11 @@ router.get("/summary",requireScope("network:dashboard:read"),async(req,res)=>{
   const stats=counts[0][0];
   res.json({owner:{id:root,name:req.user.role==="admin"?req.user.name:"Admin selecionado"},
     ...stats,plans});
+});
+router.use("/plans",(req,res,next)=>{
+  if(tenant(req)===null && !["GET","HEAD"].includes(req.method))
+    throw new AppError(410,"USE_SERVICE_PACKAGES","Gerencie os pacotes da DeltaTV em Pacotes de serviço.");
+  next();
 });
 router.get("/plans",requireScope("network:plans:read"),async(req,res)=>{
   const rows=await ServicePlanCatalog.findAll({where:{ownerAdminId:tenant(req),deletedAt:null},order:[["createdAt","DESC"]]});
@@ -460,6 +466,7 @@ router.patch('/partners/:id',validate({params:ident,body:partnerChanges}),async(
    changes.billingModel='fixed';
    await applyOwnedTerms(p,{planKey:plan.key,activationLimit:plan.activationLimit,
     dnsLimit:plan.maxServers,monthlyFeeCents:plan.monthlyPriceCents},t);
+   if(root===null&&plan.canResellPanel)await ensurePackageSeller(p.id,t);
    if(p.kind!=='reseller')await ContentPartnerTerms.update({autoPriority:plan.autoPriority},{where:{partnerId:p.id},transaction:t});
   }
   delete changes.planKey;
