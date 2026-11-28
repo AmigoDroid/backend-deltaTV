@@ -1,3 +1,4 @@
+import { planCompatible } from '../admin-workspaces/account-provisioning.js';
 import { randomUUID } from 'node:crypto';
 import { pixExpiry,requiredSettlementCents } from './charge-pricing.js';
 import { quoteNetworkCharge } from './pricing.service.js';
@@ -222,7 +223,7 @@ async function settleCharge(id,verify,actor) {
       appUsage>Number(plan?.maxApps??0) ||
       (terms?.mode==='credits') || (plan?.activationLimit!=null && used>plan.activationLimit) ||
       (charge.breakdown?.selfServiceUpgrade===true && (
-        !isSelfServiceUpgrade(baseline,plan) ||
+        !planCompatible(plan,partner.kind) || !isSelfServiceUpgrade(baseline,plan) ||
         baseline.monthlyPriceCents!==charge.breakdown.oldPlanPriceCents ||
         charge.breakdown.upgradePlanSignature!==upgradePlanSignature(plan))));
     const nextStatus=(stale||blocked)?'needs_review':'paid';
