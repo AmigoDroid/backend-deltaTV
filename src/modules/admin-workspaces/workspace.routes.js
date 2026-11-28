@@ -682,7 +682,7 @@ router.delete("/partners/:id/providers/:providerId",requireScope("network:resour
 // A mesma API lógica de Devices.jsx, mas limitada pelo proprietário da sessão.
 // Nunca usa o cadastro global como autorização: MACs podem ser compartilhados.
 const scopedDeviceFilter = pagination.extend({
-  q:z.string().trim().max(40).optional(), status:z.enum(["active","blocked","revoked","unlinked"]).optional(),
+  q:z.string().trim().max(40).optional(), status:z.enum(["active","trial", "expired", "blocked","revoked","unlinked"]).optional(),
   online:z.enum(["true","false"]).optional(),showRemoved:z.enum(["true","false"]).transform(v=>v==="true").optional(),
 });
 const scopedDeviceActionBody = z.object({reason:z.string().trim().max(500).optional().default("")}).strict();

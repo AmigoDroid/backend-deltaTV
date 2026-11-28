@@ -128,7 +128,7 @@ router.get("/presence", requirePermission("devices:read"), async (_req, res) =>
 
 router.get("/by-mac", requirePermission("devices:read"), validate({ query: z.object({
   ...pageQuery, q: z.string().max(40).optional(), online: z.enum(["true", "false"]).optional(),
-  status: z.enum(["active", "blocked", "revoked", "unlinked"]).optional(), showRemoved: z.enum(["true", "false"]).transform(v => v === "true").optional(),
+  status: z.enum(["active", "trial", "expired", "blocked", "revoked", "unlinked"]).optional(), showRemoved: z.enum(["true", "false"]).transform(v => v === "true").optional(),
 }) }), async (req, res) => res.set("Cache-Control", "no-store").json(await svc.listDevices(req.valid.query)));
 
 router.get(

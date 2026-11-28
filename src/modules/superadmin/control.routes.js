@@ -901,7 +901,7 @@ r.get("/reports", validate({ query: periodQuery }), async (req, res) => {
       params,
     ),
     sql(
-      `${scope} SELECT count(*) FILTER(WHERE status='active' AND starts_at<=now() AND expires_at>now())::int active,count(*) FILTER(WHERE status='active' AND starts_at<=now() AND expires_at>now() AND expires_at<=now()+interval '7 days')::int expiring,count(*) FILTER(WHERE is_trial AND starts_at<=now() AND expires_at>now() AND status='active')::int trials FROM licenses WHERE (:partnerId::uuid IS NULL OR owner_partner_id IN (SELECT id FROM scope))`,
+      `${scope} SELECT count(*) FILTER(WHERE NOT is_trial AND status='active' AND starts_at<=now() AND expires_at>now())::int active,count(*) FILTER(WHERE status='active' AND starts_at<=now() AND expires_at>now() AND expires_at<=now()+interval '7 days')::int expiring,count(*) FILTER(WHERE is_trial AND starts_at<=now() AND expires_at>now() AND status='active')::int trials FROM licenses WHERE (:partnerId::uuid IS NULL OR owner_partner_id IN (SELECT id FROM scope))`,
       params,
     ),
     sql(
@@ -923,7 +923,7 @@ r.get("/reports", validate({ query: periodQuery }), async (req, res) => {
     LEFT JOIN licenses l ON l.id=a.license_id LEFT JOIN licenses g ON g.id=a.granted_license_id
     LEFT JOIN partners p ON p.id=a.partner_id LEFT JOIN content_partner_terms t ON t.partner_id=p.id
     LEFT JOIN partner_codes c ON c.id=a.partner_code_id LEFT JOIN debt d ON d.partner_id=p.id
-    WHERE a.status='active' AND (p.id IS NULL OR p.status<>'deleted')
+    WHERE a.status='active' AND COALESCE(l.is_trial,g.is_trial,false) = false AND (p.id IS NULL OR p.status<>'deleted')
     AND ((l.id IS NOT NULL AND l.status='active' AND l.starts_at<=now() AND l.expires_at>now())
       OR (l.id IS NULL AND g.id IS NOT NULL AND g.status='active' AND g.starts_at<=now() AND g.expires_at>now() AND p.status NOT IN ('blocked','cancelled'))
       OR (l.id IS NULL AND g.id IS NULL AND p.status='active' AND p.starts_at<=now() AND p.ends_at>now() AND (p.suspend_policy<>'auto_after_grace' OR d.due IS NULL OR (now() AT TIME ZONE 'UTC')::date-d.due<=p.grace_days)))

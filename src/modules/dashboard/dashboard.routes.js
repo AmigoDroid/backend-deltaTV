@@ -1,9 +1,10 @@
 import { Router } from "express";
 import { Op, QueryTypes } from "sequelize";
-import { sequelize, License, Partner, Activation, Invoice, AuditLog } from "../../db/models/index.js";
+import { sequelize, License, Partner, Invoice, AuditLog } from "../../db/models/index.js";
 import { requirePermission } from "../../middleware/authenticate.js";
 import { calculateAmount } from "../billing/billing.calc.js";
 import { currentCompetence, competenceBounds, toDateOnly } from "../../shared/dates.js";
+import { activationLicenseJoin, activationDisplayStatus, deviceDisplayStatus } from "../devices/device-display-status.js";
 import { countUnlinkedDevices } from "../devices/unlinked.service.js";
 
 const router = Router();
@@ -31,13 +32,17 @@ async function computeDashboard() {
   const now = new Date();
   const today = toDateOnly(now);
   const soon = new Date(now.getTime() + 7 * day);
-  const [active, expired, suspended, blocked, devicesActive, devicesBlocked, devicesUnlinked, partnersActive, partnersSuspended] = await Promise.all([
-    License.count({ where: { status: "active", expiresAt: { [Op.gt]: now } } }),
+  const [active, trial, expired, suspended, blocked, deviceCounts, devicesUnlinked, partnersActive, partnersSuspended] = await Promise.all([
+    License.count({ where: { status: "active", isTrial: false, expiresAt: { [Op.gt]: now } } }),
+    License.count({ where: { status: "active", isTrial: true, startsAt: { [Op.lte]: now }, expiresAt: { [Op.gt]: now } } }),
     License.count({ where: { status: "active", expiresAt: { [Op.lte]: now } } }),
     License.count({ where: { status: "suspended" } }),
     License.count({ where: { status: "blocked" } }),
-    Activation.count({ where: { status: "active" } }),
-    Activation.count({ where: { status: "blocked" } }),
+    sequelize.query(`SELECT status, count(*)::integer AS total FROM (
+      SELECT ${deviceDisplayStatus} AS status FROM activations a ${activationLicenseJoin}
+      JOIN devices d ON d.id = a.device_id WHERE d.mac IS NOT NULL AND a.status <> 'revoked'
+      GROUP BY a.device_id
+    ) devices_by_status GROUP BY status`, { type: QueryTypes.SELECT }),
     countUnlinkedDevices(),
     Partner.count({ where: { status: "active" } }),
     Partner.count({ where: { status: { [Op.in]: ["suspended", "blocked"] } } }),
@@ -103,7 +108,9 @@ async function computeDashboard() {
   ))[0];
 
   const [recentActivations, expiringLicenses, endingPartners, overdue, events] = await Promise.all([
-    Activation.findAll({ order: [["activatedAt", "DESC"]], limit: 8, attributes: ["id", "mac", "status", "activatedAt", "licenseId", "partnerId"] }),
+    sequelize.query(`SELECT a.id, a.mac, ${activationDisplayStatus} AS status, a.activated_at AS "activatedAt",
+      a.license_id AS "licenseId", a.partner_id AS "partnerId"
+      FROM activations a ${activationLicenseJoin} ORDER BY a.activated_at DESC, a.id DESC LIMIT 8`, { type: QueryTypes.SELECT }),
     License.findAll({ where: { status: "active", expiresAt: { [Op.between]: [now, soon] } }, order: [["expiresAt", "ASC"]], limit: 10, attributes: ["id", "codeLast4", "expiresAt"] }),
     Partner.findAll({ where: { status: "active", endsAt: { [Op.between]: [now, new Date(now.getTime() + 15 * day)] } }, order: [["endsAt", "ASC"]], limit: 10, attributes: ["id", "name", "endsAt"] }),
     Invoice.findAll({ where: { status: { [Op.in]: ["open", "partial", "overdue"] }, dueDate: { [Op.lt]: today } }, include: [{ model: Partner, attributes: ["id", "name"] }], order: [["dueDate", "ASC"]], limit: 10 }),
@@ -111,8 +118,8 @@ async function computeDashboard() {
   ]);
 
   return {
-    licenses: { active, expired, suspended, blocked },
-    devices: { active: devicesActive, blocked: devicesBlocked, unlinked: devicesUnlinked },
+    licenses: { active, trial, expired, suspended, blocked },
+    devices: { active: 0, trial: 0, blocked: 0, ...Object.fromEntries(deviceCounts.map(row => [row.status, row.total])), unlinked: devicesUnlinked },
     partners: { active: partnersActive, suspended: partnersSuspended },
     partnerBreakdown,
     billing: { pending, mrrCents, receivedThisMonthCents: Number(paidRow.total) + Number(pixSalesRow.total) },

@@ -15,6 +15,7 @@ import { parseListUrl, canonicalListUrl } from "./playlist-by-url.service.js";
 import { selectLiveActivation, removeList } from "./reseller-devices.service.js";
 import { presenceOf, flushPresence } from "./presence.js";
 import { env } from "../../config/env.js";
+import { activationLicenseJoin, deviceDisplayStatus } from "./device-display-status.js";
 import { liveForDevice } from "../../realtime/live-snapshot.js";
 
 const include = [
@@ -70,10 +71,9 @@ export async function listDevices({ q, status, showRemoved = false, online, page
   const exists = clause => `EXISTS (SELECT 1 FROM activations a WHERE a.device_id = "Device".id ${clause}${ownerCondition})`;
   if (scoped) conditions.push(sequelize.literal(exists("")));
   if (!status && !showRemoved) conditions.push(sequelize.literal(exists("AND a.status IN ('active','blocked')")));
-  if (status === "active") conditions.push(sequelize.literal(exists("AND a.status = 'active'")));
-  if (status === "blocked") conditions.push(sequelize.literal(`NOT (${exists("AND a.status = 'active'")}) AND ${exists("AND a.status = 'blocked'")}`));
-  if (status === "revoked") conditions.push(sequelize.literal(`${exists("")} AND NOT (${exists("AND a.status <> 'revoked'")})`));
-  if (status === "unlinked") conditions.push(sequelize.literal(`NOT (${exists("")})`));
+  const displayStatus = sequelize.literal(`(SELECT ${deviceDisplayStatus} FROM activations a ${activationLicenseJoin}
+    WHERE a.device_id = "Device".id${ownerCondition})`);
+  if (status) conditions.push(sequelize.where(displayStatus, status));
   if (online === "true" || online === "false") {
     await flushPresence();
     const recent = `"Device".last_seen_at >= now() - (${Math.trunc(env.presenceWindowSeconds)} * interval '1 second')`;
@@ -84,7 +84,7 @@ export async function listDevices({ q, status, showRemoved = false, online, page
   const total = state => `(SELECT count(*) FROM activations a WHERE a.device_id = "Device".id AND a.status = '${state}'${ownerCondition})`;
   const { rows, count } = await Device.findAndCountAll({
     where: conditions.length ? { [Op.and]: conditions } : {},
-    attributes: { include: [[sequelize.literal(total("active")), "activeCount"], [sequelize.literal(total("blocked")), "blockedCount"], [sequelize.literal(total("revoked")), "removedCount"], [sequelize.literal(restorable), "restorableCount"]] },
+    attributes: { include: [[displayStatus, "displayStatus"], [sequelize.literal(total("active")), "activeCount"], [sequelize.literal(total("blocked")), "blockedCount"], [sequelize.literal(total("revoked")), "removedCount"], [sequelize.literal(restorable), "restorableCount"]] },
     order: [["updatedAt", "DESC"], ["id", "DESC"]], ...pageOf({ page, pageSize }),
   });
   const activations = rows.length ? await Activation.findAll({ where: { deviceId: { [Op.in]: rows.map(d => d.id) }, status: { [Op.ne]: "revoked" } },
@@ -97,7 +97,7 @@ export async function listDevices({ q, status, showRemoved = false, online, page
     const current = grouped.get(d.id) || [];
     return { id: d.id, deviceId: d.id, mac: d.mac, platform: d.platform, ...presenceOf(d.id, d.lastSeenAt),
       createdAt: d.createdAt, updatedAt: d.updatedAt, activeCount, blockedCount, removedCount, currentCount: activeCount + blockedCount, restorableCount: Number(d.restorableCount || 0),
-      status: activeCount ? "active" : blockedCount ? "blocked" : removedCount ? "revoked" : "unlinked",
+      status: d.displayStatus,
       // A telemetria da TV física pode ser compartilhada; nunca revelar IP/título de outra rede.
       live: scoped ? null : (current.map(a => liveForDevice(a.id)).find(x => x.playback) || current.map(a => liveForDevice(a.id)).find(x => x.online) || null),
       partners: [...new Set(current.map(a => a.Partner?.name).filter(Boolean))],
